@@ -1,0 +1,16 @@
+{
+  "name": "GlobalFront.Server",
+  "rootNamespace": "GlobalFront",
+  "references": [
+    "GlobalFront.Core"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": true
+}
