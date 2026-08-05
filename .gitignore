@@ -1,11 +1,11 @@
 # Unity generated folders
-[Ll]ibrary/
-[Tt]emp/
-[Oo]bj/
-[Bb]uild/
-[Bb]uilds/
-[Ll]ogs/
-[Uu]ser[Ss]ettings/
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
 
 # Visual Studio cache directory
 .vs/
@@ -52,10 +52,10 @@ crashlytics-build.properties
 [Aa]ssets/[Aa]ddressable[Aa]ssets/D[a]ta/*/*.bin*
 [Aa]ssets/[Aa]ddressable[Aa]ssets/D[a]ta/*/*.bin*.meta
 
-# Test results
-EditModeTestResults-*.xml
-test-results.xml
-unity-*.log
+# Legacy local test output at the repository root
+/EditModeTestResults-*.xml
+/test-results.xml
+/unity-*.log
 
 # OS files
 .DS_Store
