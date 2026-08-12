@@ -1,6 +1,7 @@
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
+using GlobalFront.Server;
 using UnityEngine;
 using CoreEntityId = GlobalFront.Core.Model.EntityId;
 
@@ -114,6 +115,36 @@ namespace GlobalFront.Client
         public void ClearAttackTarget()
         {
             _combatState.ClearTarget();
+        }
+
+        /// <summary>
+        /// Synchronizes this presentation unit from an authoritative server
+        /// snapshot. Called by <see cref="PrototypeRtsController"/> after each
+        /// <see cref="LocalMatchHost.TickOnce"/>. The previous position is
+        /// preserved so <see cref="Render"/> can interpolate smoothly between
+        /// the old and new server states.
+        /// </summary>
+        public void ApplyServerSnapshot(ServerUnitSnapshot snapshot)
+        {
+            _previousPosition = _currentPosition;
+            _currentPosition = snapshot.Position;
+
+            if (snapshot.HasMoveTarget)
+            {
+                _targetPosition = snapshot.MoveTarget;
+                _hasTarget = _currentPosition != _targetPosition;
+            }
+            else
+            {
+                _targetPosition = _currentPosition;
+                _hasTarget = false;
+            }
+
+            _combatState.SynchronizeFromAuthoritative(
+                snapshot.CurrentHealth,
+                snapshot.AttackTarget);
+
+            AutoAcquireEnemies = snapshot.AutoAcquireEnemies;
         }
 
         public void StopMovement()

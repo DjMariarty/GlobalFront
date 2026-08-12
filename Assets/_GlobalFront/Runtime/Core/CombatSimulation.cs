@@ -131,6 +131,31 @@ namespace GlobalFront.Core.Combat
             AttackTarget = default;
         }
 
+        /// <summary>
+        /// Overwrites presentation-relevant state from an authoritative source.
+        /// Called by the hosting layer after each server tick to synchronize
+        /// the client-side combat state with the server's snapshot. Does not
+        /// touch <see cref="NextAttackTick"/> or
+        /// <see cref="AttackScheduleExhausted"/> because the client no longer
+        /// resolves combat locally.
+        /// </summary>
+        public void SynchronizeFromAuthoritative(
+            int currentHealth,
+            EntityId attackTarget)
+        {
+            CurrentHealth = currentHealth;
+
+            if (!IsAlive)
+            {
+                ClearTarget();
+                return;
+            }
+
+            AttackTarget = attackTarget.IsValid && attackTarget != Entity
+                ? attackTarget
+                : default;
+        }
+
         public bool CanFire(ulong tick) =>
             IsAlive &&
             HasAttackTarget &&

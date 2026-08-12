@@ -17,9 +17,9 @@ namespace GlobalFront.Core.Simulation
         /// <summary>
         /// Radius in millimetres within which a unit with auto-acquire enabled
         /// will seek the closest enemy when it has no explicit attack target.
-        /// Shared by client (<see cref="GlobalFront.Client.PrototypeRtsController"/>)
-        /// and server (<see cref="GlobalFront.Server.MatchServer"/>) to keep
-        /// target acquisition behaviour identical on both sides.
+        /// Authoritative target acquisition lives in
+        /// <see cref="GlobalFront.Server.MatchServer"/>; the client presentation
+        /// layer no longer runs this phase locally.
         /// </summary>
         public const int AutoAcquireRangeMm = 18000;
     }

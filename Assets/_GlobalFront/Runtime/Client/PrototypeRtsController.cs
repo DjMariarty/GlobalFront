@@ -25,13 +25,11 @@ namespace GlobalFront.Client
         /// <see cref="PrototypeUnit"/> to avoid expanding its public API.
         /// Must be kept in sync when the prototype balance changes.
         /// </summary>
-        private const int ShadowMovementPerTickMm = 350;
+        private const int MovementPerTickMm = 350;
 
         private readonly UnitRegistry _registry = new UnitRegistry();
         private UnitSelection _selection;
         private PrototypeCommandQueue _commandQueue;
-        private readonly Dictionary<CoreEntityId, WorldPointMm> _tickStartPositions =
-            new Dictionary<CoreEntityId, WorldPointMm>();
 
         private readonly PlayerId _localPlayer = new PlayerId(1);
         private FixedSimulationRunner _runner;
@@ -43,18 +41,23 @@ namespace GlobalFront.Client
         private bool _battleInitialized;
 
         /// <summary>
-        /// Shadow authoritative server created at startup. On this step the
-        /// server only exists and holds registered units — it does not
-        /// participate in the simulation tick. Command forwarding and
-        /// parity validation belong to a later integration step.
+        /// Authoritative local host that owns the <see cref="MatchServer"/>. The
+        /// host receives client commands, advances one server tick per
+        /// <see cref="FixedSimulationRunner.TickExecuted"/> and exposes
+        /// <see cref="ServerUnitSnapshot"/> arrays so presentation units are
+        /// synchronized from authoritative state. This is the bridge described
+        /// in the LocalMatchHost task.
         /// </summary>
-        private MatchServer _shadowServer;
+        private LocalMatchHost _localHost;
 
-        /// <summary>True when the shadow server has been initialized.</summary>
-        public bool ShadowServerActive => _shadowServer != null;
+        /// <summary>The authoritative local match host, for diagnostics and tests.</summary>
+        public LocalMatchHost Host => _localHost;
 
-        /// <summary>Number of units registered in the shadow server.</summary>
-        public int ShadowServerUnitCount => _shadowServer?.UnitCount ?? 0;
+        /// <summary>True when the local match host has been initialized.</summary>
+        public bool HostActive => _localHost != null;
+
+        /// <summary>Number of units registered in the local match host.</summary>
+        public int HostUnitCount => _localHost?.UnitCount ?? 0;
 
         public int SelectedCount => _selection.Count;
 
@@ -118,7 +121,7 @@ namespace GlobalFront.Client
             RefreshUnits();
             UpdateRosterCounts();
             _battleInitialized = FriendlyAlive > 0 && EnemyAlive > 0;
-            InitializeShadowServer();
+            InitializeLocalHost();
 #endif
         }
 
@@ -284,27 +287,9 @@ namespace GlobalFront.Client
                 return;
             }
 
-            _commandQueue.ApplyPending(tick);
-            ClearInvalidAttackTargets();
-            AcquireAutomaticTargets();
-            CaptureTickStartPositions();
-            AdvanceMovementPhase();
-
-            var combatInputs = new CombatantTickInput[_registry.Count];
-            for (var index = 0; index < _registry.Count; index++)
-            {
-                var unit = _registry[index];
-                combatInputs[index] = new CombatantTickInput(
-                    unit.CombatState,
-                    unit.CurrentPosition);
-            }
-
-            var combatResult = CombatTickResolver.Resolve(combatInputs, tick);
-            if (combatResult.EventCount > 0)
-            {
-                _commandQueue.OverrideMessage(
-                    $"{combatResult.EventCount} attacks resolved at tick {tick}");
-            }
+            _commandQueue.ForwardPendingToHost(tick, _localHost);
+            _localHost.TickOnce();
+            ApplyHostSnapshots();
 
             for (var index = 0; index < _registry.Count; index++)
             {
@@ -313,7 +298,7 @@ namespace GlobalFront.Client
 
             _selection.PruneDead();
             UpdateRosterCounts();
-            _outcome = combatResult.Outcome;
+            _outcome = _localHost.Outcome;
 
             if (_outcome.IsTerminal)
             {
@@ -332,25 +317,43 @@ namespace GlobalFront.Client
         }
 
         /// <summary>
-        /// Creates the shadow authoritative server and registers every
-        /// discovered client unit with its scene entity id so both sides
-        /// share the same id space. Must be called after
-        /// <see cref="RefreshUnits"/>. The server is not ticked on this
-        /// step — it only validates that unit registration is possible.
+        /// Synchronizes every client presentation unit from the authoritative
+        /// server snapshots produced by the last <see cref="LocalMatchHost.TickOnce"/>.
         /// </summary>
-        private void InitializeShadowServer()
+        private void ApplyHostSnapshots()
         {
-            _shadowServer = new MatchServer();
+            var snapshots = _localHost.GetAllSnapshots();
+            for (var index = 0; index < snapshots.Length; index++)
+            {
+                var snapshot = snapshots[index];
+                if (_registry.TryGetUnit(snapshot.Entity, out var unit))
+                {
+                    unit.ApplyServerSnapshot(snapshot);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Creates the authoritative local match host and registers every
+        /// discovered client unit with its scene entity id so the client and
+        /// server share the same id space. Must be called after
+        /// <see cref="RefreshUnits"/>. The host is ticked from
+        /// <see cref="OnTickExecuted"/>; unit registration only prepares the
+        /// authoritative state.
+        /// </summary>
+        private void InitializeLocalHost()
+        {
+            _localHost = new LocalMatchHost();
 
             for (var index = 0; index < _registry.Count; index++)
             {
                 var unit = _registry[index];
-                _shadowServer.SpawnUnitWithEntity(
+                _localHost.SpawnUnitWithEntity(
                     unit.Entity,
                     unit.Owner,
                     unit.CombatState.Stats,
                     unit.CurrentPosition,
-                    ShadowMovementPerTickMm,
+                    MovementPerTickMm,
                     unit.AutoAcquireEnemies);
             }
         }
@@ -375,115 +378,6 @@ namespace GlobalFront.Client
                 }
 
                 target.SetAttackHighlighted(true);
-            }
-        }
-
-        private void ClearInvalidAttackTargets()
-        {
-            for (var index = 0; index < _registry.Count; index++)
-            {
-                var unit = _registry[index];
-                if (!unit.IsAlive || !unit.AttackTarget.IsValid)
-                {
-                    continue;
-                }
-
-                if (!_registry.TryGetUnit(unit.AttackTarget, out var target) ||
-                    !target.IsAlive ||
-                    target.Owner == unit.Owner)
-                {
-                    unit.ClearAttackTarget();
-                }
-            }
-        }
-
-        private void AcquireAutomaticTargets()
-        {
-            var maximumDistance =
-                (ulong)SimulationConstants.AutoAcquireRangeMm *
-                SimulationConstants.AutoAcquireRangeMm;
-
-            for (var unitIndex = 0; unitIndex < _registry.Count; unitIndex++)
-            {
-                var unit = _registry[unitIndex];
-                if (!unit.IsAlive ||
-                    unit.AttackTarget.IsValid ||
-                    !unit.AutoAcquireEnemies)
-                {
-                    continue;
-                }
-
-                PrototypeUnit bestTarget = null;
-                var bestDistance = ulong.MaxValue;
-                for (var targetIndex = 0; targetIndex < _registry.Count; targetIndex++)
-                {
-                    var candidate = _registry[targetIndex];
-                    if (!candidate.IsAlive || candidate.Owner == unit.Owner)
-                    {
-                        continue;
-                    }
-
-                    var distance = CombatMath.SquaredDistance(
-                        unit.CurrentPosition,
-                        candidate.CurrentPosition);
-                    if (distance > maximumDistance || distance >= bestDistance)
-                    {
-                        continue;
-                    }
-
-                    bestDistance = distance;
-                    bestTarget = candidate;
-                }
-
-                if (bestTarget != null)
-                {
-                    unit.SetAttackTarget(bestTarget.Entity);
-                }
-            }
-        }
-
-        private void CaptureTickStartPositions()
-        {
-            _tickStartPositions.Clear();
-            for (var index = 0; index < _registry.Count; index++)
-            {
-                var unit = _registry[index];
-                _tickStartPositions[unit.Entity] = unit.CurrentPosition;
-            }
-        }
-
-        private void AdvanceMovementPhase()
-        {
-            for (var index = 0; index < _registry.Count; index++)
-            {
-                var unit = _registry[index];
-                if (!unit.IsAlive)
-                {
-                    continue;
-                }
-
-                if (unit.AttackTarget.IsValid &&
-                    _registry.TryGetUnit(unit.AttackTarget, out var target) &&
-                    target.IsAlive &&
-                    _tickStartPositions.TryGetValue(target.Entity, out var targetPosition))
-                {
-                    if (CombatMath.IsWithinRange(
-                            unit.CurrentPosition,
-                            targetPosition,
-                            unit.CombatState.Stats.RangeMm))
-                    {
-                        unit.StopMovement();
-                        unit.AdvanceOneTick();
-                    }
-                    else
-                    {
-                        unit.AdvanceTowardsAttackTarget(targetPosition);
-                    }
-                }
-                else
-                {
-                    unit.AdvanceOneTick();
-                }
             }
         }
 

@@ -382,9 +382,10 @@ namespace GlobalFront.Server
 
         /// <summary>
         /// Simulates exactly one tick. The hosting layer decides how often
-        /// this is called (20 Hz contract). The per-tick pipeline mirrors the
-        /// historical client-side PrototypeRtsController.OnTickExecuted so that
-        /// an identical setup produces identical results:
+        /// this is called (20 Hz contract). The per-tick pipeline is the
+        /// authoritative simulation contract; the client presentation layer
+        /// no longer runs these phases locally and instead consumes
+        /// <see cref="GetAllSnapshots"/> after each tick:
         ///   1. Apply scheduled commands (player-ordered).
         ///   2. Clear invalid attack targets (dead or friendly).
         ///   3. Auto-acquire closest enemy for units with the flag set.
@@ -425,21 +426,40 @@ namespace GlobalFront.Server
         {
             if (_units.TryGetValue(entity, out var record))
             {
-                snapshot = new ServerUnitSnapshot(
-                    record.Combat.Entity,
-                    record.Combat.Owner,
-                    record.Position,
-                    record.Combat.CurrentHealth,
-                    record.HasMoveTarget,
-                    record.MoveTarget,
-                    record.Combat.AttackTarget,
-                    record.AutoAcquireEnemies);
+                snapshot = CreateSnapshot(record);
                 return true;
             }
 
             snapshot = default;
             return false;
         }
+
+        /// <summary>
+        /// Returns a snapshot of every unit in deterministic entity-id order.
+        /// Used by the hosting layer to synchronize client presentation after
+        /// each server tick.
+        /// </summary>
+        public ServerUnitSnapshot[] GetAllSnapshots()
+        {
+            var snapshots = new ServerUnitSnapshot[_orderedUnits.Count];
+            for (var index = 0; index < _orderedUnits.Count; index++)
+            {
+                snapshots[index] = CreateSnapshot(_orderedUnits[index]);
+            }
+
+            return snapshots;
+        }
+
+        private static ServerUnitSnapshot CreateSnapshot(UnitRecord record) =>
+            new ServerUnitSnapshot(
+                record.Combat.Entity,
+                record.Combat.Owner,
+                record.Position,
+                record.Combat.CurrentHealth,
+                record.HasMoveTarget,
+                record.MoveTarget,
+                record.Combat.AttackTarget,
+                record.AutoAcquireEnemies);
 
         private MatchCommandRejection ValidateCommonHeader(
             CommandHeader header,
@@ -599,11 +619,9 @@ namespace GlobalFront.Server
 
         /// <summary>
         /// Moves every alive unit. Captures start-of-tick positions first so
-        /// every unit sees the same snapshot of enemy locations, mirroring
-        /// PrototypeRtsController.CaptureTickStartPositions. Units with a valid
-        /// attack target pursue it (chase when out of range, stop when in
-        /// range), overriding any prior move command — this mirrors
-        /// PrototypeRtsController.AdvanceMovementPhase.
+        /// every unit sees the same snapshot of enemy locations. Units with a
+        /// valid attack target pursue it (chase when out of range, stop when in
+        /// range), overriding any prior move command.
         /// </summary>
         private void MoveUnits()
         {
@@ -663,8 +681,8 @@ namespace GlobalFront.Server
 
         /// <summary>
         /// Clears attack targets that are dead or belong to the same owner.
-        /// Mirrors PrototypeRtsController.ClearInvalidAttackTargets, which the
-        /// client runs before auto-acquire and before movement.
+        /// Run before auto-acquire and before movement on each authoritative
+        /// tick.
         /// </summary>
         private void ClearInvalidAttackTargets()
         {
@@ -688,10 +706,8 @@ namespace GlobalFront.Server
         /// <summary>
         /// For each alive unit with <see cref="UnitRecord.AutoAcquireEnemies"/>
         /// set and no current attack target, finds the closest enemy within
-        /// <see cref="SimulationConstants.AutoAcquireRangeMm"/> and assigns it. Mirrors
-        /// PrototypeRtsController.AcquireAutomaticTargets exactly: ties are
-        /// broken by the order of iteration (stable first-found-wins), matching
-        /// the client's behaviour.
+        /// <see cref="SimulationConstants.AutoAcquireRangeMm"/> and assigns it.
+        /// Ties are broken by the order of iteration (stable first-found-wins).
         /// </summary>
         private void AcquireAutomaticTargets()
         {

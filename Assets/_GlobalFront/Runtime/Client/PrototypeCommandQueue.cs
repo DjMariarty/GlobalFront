@@ -4,6 +4,7 @@ using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
+using GlobalFront.Server;
 using CoreEntityId = GlobalFront.Core.Model.EntityId;
 
 namespace GlobalFront.Client
@@ -205,6 +206,95 @@ namespace GlobalFront.Client
                 {
                     ApplyAttackCommand(queued.Attack, currentTick);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Forwards all commands whose <see cref="CommandHeader.RequestedTick"/>
+        /// is less than or equal to <paramref name="currentTick"/> to the
+        /// authoritative <paramref name="host"/>, in the deterministic
+        /// (tick, player, sequence) order established by
+        /// <see cref="CompareCommands"/>. The host validates and schedules the
+        /// commands; the client no longer applies gameplay commands locally.
+        /// This replaces <see cref="ApplyPending"/> for the authoritative
+        /// hosting model.
+        /// </summary>
+        public void ForwardPendingToHost(ulong currentTick, LocalMatchHost host)
+        {
+            while (_pendingCommands.Count > 0)
+            {
+                var queued = _pendingCommands[0];
+                if (queued.Header.RequestedTick > currentTick)
+                {
+                    break;
+                }
+
+                _pendingCommands.RemoveAt(0);
+                if (queued.Move != null)
+                {
+                    ForwardMoveToHost(queued.Move, currentTick, host);
+                }
+                else
+                {
+                    ForwardAttackToHost(queued.Attack, currentTick, host);
+                }
+            }
+        }
+
+        private void ForwardMoveToHost(
+            MoveCommand command,
+            ulong tick,
+            LocalMatchHost host)
+        {
+            var entities = new CoreEntityId[command.EntityCount];
+            for (var index = 0; index < entities.Length; index++)
+            {
+                entities[index] = command.GetEntity(index);
+            }
+
+            var rejection = host.TryEnqueueMove(
+                command.Header,
+                entities,
+                command.Destination,
+                command.Formation);
+
+            if (rejection == MatchCommandRejection.None)
+            {
+                _lastProcessedSequence = command.Header.Sequence;
+                LastCommandMessage =
+                    $"Move #{command.Header.Sequence} forwarded to host at tick {tick}";
+            }
+            else
+            {
+                LastCommandMessage = $"Move rejected by host: {rejection}";
+            }
+        }
+
+        private void ForwardAttackToHost(
+            AttackCommand command,
+            ulong tick,
+            LocalMatchHost host)
+        {
+            var attackers = new CoreEntityId[command.AttackerCount];
+            for (var index = 0; index < attackers.Length; index++)
+            {
+                attackers[index] = command.GetAttacker(index);
+            }
+
+            var rejection = host.TryEnqueueAttack(
+                command.Header,
+                attackers,
+                command.Target);
+
+            if (rejection == MatchCommandRejection.None)
+            {
+                _lastProcessedSequence = command.Header.Sequence;
+                LastCommandMessage =
+                    $"Attack #{command.Header.Sequence} forwarded to host at tick {tick}";
+            }
+            else
+            {
+                LastCommandMessage = $"Attack rejected by host: {rejection}";
             }
         }
 
