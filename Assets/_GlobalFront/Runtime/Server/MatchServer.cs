@@ -150,6 +150,52 @@ namespace GlobalFront.Server
         public int UnitCount => _units.Count;
 
         /// <summary>
+        /// Initializes the match from a <see cref="MatchConfig"/>, creating
+        /// all units with server-assigned EntityIds. Returns an array of
+        /// assigned EntityIds in the same order as <see cref="MatchConfig.Units"/>.
+        /// The client uses these EntityIds to create presentation objects.
+        /// This is the authoritative source of EntityId assignment; the client
+        /// never determines authoritative EntityIds.
+        /// </summary>
+        /// <param name="config">
+        /// Immutable match configuration describing the initial state.
+        /// </param>
+        /// <returns>
+        /// Array of EntityIds assigned by the server, in the same order as
+        /// <see cref="MatchConfig.Units"/>.
+        /// </returns>
+        /// <exception cref="ArgumentNullException">
+        /// Thrown when <paramref name="config"/> is null.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the match has already been initialized (units exist).
+        /// </exception>
+        public EntityId[] InitializeMatch(MatchConfig config)
+        {
+            if (config == null)
+            {
+                throw new ArgumentNullException(nameof(config));
+            }
+
+            if (_units.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    "Match has already been initialized. InitializeMatch can only be called on an empty server.");
+            }
+
+            var entityIds = new EntityId[config.UnitCount];
+            for (var index = 0; index < config.UnitCount; index++)
+            {
+                var spec = config.Units[index];
+                var entity = new EntityId(_nextEntityValue++);
+                SpawnUnitCore(entity, spec.Owner, config.UnitStats, spec.Position, spec.SpeedMmPerTick, spec.AutoAcquireEnemies);
+                entityIds[index] = entity;
+            }
+
+            return entityIds;
+        }
+
+        /// <summary>
         /// Adds a unit before or during the match. Entity identifiers are
         /// assigned sequentially so identical setup orders produce identical ids.
         /// </summary>

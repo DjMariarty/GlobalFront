@@ -8,6 +8,8 @@ namespace GlobalFront.Client
     /// <summary>
     /// Creates a disposable primitive scene so camera and tick behavior can be
     /// tested before licensed art is selected. No generated object is saved.
+    /// Units are created without authoritative EntityIds; the controller
+    /// assigns server-generated EntityIds after match initialization.
     /// </summary>
     public sealed class PrototypeWorldBootstrap : MonoBehaviour
     {
@@ -33,15 +35,13 @@ namespace GlobalFront.Client
                 "AirCommand",
                 new Vector3(-23f, 0f, -18f),
                 blueMaterial,
-                new PlayerId(1),
-                startingEntityId: 1);
+                new PlayerId(1));
             CreateArmy(
                 prototypeRoot.transform,
                 "ChemicalSyndicate",
                 new Vector3(23f, 0f, 18f),
                 redMaterial,
-                new PlayerId(2),
-                startingEntityId: 1001);
+                new PlayerId(2));
             CreateObstacles(prototypeRoot.transform, obstacleMaterial);
 #endif
         }
@@ -60,8 +60,7 @@ namespace GlobalFront.Client
             string armyName,
             Vector3 origin,
             Material material,
-            PlayerId owner,
-            ulong startingEntityId)
+            PlayerId owner)
         {
             var armyRoot = new GameObject(armyName).transform;
             armyRoot.SetParent(parent, false);
@@ -76,9 +75,7 @@ namespace GlobalFront.Client
                     unit.transform.position = origin + new Vector3(column * 3.2f, 1.1f, row * 3.2f);
                     unit.transform.localScale = new Vector3(1.1f, 1.1f, 1.1f);
                     unit.GetComponent<Renderer>().sharedMaterial = material;
-                    unit.AddComponent<PrototypeUnit>().Initialize(
-                        new CoreEntityId(startingEntityId + (ulong)(row * 5 + column)),
-                        owner);
+                    unit.AddComponent<PrototypeUnit>().Initialize(owner);
                 }
             }
         }

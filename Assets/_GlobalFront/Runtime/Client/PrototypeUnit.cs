@@ -55,11 +55,15 @@ namespace GlobalFront.Client
 
         public bool AutoAcquireEnemies { get; private set; }
 
-        public void Initialize(CoreEntityId entity, PlayerId owner)
+        /// <summary>
+        /// Creates the presentation unit without an authoritative EntityId.
+        /// The EntityId is assigned later by
+        /// <see cref="AssignAuthoritativeEntity"/> after the server
+        /// initializes the match and returns server-assigned ids.
+        /// </summary>
+        public void Initialize(PlayerId owner)
         {
-            Entity = entity;
             Owner = owner;
-            _combatState = new CombatantState(entity, owner, PrototypeCombatStats);
             _presentationHeight = transform.position.y;
             _currentPosition = FromUnityPosition(transform.position);
             _previousPosition = _currentPosition;
@@ -68,6 +72,19 @@ namespace GlobalFront.Client
             _bodyCollider = GetComponent<Collider>();
             CreateSelectionIndicator();
             CreateAttackIndicator();
+        }
+
+        /// <summary>
+        /// Assigns the server-authoritative EntityId to this presentation
+        /// unit and creates its combat state. Called by the controller after
+        /// <see cref="LocalMatchHost.InitializeMatch"/> returns the
+        /// server-assigned EntityIds. The client never determines
+        /// authoritative EntityIds.
+        /// </summary>
+        public void AssignAuthoritativeEntity(CoreEntityId entity)
+        {
+            Entity = entity;
+            _combatState = new CombatantState(entity, Owner, PrototypeCombatStats);
         }
 
         public void SetSelected(bool selected)

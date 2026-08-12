@@ -64,11 +64,14 @@ namespace GlobalFront.Tests.PlayMode
         {
             yield return WaitForBootstrap();
             var host = _controller.Host;
-            var entity = new CoreEntityId(1);
-            Assert.That(host.TryGetUnit(entity, out var initial), Is.True);
-            var startPosition = initial.Position;
 
-            QueueMove(entity, new WorldPointMm(initial.Position.X + 5000, initial.Position.Z));
+            // Get the first unit from the host (server-assigned EntityId)
+            var snapshots = host.GetAllSnapshots();
+            Assert.That(snapshots.Length, Is.GreaterThan(0), "Host must have units after initialization.");
+            var entity = snapshots[0].Entity;
+            var startPosition = snapshots[0].Position;
+
+            QueueMove(entity, new WorldPointMm(startPosition.X + 5000, startPosition.Z));
 
             var startTick = host.CurrentTick;
             yield return WaitForHostTick(startTick + 10);
@@ -90,9 +93,13 @@ namespace GlobalFront.Tests.PlayMode
         {
             yield return WaitForBootstrap();
             var host = _controller.Host;
-            var entity = new CoreEntityId(1);
-            Assert.That(host.TryGetUnit(entity, out var initial), Is.True);
-            var destination = new WorldPointMm(initial.Position.X + 5000, initial.Position.Z);
+
+            // Get the first unit from the host (server-assigned EntityId)
+            var snapshots = host.GetAllSnapshots();
+            Assert.That(snapshots.Length, Is.GreaterThan(0), "Host must have units after initialization.");
+            var entity = snapshots[0].Entity;
+            var initialPosition = snapshots[0].Position;
+            var destination = new WorldPointMm(initialPosition.X + 5000, initialPosition.Z);
 
             QueueMove(entity, destination);
 
@@ -116,8 +123,15 @@ namespace GlobalFront.Tests.PlayMode
         {
             yield return WaitForBootstrap();
             var host = _controller.Host;
-            var attackerEntity = new CoreEntityId(1);
-            var targetEntity = new CoreEntityId(1001);
+
+            // Get units from the host (server-assigned EntityIds)
+            // First 20 units are PlayerId(1), next 20 are PlayerId(2)
+            var snapshots = host.GetAllSnapshots();
+            Assert.That(snapshots.Length, Is.GreaterThanOrEqualTo(40), "Host must have 40 units after initialization.");
+
+            var attackerEntity = snapshots[0].Entity;  // First unit (Player 1)
+            var targetEntity = snapshots[20].Entity;   // First enemy unit (Player 2)
+
             Assert.That(host.TryGetUnit(attackerEntity, out var start), Is.True);
             Assert.That(host.TryGetUnit(targetEntity, out var target), Is.True);
 
@@ -145,7 +159,13 @@ namespace GlobalFront.Tests.PlayMode
         {
             yield return WaitForBootstrap();
             var host = _controller.Host;
-            var targetEntity = new CoreEntityId(1001);
+
+            // Get units from the host (server-assigned EntityIds)
+            var snapshots = host.GetAllSnapshots();
+            Assert.That(snapshots.Length, Is.GreaterThanOrEqualTo(40), "Host must have 40 units after initialization.");
+
+            // First 20 units are PlayerId(1), next 20 are PlayerId(2)
+            var targetEntity = snapshots[20].Entity;  // First enemy unit (Player 2)
 
             // Order the whole local army to focus one enemy unit. After the
             // focus target dies, auto-acquire keeps the battle running until
@@ -153,7 +173,7 @@ namespace GlobalFront.Tests.PlayMode
             var blueEntities = new CoreEntityId[20];
             for (var index = 0; index < blueEntities.Length; index++)
             {
-                blueEntities[index] = new CoreEntityId((ulong)(index + 1));
+                blueEntities[index] = snapshots[index].Entity;
             }
 
             QueueAttack(blueEntities, targetEntity);

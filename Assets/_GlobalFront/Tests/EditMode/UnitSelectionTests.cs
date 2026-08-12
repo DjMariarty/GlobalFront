@@ -59,7 +59,8 @@ namespace GlobalFront.Tests.EditMode
             unitObject.transform.position = position;
 
             var unit = unitObject.AddComponent<PrototypeUnit>();
-            unit.Initialize(new CoreEntityId(entityValue), owner);
+            unit.Initialize(owner);
+            unit.AssignAuthoritativeEntity(new CoreEntityId(entityValue));
             return unit;
         }
 

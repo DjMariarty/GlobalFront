@@ -27,6 +27,18 @@ namespace GlobalFront.Client
         /// </summary>
         private const int MovementPerTickMm = 350;
 
+        /// <summary>
+        /// Combat stats for the prototype match. In a production build this
+        /// would come from a data-driven unit catalog; here it is the
+        /// authoritative source for all units in the match.
+        /// </summary>
+        private static readonly CombatStats PrototypeCombatStats =
+            new CombatStats(
+                maximumHealth: 100,
+                damage: 25,
+                rangeMm: 7000,
+                cooldownTicks: 10);
+
         private readonly UnitRegistry _registry = new UnitRegistry();
         private UnitSelection _selection;
         private PrototypeCommandQueue _commandQueue;
@@ -118,10 +130,9 @@ namespace GlobalFront.Client
             _camera = Camera.main != null
                 ? Camera.main
                 : FindAnyObjectByType<Camera>();
-            RefreshUnits();
+            InitializeLocalHost();
             UpdateRosterCounts();
             _battleInitialized = FriendlyAlive > 0 && EnemyAlive > 0;
-            InitializeLocalHost();
 #endif
         }
 
@@ -170,8 +181,6 @@ namespace GlobalFront.Client
             GUI.color = previousColor;
 #endif
         }
-
-        private void RefreshUnits() => _registry.Refresh(_localPlayer);
 
         private void ReadSelectionInput()
         {
@@ -334,28 +343,53 @@ namespace GlobalFront.Client
         }
 
         /// <summary>
-        /// Creates the authoritative local match host and registers every
-        /// discovered client unit with its scene entity id so the client and
-        /// server share the same id space. Must be called after
-        /// <see cref="RefreshUnits"/>. The host is ticked from
-        /// <see cref="OnTickExecuted"/>; unit registration only prepares the
-        /// authoritative state.
+        /// Creates the authoritative local match host from a
+        /// <see cref="MatchConfig"/> built from discovered presentation units.
+        /// The server assigns EntityIds authoritatively; the client then maps
+        /// those ids back to presentation units. This ensures the server is
+        /// the single source of truth for EntityId assignment.
+        ///
+        /// Pipeline:
+        ///   1. Discover presentation units (no EntityIds yet)
+        ///   2. Build MatchConfig from presentation data
+        ///   3. Server initializes match, assigns EntityIds
+        ///   4. Assign server EntityIds to presentation units
+        ///   5. Refresh registry (now EntityIds are valid)
         /// </summary>
         private void InitializeLocalHost()
         {
             _localHost = new LocalMatchHost();
 
-            for (var index = 0; index < _registry.Count; index++)
+            // 1. Discover presentation units without EntityIds
+            var presentationUnits = _registry.DiscoverUnassignedUnits();
+            if (presentationUnits.Length == 0)
+                return;
+
+            // 2. Build MatchConfig from presentation unit data
+            var specs = new UnitSpawnSpec[presentationUnits.Length];
+            for (var index = 0; index < presentationUnits.Length; index++)
             {
-                var unit = _registry[index];
-                _localHost.SpawnUnitWithEntity(
-                    unit.Entity,
+                var unit = presentationUnits[index];
+                specs[index] = new UnitSpawnSpec(
                     unit.Owner,
-                    unit.CombatState.Stats,
                     unit.CurrentPosition,
                     MovementPerTickMm,
                     unit.AutoAcquireEnemies);
             }
+
+            var config = new MatchConfig(PrototypeCombatStats, specs);
+
+            // 3. Initialize server — server assigns EntityIds authoritatively
+            var serverEntityIds = _localHost.InitializeMatch(config);
+
+            // 4. Assign server EntityIds to presentation units
+            for (var index = 0; index < presentationUnits.Length; index++)
+            {
+                presentationUnits[index].AssignAuthoritativeEntity(serverEntityIds[index]);
+            }
+
+            // 5. Refresh registry now that units have EntityIds
+            _registry.Refresh(_localPlayer);
         }
 
         private void RefreshAttackHighlights()

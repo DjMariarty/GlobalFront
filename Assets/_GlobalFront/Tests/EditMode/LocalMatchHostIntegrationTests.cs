@@ -46,12 +46,16 @@ namespace GlobalFront.Tests.EditMode
             // before the registration/tick methods are exercised.
             InvokePrivateMethod(_controller, "Awake");
 
-            SpawnUnit(1, LocalPlayer, new Vector3(0f, 1.1f, 0f));
-            SpawnUnit(2, EnemyPlayer, new Vector3(5f, 1.1f, 0f));
+            // Spawn units WITHOUT EntityIds — InitializeLocalHost will
+            // assign server-authoritative EntityIds via MatchConfig.
+            SpawnUnit(LocalPlayer, new Vector3(0f, 1.1f, 0f));
+            SpawnUnit(EnemyPlayer, new Vector3(5f, 1.1f, 0f));
 
-            InvokePrivateMethod(_controller, "RefreshUnits");
-            InvokePrivateMethod(_controller, "UpdateRosterCounts");
+            // InitializeLocalHost discovers unassigned units, builds
+            // MatchConfig, calls InitializeMatch (server assigns EntityIds),
+            // assigns them to presentation units, and refreshes the registry.
             InvokePrivateMethod(_controller, "InitializeLocalHost");
+            InvokePrivateMethod(_controller, "UpdateRosterCounts");
         }
 
         [TearDown]
@@ -163,14 +167,16 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(friendly.CurrentPosition, Is.EqualTo(new WorldPointMm(350, 0)));
         }
 
-        private PrototypeUnit SpawnUnit(ulong entityValue, PlayerId owner, Vector3 position)
+        private PrototypeUnit SpawnUnit(PlayerId owner, Vector3 position)
         {
-            var unitObject = new GameObject("Unit " + entityValue);
+            var unitObject = new GameObject("Unit " + owner);
             _createdObjects.Add(unitObject);
             unitObject.transform.position = position;
 
             var unit = unitObject.AddComponent<PrototypeUnit>();
-            unit.Initialize(new CoreEntityId(entityValue), owner);
+            // Only Initialize — no EntityId assignment.
+            // InitializeLocalHost will assign server-authoritative EntityIds.
+            unit.Initialize(owner);
             return unit;
         }
 

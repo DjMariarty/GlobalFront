@@ -53,6 +53,15 @@ namespace GlobalFront.Client
 
         public bool IsActive => _server != null;
 
+        /// <summary>
+        /// Initializes the match from a <see cref="MatchConfig"/>, delegating
+        /// to <see cref="MatchServer.InitializeMatch"/>. The server creates
+        /// all units and assigns EntityIds authoritatively. Returns the
+        /// server-assigned EntityIds in the same order as the config.
+        /// </summary>
+        public EntityId[] InitializeMatch(MatchConfig config) =>
+            _server.InitializeMatch(config);
+
         public EntityId SpawnUnitWithEntity(
             EntityId entity,
             PlayerId owner,

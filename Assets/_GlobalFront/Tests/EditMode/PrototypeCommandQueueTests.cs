@@ -297,7 +297,8 @@ namespace GlobalFront.Tests.EditMode
             _createdObjects.Add(unitObject);
             unitObject.transform.position = position;
             var unit = unitObject.AddComponent<PrototypeUnit>();
-            unit.Initialize(new CoreEntityId(entityValue), owner);
+            unit.Initialize(owner);
+            unit.AssignAuthoritativeEntity(new CoreEntityId(entityValue));
             return unit;
         }
 
