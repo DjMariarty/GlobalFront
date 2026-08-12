@@ -12,6 +12,12 @@
 - `CombatantState.SynchronizeFromAuthoritative` — синхронизация presentation-состояния с авторитетным снапшотом.
 - `PrototypeUnit.ApplyServerSnapshot` — применение авторитетного снапшота к presentation-юнитам.
 - EditMode-тесты: `LocalMatchHostTests` (9) и `LocalMatchHostIntegrationTests` (8).
+- Snapshot Serialization Protocol v1: детерминированный бинарный формат для сериализации `ServerUnitSnapshot`.
+  - Фиксированный размер: 16 байт header + 39 байт на unit (little-endian)
+  - Валидация: protocol version, packet size, boolean-значения
+  - Canonical entity-id order для детерминизма
+- 13 EditMode-тестов для snapshot-сериализации (round-trip, validation, golden bytes, determinism)
+- 5 PlayMode-тестов для полного pipeline (bootstrap, server ticks, move, attack, terminal outcome)
 
 ### Changed
 
