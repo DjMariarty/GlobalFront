@@ -1,6 +1,7 @@
 ﻿using System.Collections.Generic;
 using GlobalFront.Client;
 using GlobalFront.Core.Model;
+using GlobalFront.Core.Movement;
 using GlobalFront.Server;
 using NUnit.Framework;
 using UnityEngine;
@@ -67,18 +68,18 @@ namespace GlobalFront.Tests.EditMode
         public void ShadowServer_EveryClientUnitIsRegisteredWithMatchingEntityId()
         {
             var server = GetShadowServer();
-            Assert.That(server.TryGetUnit(new EntityId(1), out _), Is.True);
-            Assert.That(server.TryGetUnit(new EntityId(2), out _), Is.True);
+            Assert.That(server.TryGetUnit(new CoreEntityId(1), out _), Is.True);
+            Assert.That(server.TryGetUnit(new CoreEntityId(2), out _), Is.True);
         }
 
         [Test]
         public void ShadowServer_RegisteredOwnerMatchesClient()
         {
             var server = GetShadowServer();
-            Assert.That(server.TryGetUnit(new EntityId(1), out var friendly), Is.True);
+            Assert.That(server.TryGetUnit(new CoreEntityId(1), out var friendly), Is.True);
             Assert.That(friendly.Owner, Is.EqualTo(LocalPlayer));
 
-            Assert.That(server.TryGetUnit(new EntityId(2), out var enemy), Is.True);
+            Assert.That(server.TryGetUnit(new CoreEntityId(2), out var enemy), Is.True);
             Assert.That(enemy.Owner, Is.EqualTo(EnemyPlayer));
         }
 
@@ -86,10 +87,10 @@ namespace GlobalFront.Tests.EditMode
         public void ShadowServer_RegisteredPositionMatchesClient()
         {
             var server = GetShadowServer();
-            Assert.That(server.TryGetUnit(new EntityId(1), out var friendly), Is.True);
+            Assert.That(server.TryGetUnit(new CoreEntityId(1), out var friendly), Is.True);
             Assert.That(friendly.Position, Is.EqualTo(new WorldPointMm(0, 0)));
 
-            Assert.That(server.TryGetUnit(new EntityId(2), out var enemy), Is.True);
+            Assert.That(server.TryGetUnit(new CoreEntityId(2), out var enemy), Is.True);
             Assert.That(enemy.Position, Is.EqualTo(new WorldPointMm(5000, 0)));
         }
 
@@ -97,10 +98,10 @@ namespace GlobalFront.Tests.EditMode
         public void ShadowServer_RegisteredHealthMatchesClient()
         {
             var server = GetShadowServer();
-            Assert.That(server.TryGetUnit(new EntityId(1), out var friendly), Is.True);
+            Assert.That(server.TryGetUnit(new CoreEntityId(1), out var friendly), Is.True);
             Assert.That(friendly.CurrentHealth, Is.EqualTo(100));
 
-            Assert.That(server.TryGetUnit(new EntityId(2), out var enemy), Is.True);
+            Assert.That(server.TryGetUnit(new CoreEntityId(2), out var enemy), Is.True);
             Assert.That(enemy.CurrentHealth, Is.EqualTo(100));
         }
 
