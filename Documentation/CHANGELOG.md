@@ -1,15 +1,30 @@
 # Журнал изменений
 
 > Формат: Keep a Changelog.
-> Последнее обновление: 2026-08-08
+> Последнее обновление: 2026-08-12
 
 ## Unreleased
 
+### Added
+
+- `LocalMatchHost` в `GlobalFront.Client`: локальный авторитетный host, владеющий `MatchServer` внутри клиентского процесса.
+- `MatchServer.GetAllSnapshots()` — детерминированный набор `ServerUnitSnapshot` всех юнитов.
+- `CombatantState.SynchronizeFromAuthoritative` — синхронизация presentation-состояния с авторитетным снапшотом.
+- `PrototypeUnit.ApplyServerSnapshot` — применение авторитетного снапшота к presentation-юнитам.
+- EditMode-тесты: `LocalMatchHostTests` (9) и `LocalMatchHostIntegrationTests` (8).
+
 ### Changed
 
+- Клиент больше не выполняет локальную симуляцию: `PrototypeRtsController` передаёт команды в `LocalMatchHost`, тикает авторитетный сервер и применяет снапшоты к presentation.
+- `PrototypeCommandQueue` получил `ForwardPendingToHost` для передачи команд в авторитетный host.
+- Удалены `ShadowServerIntegrationTests` и shadow-регистрация без тиков: её заменил авторитетный host.
 - Техническая документация перемещена из `Assets/_GlobalFront/Documentation/` в корневую `Documentation/`.
 - Добавлены индекс документации, ADR и перекрёстные ссылки.
 - Обновлены статус и архитектурное описание в соответствии с текущим прототипом.
+
+### Verified
+
+- На Unity `6000.5.6f1` 12.08.2026 пройдены **113/113 EditMode-теста**.
 
 ## Исторические Git tags
 
