@@ -4,5 +4,6 @@
   <Project Path="GlobalFront.Tests.EditMode.csproj" />
   <Project Path="Assembly-CSharp-Editor.csproj" />
   <Project Path="GlobalFront.Server.csproj" />
+  <Project Path="GlobalFront.Tests.PlayMode.csproj" />
   <Project Path="Assembly-CSharp.csproj" />
 </Solution>

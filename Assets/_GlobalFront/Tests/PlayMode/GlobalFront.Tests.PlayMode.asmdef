@@ -1,0 +1,22 @@
+{
+    "name": "GlobalFront.Tests.PlayMode",
+    "rootNamespace": "GlobalFront.Tests",
+    "references": [
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner",
+        "GlobalFront.Core",
+        "GlobalFront.Server",
+        "GlobalFront.Client"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
