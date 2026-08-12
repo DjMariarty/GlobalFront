@@ -296,7 +296,7 @@ namespace GlobalFront.Client
                 return;
             }
 
-            _commandQueue.ForwardPendingToHost(tick, _localHost);
+            _commandQueue.ForwardPending(tick, _commandChannel);
             _localHost.TickOnce();
             ApplyHostSnapshots();
 
@@ -343,22 +343,16 @@ namespace GlobalFront.Client
         }
 
         /// <summary>
-        /// Creates the authoritative local match host from a
-        /// <see cref="MatchConfig"/> built from discovered presentation units.
-        /// The server assigns EntityIds authoritatively; the client then maps
-        /// those ids back to presentation units. This ensures the server is
-        /// the single source of truth for EntityId assignment.
-        ///
-        /// Pipeline:
-        ///   1. Discover presentation units (no EntityIds yet)
-        ///   2. Build MatchConfig from presentation data
-        ///   3. Server initializes match, assigns EntityIds
-        ///   4. Assign server EntityIds to presentation units
-        ///   5. Refresh registry (now EntityIds are valid)
+        /// Command channel abstraction that decouples the command queue from
+        /// the concrete <see cref="LocalMatchHost"/>. Currently wraps the
+        /// local host; will be replaced by a network channel in Phase 2.
         /// </summary>
+        private ICommandChannel _commandChannel;
+
         private void InitializeLocalHost()
         {
             _localHost = new LocalMatchHost();
+            _commandChannel = new LocalCommandChannel(_localHost);
 
             // 1. Discover presentation units without EntityIds
             var presentationUnits = _registry.DiscoverUnassignedUnits();
