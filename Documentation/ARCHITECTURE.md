@@ -1,110 +1,107 @@
 # Архитектура GlobalFront
 
-> Последнее обновление: 2026-08-12
-> Статус: ранний прототип / pre-alpha
+> Живой нормативный документ • current baseline + approved target • обновлено 2026-08-15
 
-## Назначение
+## Architectural Principle
 
-Этот документ описывает границы модулей, детерминированный контракт симуляции и известный технический долг. Текущее продуктовое состояние приведено в [PROJECT_STATUS.md](PROJECT_STATUS.md), а принятые архитектурные решения — в [DECISIONS.md](DECISIONS.md).
+GlobalFront строится вокруг authoritative server и deterministic simulation. Product goal — сохранить multiplayer experience Generals/Zero Hour при современной реализации command channel, snapshots, resync, dedicated server и desync diagnostics.
 
-## Модули и зависимости
+Будущая целевая система не считается реализованной до кода, тестов и обновления фактического статуса.
 
-| Сборка | Назначение | Допустимые зависимости |
+## Current Runtime Boundaries
+
+| Assembly | Current responsibility | Dependencies |
 |---|---|---|
-| `GlobalFront.Core` | Чистая детерминированная симуляция: идентификаторы, команды, перемещение, бой, константы. | Нет; Unity API запрещён. |
-| `GlobalFront.Server` | Headless `MatchServer`: хранение состояния, валидация и исполнение команд по тикам; сериализация snapshot-пакетов для будущего транспорта. | Только `GlobalFront.Core`; Unity API и Client запрещены. |
-| `GlobalFront.Client` | Unity-представление, ввод и локальный RTS-прототип. | `GlobalFront.Core`, `UnityEngine`, `Unity.InputSystem`; временно — `GlobalFront.Server`. |
-| `GlobalFront.Tests.EditMode` | Редакторские тесты всех трёх runtime-сборок. | Core, Server, Client и Unity Test Framework. |
+| `GlobalFront.Core` | детерминированные identifiers, commands, coordinates, movement, combat, formation, `MatchConfig`, constants | none; Unity API запрещён |
+| `GlobalFront.Server` | authoritative `MatchServer`, state, validation, tick phases, snapshots и Snapshot Protocol v1 | `GlobalFront.Core`; Unity API запрещён |
+| `GlobalFront.Client` | Unity input/presentation, selection, camera, HUD, bootstrap, `LocalMatchHost`, command channel adapter | Core, Server, Unity/Input System |
 
 ```text
-GlobalFront.Core <- GlobalFront.Server
-       ^
-       +----------- GlobalFront.Client
-GlobalFront.Server <- GlobalFront.Client (локальный авторитетный host)
+GlobalFront.Core  ←  GlobalFront.Server
+       ↑                    ↑
+       └── GlobalFront.Client
 ```
 
-Ссылка Client -> Server остаётся временной: `PrototypeRtsController` создаёт `LocalMatchHost`, который владеет `MatchServer` внутри клиентского процесса, передаёт команды клиента и выполняет авторитетные тики. После введения транспорта `MatchServer` будет вынесен в отдельный процесс, а зависимость Client -> Server удалена.
+Client → Server является текущей временной связью local prototype, а не конечной dedicated-server topology.
 
-## Детерминированный контракт
+## Confirmed Simulation Contract
 
-Авторитетный сервер и будущий клиентский prediction должны применять идентичную последовательность на каждом тике:
+- fixed simulation rate: 20 Hz;
+- целочисленные `WorldPointMm`;
+- канонический порядок команд: `RequestedTick → PlayerId → Sequence`;
+- server-owned state и entity assignment через `MatchConfig`;
+- команды Move, Attack и Stop валидируются authoritative server;
+- presentation получает `ServerUnitSnapshot` после server tick;
+- Snapshot Protocol v1: little-endian, 16-byte header, 39 bytes/entity, entity-id order.
 
-1. Исполнить запланированные команды в каноническом порядке игрока и sequence.
-2. Очистить недопустимые цели атаки.
-3. Назначить автоматические цели.
-4. Переместить юниты из общего снимка начальных позиций тика.
-5. Разрешить бой с одновременным применением урона.
+## Command Channel — Phase 2.2 Complete
 
-Параметры, влияющие на этот контракт, должны располагаться в `GlobalFront.Core.Simulation.SimulationConstants`. Их нельзя копировать в Client или Server.
+`ICommandChannel` отделяет `PrototypeCommandQueue` от конкретного authoritative backend. `LocalCommandChannel` адаптирует текущий `LocalMatchHost`. Phase 2.2 подтверждена commit `313e9ef` и входит в baseline.
 
-## Текущее состояние интеграции
+Это abstraction boundary, а не реализованный network transport.
 
-`LocalMatchHost` реализован и является единственным источником состояния симуляции:
+## Current Tick Flow
 
-- владеет `MatchServer` внутри клиентского процесса;
-- передаёт в него команды клиента (`Move`, `Attack`, `Stop`);
-- выполняет один авторитетный тик на каждый 20 Hz `FixedSimulationRunner.TickExecuted`;
-- отдаёт клиенту `ServerUnitSnapshot`, которые применяются к presentation-слою.
+```text
+Unity input → PrototypeCommandQueue → ICommandChannel
+                                      ↓
+                               LocalCommandChannel
+                                      ↓
+                                LocalMatchHost
+                                      ↓
+                                 MatchServer
+                                      ↓
+                           ServerUnitSnapshot → presentation
+```
 
-Клиент не применяет команды, не двигает юниты и не рассчитывает бой локально: presentation только потребляет снапшоты. Сериализация snapshot-пакетов реализована в `GlobalFront.Server.Snapshot` (детерминированный бинарный формат, версия протокола, little-endian). Транспорт, prediction и reconciliation пока отсутствуют — host и клиент работают в одном процессе.
+Сейчас client-side fixed runner инициирует local host ticks. **Phase 2.3 Server Tick Driver — NEXT**. Его точный ownership, lifecycle, timing и failure behavior являются `TBD` до R&D и ADR.
 
-## Snapshot Serialization Protocol
+## Approved Target Architecture
 
-Реализован детерминированный бинарный формат для сериализации `ServerUnitSnapshot`:
+Product 1.0 требует:
 
-- **Protocol Version**: `1` (uint32)
-- **Byte Order**: little-endian
-- **Header Size**: 16 bytes
-- **Snapshot Size**: 39 bytes
+- authoritative dedicated server;
+- sessions и player identity до 10 игроков;
+- network transport для commands и snapshots;
+- reconnect/resync;
+- replay;
+- desync detection и нормальную диагностику;
+- стабильные длительные матчи и большие армии;
+- 3000+ entity target;
+- pathfinding, performance и reliability, пригодные для 5v5.
 
-### Packet Structure
+Transport technology, protocol cadence, session model, resync algorithm, replay format, desync hashing/telemetry, deployment topology и server infrastructure: **TBD / Architecture Decision Required**.
 
-**Header (16 bytes):**
-- Offset 0: ProtocolVersion (uint32, 4 bytes)
-- Offset 4: Tick (uint64, 8 bytes)
-- Offset 12: UnitCount (uint32, 4 bytes)
+## Gameplay Architecture Boundary
 
-**Snapshot Payload (39 bytes per unit):**
-- Entity.Value (uint64, 8 bytes)
-- Owner.Value (uint8, 1 byte)
-- Position.X (int32, 4 bytes)
-- Position.Z (int32, 4 bytes)
-- CurrentHealth (int32, 4 bytes)
-- HasMoveTarget (uint8, 1 byte: 0 or 1)
-- MoveTarget.X (int32, 4 bytes)
-- MoveTarget.Z (int32, 4 bytes)
-- AttackTarget.Value (uint64, 8 bytes)
-- AutoAcquireEnemies (uint8, 1 byte: 0 or 1)
+Economy, building, production, Fog of War, capture, garrison, veterancy, generals, abilities, superweapons, AI, factions и maps входят в approved Product Scope, но ещё не входят в confirmed runtime baseline. Их архитектура определяется по production rule по мере приближения соответствующих фаз.
 
-### Validation
+## Scale and Performance
 
-Десериализатор отклоняет:
-- Неподдерживаемую версию протокола
-- Усечённые пакеты (недостаточная длина header или payload)
-- Некорректные boolean-значения (не 0 и не 1)
+Benchmarks должны появиться в Phase 3 и сопровождать развитие gameplay. Phase 8 выполняет глубокую optimization/reliability работу для 3000+ target, 5000+ stress, 5v5, долгих матчей, CPU, memory, GC, pathfinding, network load, reconnect и desync.
 
-Сериализатор требует canonical entity-id order (ascending) для детерминизма.
+Hardware profiles, budgets, benchmark scenes/workloads и pass thresholds, кроме утверждённых entity targets: **TBD / Owner Decision Required**.
 
-## Технический долг
+## Architecture Governance
 
-| ID | Приоритет | Проблема | Направление решения |
-|---|---|---|---|
-| DEBT-001 | Высокий | Скорость юнита и spacing построения дублируются в клиентском прототипе и shadow-настройке. | Вынести протокольно значимые значения в Core или общий набор данных. |
-| DEBT-008 | Высокий | Нет транспорта, prediction, reconciliation и серверного host loop. | Внедрять поверх существующего snapshot-протокола. |
-| DEBT-004 | Средний | Интеграционные тесты host всё ещё обращаются к private lifecycle-состоянию контроллера через reflection. | Расширить диагностическую поверхность контроллера либо перейти к PlayMode-тестам. |
-| DEBT-007 | Средний | Локальный путь применения команд `PrototypeCommandQueue.ApplyPending` и локальные методы движения `PrototypeUnit` сохранены, но не используются авторитетным конвейером. | Удалить после стабилизации авторитетного host. |
-| DEBT-005 | Средний | UI и временный мир создаются через IMGUI и runtime bootstrap. | После стабилизации прототипа перейти к UI Toolkit/uGUI и prefab/data assets. |
-| DEBT-006 | Низкий | Часть тестов использует литеральные значения вместо общих констант. | Использовать `SimulationConstants` в boundary-тестах. |
+Для каждой крупной системы:
 
-## Базовая верификация
+```text
+R&D → Architecture Decision → Implementation → Tests → Review → Documentation → Commit
+```
 
-На Unity `6000.5.6f1` 12.08.2026 пройдены:
-- **EditMode**: 126/126 тестов (113 существующих + 13 snapshot-сериализация)
-- **PlayMode**: 5/5 тестов (авторитетный pipeline, move, attack, terminal outcome)
+Изменение deterministic contract, snapshot layout или protocol-significant constants требует compatibility review и соответствующего ADR.
+
+## Verification Baseline
+
+- Unity `6000.5.6f1`
+- 161/161 EditMode passed 2026-08-12
+- 5/5 PlayMode passed 2026-08-12
+- last technical milestone: `313e9ef` Phase 2.2
 
 ## Связанные документы
 
-- [Индекс документации](README.md)
-- [Статус проекта](PROJECT_STATUS.md)
-- [Архитектурные решения](DECISIONS.md)
-- [Журнал изменений](CHANGELOG.md)
+- [Current State](CURRENT_STATE.md)
+- [Project Status](PROJECT_STATUS.md)
+- [Decisions](DECISIONS.md)
+- [Phase 02](Phases/Phase_02_Multiplayer.md)

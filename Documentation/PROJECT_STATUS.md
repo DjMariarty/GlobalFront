@@ -1,54 +1,53 @@
 # Статус проекта GlobalFront
 
-> Последнее обновление: 2026-08-12; Unity: `6000.5.6f1` с URP
-> Стадия: локальный RTS-прототип, pre-alpha
+> Фактический технический статус • обновлено 2026-08-15
 
-## Краткое резюме
+## Summary
 
-GlobalFront имеет детерминированное ядро на 20 Hz, headless `MatchServer` и локально управляемый RTS-прототип. Базовая логика, клиентские очереди команд, локальный авторитетный host и сериализация снапшотов покрыты EditMode-тестами: **126/126 тестов пройдены 12.08.2026**. PlayMode-тесты валидируют полный авторитетный pipeline: **5/5 тестов пройдены**.
+GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 1 завершена. Phase 2.1 Server-Owned Match State и Phase 2.2 Command Channel завершены соответствующими commits `8178110` и `313e9ef`. Следующий шаг — Phase 2.3 Server Tick Driver.
 
-Проект ещё не является сетевой RTS. Авторитетная симуляция выполняется `LocalMatchHost` внутри клиентского процесса: команды клиента передаются в `MatchServer`, серверные тики являются единственным источником состояния, а presentation синхронизируется из `ServerUnitSnapshot`. Сериализация снапшотов реализована (детерминированный бинарный формат, версия протокола 1). Транспорт, серверный host loop в отдельном процессе, prediction и reconciliation отсутствуют.
+## Confirmed Baseline
 
-## Реализовано
-
-| Область | Состояние |
+| Область | Фактическое состояние |
 |---|---|
-| Детерминированные координаты, перемещение и бой | Реализовано и протестировано. |
-| Команды `Move`, `Attack`, `Stop` на сервере | Реализовано; команды валидируются и упорядочиваются детерминированно. |
-| `MatchServer` без Unity-зависимостей | Реализован; поддерживает state, команды, movement и combat. |
-| Локальный RTS-прототип | Реализован: выбор, перемещение, атака, камера, HUD и процедурный мир. |
-| Авторитетный локальный host (`LocalMatchHost`) | Реализован: владеет `MatchServer`, передаёт команды клиента, выполняет один серверный тик на каждый 20 Hz тик и отдаёт снапшоты presentation-слою. |
-| Синхронизация presentation из `ServerUnitSnapshot` | Реализована: клиент применяет авторитетные снапшоты после каждого тика; локальная симуляция команд, движения и боя из клиента удалена. |
-| Сериализация `ServerUnitSnapshot` | Реализована: детерминированный бинарный формат (protocol v1, little-endian, 16 байт header + 39 байт на unit), валидация пакетов, 13 тестов. |
-| EditMode-покрытие | 126/126 пройдено (113 базовых + 13 snapshot-сериализация). |
-| PlayMode-покрытие | 5/5 пройдено (bootstrap, server ticks, move, attack, terminal outcome). |
+| Unity | `6000.5.6f1`, URP |
+| Core | детерминированный, без Unity API, 20 Hz |
+| Server | `MatchServer`, server-owned state и entity assignment через `MatchConfig` |
+| Local integration | `LocalMatchHost` внутри Client process |
+| Commands | Move, Attack и Stop; `ICommandChannel` + `LocalCommandChannel` |
+| Snapshots | Snapshot Protocol v1, little-endian, 16-byte header + 39 bytes/entity |
+| Presentation | выбор, движение, атака, камера, HUD, runtime prototype world |
+| Scene | одна включённая `Assets/Scenes/SampleScene.unity` |
+| Tests | 161/161 EditMode и 5/5 PlayMode passed 2026-08-12 |
 
-## Не реализовано
+## Phase 2 Status
 
-| Область | Состояние и риск |
-|---|---|
-| Транспорт и сессии | Не начаты. |
-| Prediction и reconciliation | Не начаты. |
-| Вынос `MatchServer` в отдельный процесс / server build | Не начат; host пока живёт в клиентском процессе. |
-| Игровой контент | Сцена генерируется кодом; prefabs, ScriptableObject-данные и производственные ассеты отсутствуют. |
-| Команды `AttackMove`, `Guard`, `Build`, `Produce`, `UseAbility` | Типы перечислены, но payload и обработчики отсутствуют. |
+- 2.1 Server-Owned Match State — COMPLETE
+- 2.2 Command Channel — COMPLETE
+- 2.3 Server Tick Driver — **NEXT**
+- 2.4 Session / Player Identity — not implemented
+- 2.5 Network Transport — not implemented
+- 2.6 Snapshot Networking — not implemented
+- 2.7 Reconnect / Resync — not implemented
 
-## Важные ограничения прототипа
+## Product Scope vs Implementation
 
-- Локальный игрок зафиксирован как `PlayerId(1)`; согласования идентичности игрока нет.
-- `FormationSpacingMm` и скорость movement в prototype пока не централизованы.
-- `GlobalFrontRuntimeBootstrap` создаёт временный мир при загрузке сцены; для меню и нескольких игровых сцен потребуется явная конфигурация.
-- Временные препятствия визуальны: в детерминированном движении нет navmesh-поиска пути или разрешения коллизий.
+Утверждённый Product 1.0 включает пять основных фракций, полный Generals-style RTS foundation, multiplayer до 10 игроков, AI, reconnect/resync, replay, desync detection, большие армии и production-quality presentation. Эти требования являются roadmap, а не текущими возможностями прототипа.
 
-## Ближайшие технические шаги
+Сейчас нет production economy/build/production systems, пяти реализованных фракций, полного AI, карт 1v1–5v5, dedicated server, transport, reconnect, replay или scale proof 3000+.
 
-1. Добавить транспорт/сессии поверх сериализованных снапшотов.
-2. Добавить prediction и reconciliation.
-3. Вынести общие симуляционные параметры в `SimulationConstants` (DEBT-001).
+## Important Constraints
+
+- Client пока напрямую ссылается на Server из-за local host.
+- Тики authoritative server пока управляются локальным Client runner; Phase 2.3 должен определить серверный tick driver.
+- Player identity локально фиксирована и не подкреплена session layer.
+- Snapshot serialization реализована, но network delivery отсутствует.
+- Pathfinding и детерминированное разрешение препятствий отсутствуют.
+- Детали roster, abilities, stats, balance, generals и map layouts остаются TBD.
 
 ## Связанные документы
 
-- [Индекс документации](README.md)
-- [Архитектура](ARCHITECTURE.md)
-- [Архитектурные решения](DECISIONS.md)
-- [Журнал изменений](CHANGELOG.md)
+- [Current State](CURRENT_STATE.md)
+- [Architecture](ARCHITECTURE.md)
+- [Roadmap](ROADMAP.md)
+- [Phase 02](Phases/Phase_02_Multiplayer.md)
