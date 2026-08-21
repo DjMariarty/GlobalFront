@@ -1,6 +1,6 @@
 # Phase 02 — Multiplayer Foundation
 
-> Status: **CURRENT** • 2.1 complete • 2.2 complete • **2.3 NEXT**
+> Status: **CURRENT** • 2.1 complete • 2.2 complete • 2.3 implemented (commit pending)
 
 ## Goal
 
@@ -16,7 +16,7 @@
 
 1. 2.1 Server-Owned Match State — **COMPLETE**, `8178110`.
 2. 2.2 Command Channel — **COMPLETE**, `313e9ef`.
-3. 2.3 Server Tick Driver — **NEXT**.
+3. 2.3 Server Tick Driver — implemented и проверен (ADR-007); commit pending.
 4. 2.4 Session / Player Identity.
 5. 2.5 Network Transport.
 6. 2.6 Snapshot Networking.
@@ -35,7 +35,7 @@
 
 - 2.1 — complete;
 - 2.2 — complete;
-- 2.3 — next deliverable;
+- 2.3 — implemented (commit pending);
 - Phase 2 complete — prerequisite для multiplayer integration и M1.
 
 ## Acceptance Criteria
@@ -71,4 +71,4 @@
 
 ## Definition of Done
 
-Steps 2.1–2.7 реализованы, протестированы и документированы; authoritative dedicated-server foundation поддерживает sessions, command/snapshot networking и reconnect/resync. Сейчас Definition of Done **не выполнен**; next — 2.3.
+Steps 2.1–2.7 реализованы, протестированы и документированы; authoritative dedicated-server foundation поддерживает sessions, command/snapshot networking и reconnect/resync. Сейчас Definition of Done **не выполнен**; 2.3 реализован и проверен (commit pending), next — 2.4 Session / Player Identity.

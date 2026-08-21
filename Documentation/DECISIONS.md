@@ -1,6 +1,6 @@
 # Архитектурные и проектные решения (ADR)
 
-> Живой нормативный и исторический журнал • обновлено 2026-08-15
+> Живой нормативный и исторический журнал • обновлено 2026-08-21
 
 Каждое долговременное решение содержит Context, Alternatives, Decision и Consequences. Детали, которых нет в утверждённом плане, не считаются решёнными.
 
@@ -134,9 +134,38 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 
 Каждая фаза имеет единый Definition of Done. Performance benchmarks начинаются в Phase 3, а Phase 8 остаётся глубокой optimization/reliability фазой.
 
+## ADR-007: Server Tick Driver — engine-independent tick scheduling (Phase 2.3)
+
+**Статус:** Accepted, 2026-08-21 (implementation и tests завершены; commit pending)
+
+### Context
+
+После Phase 2.1/2.2 authoritative tick lifecycle всё ещё владели client-side `FixedSimulationRunner` (MonoBehaviour в `GlobalFront.Client`): тики authoritative server запускались Unity lifecycle клиентского процесса. Задача Phase 2.3 — отделить authoritative server tick lifecycle от Unity client lifecycle при сохранении общего simulation core для local и будущего dedicated server. Транспорт, session/identity, reconnect/resync, prediction, lobby, matchmaking и dedicated deployment — out of scope.
+
+### Alternatives
+
+1. Оставить `FixedSimulationRunner` источником тиков. Отклонено: client presentation lifecycle остаётся владельцем authoritative ticks.
+2. TickDriver в `GlobalFront.Client` как MonoBehaviour. Отклонено: dedicated server host не может использовать Unity client assembly; driver не стал бы общим.
+3. Engine-independent `TickDriver` в `GlobalFront.Server`; `LocalMatchHost` выполняет роль ServerHost (владеет `MatchServer` и `TickDriver`); клиент только pump’ит driver. Выбран.
+
+### Decision
+
+- Новый `GlobalFront.Server.TickDriver` (`TickDriverMode.Manual` / `TickDriverMode.RealTime`, событие `TickDue`, `AdvanceRealTime` / `AdvanceManualTick`, `StartRealTime` / `StopRealTime`, `Reset`). Real-time pacing через существующий `Core.FixedStepClock`: 20 Hz, bounded catch-up `MaxCatchUpTicksPerFrame` (4); excess time остаётся queued и дренируется последующими вызовами. Manual mode — один tick на вызов для deterministic tests.
+- `LocalMatchHost` (роль ServerHost) владеет `MatchServer` и `TickDriver`. Per-tick двухфазный контракт: `TickStarting` (команды для tick N forward’ятся, пока server на N-1) → `MatchServer.TickOnce` → `TickCompleted` (presentation потребляет snapshots). Command timing contract сохранён: `RequestedTick N` применяется во время tick N.
+- `LocalMatchHost.TickOnce()` — deterministic manual advance (возвращает `bool`); real-time — `AdvanceRealTime`.
+- `PrototypeRtsController` больше не владеет тиками: pump’ит driver в `Update`, подписан на `TickStarting`/`TickCompleted`; команды запрашиваются на `CurrentTick + 1`.
+- `FixedSimulationRunner` удалён; клиентский interpolation alpha вычисляется из driver backlog (значения не меняются).
+- `MatchServer.TickOnce` для пустого сервера (без юнитов) инкрементирует tick counter, но не симулирует и не выдаёт terminal (Draw) outcome до инициализации матча — server tick lifecycle независим от match initialization.
+
+### Consequences
+
+- Server tick lifecycle не зависит от Client presentation; та же пара `TickDriver`/`MatchServer` расписывает тики для future dedicated server host (out of scope, будет реализован в соответствующей фазе).
+- Protocol-совместимость не нарушена: 20 Hz, tick duration, catch-up, snapshot layout и command contract не изменены; Snapshot Protocol v1 не тронут.
+- `LocalMatchHost` сохраняет публичный API Phase 2.1/2.2; поведение `TickOnce()` уточнено (driver-backed, manual mode по умолчанию).
+- Local и future dedicated server используют общий simulation core (`MatchServer` + `TickDriver`).
+
 ## Open Decision Queue
 
-- Phase 2.3 Server Tick Driver design.
 - Session/player identity и transport technology.
 - Snapshot networking cadence, reconnect/resync, replay и desync diagnostics.
 - Точные faction rosters, abilities, generals, stats и balance.

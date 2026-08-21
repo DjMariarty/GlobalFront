@@ -1,11 +1,11 @@
 using GlobalFront.Core.Simulation;
+using GlobalFront.Server;
 using UnityEngine;
 
 namespace GlobalFront.Client
 {
     public sealed class PrototypeHud : MonoBehaviour
     {
-        private FixedSimulationRunner _runner;
         private PrototypeRtsController _controller;
         private GUIStyle _titleStyle;
         private GUIStyle _bodyStyle;
@@ -13,7 +13,6 @@ namespace GlobalFront.Client
 
         private void Awake()
         {
-            _runner = GetComponent<FixedSimulationRunner>();
             _controller = GetComponent<PrototypeRtsController>();
         }
 
@@ -21,6 +20,10 @@ namespace GlobalFront.Client
         {
 #if !UNITY_SERVER
             EnsureStyles();
+
+            var host = _controller.Host;
+            var driver = host != null ? host.TickDriver : null;
+            var backlogMs = (host != null ? host.TickBacklogSeconds : 0.0) * 1000.0;
 
             var area = new Rect(18f, 18f, 460f, 185f);
             GUI.Box(area, GUIContent.none);
@@ -30,7 +33,8 @@ namespace GlobalFront.Client
             GUILayout.Space(5f);
             GUILayout.Label(
                 $"Authoritative simulation contract: {SimulationConstants.ServerTickRate} Hz\n" +
-                $"Prototype tick: {_runner.Tick}   Backlog: {_runner.BacklogMilliseconds:F1} ms\n" +
+                $"Server tick: {host?.CurrentTick.ToString() ?? "—"} (driver {driver?.Tick.ToString() ?? "—"})   " +
+                $"Backlog: {backlogMs:F1} ms\n" +
                 $"Alive: blue {_controller.FriendlyAlive} / red {_controller.EnemyAlive}   " +
                 $"Selected: {_controller.SelectedCount}\n" +
                 $"Status: {_controller.BattleStatusMessage}\n" +

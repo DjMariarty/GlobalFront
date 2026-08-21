@@ -19,12 +19,13 @@
 - Phase 2.2 Command Channel — `313e9ef`.
 - `ICommandChannel` и `LocalCommandChannel` отделяют client command queue от конкретного local host.
 - `StopCommand` включён в command channel baseline.
+- Phase 2.3 Server Tick Driver — реализован и принят (ADR-007): engine-independent `TickDriver` в `GlobalFront.Server` (20 Hz, bounded catch-up, manual/real-time); `LocalMatchHost` (ServerHost) владеет `MatchServer` и `TickDriver`; `FixedSimulationRunner` удалён; server tick lifecycle отделён от Unity client lifecycle.
 
 ### Verified
 
 - Unity `6000.5.6f1`.
-- **161/161 EditMode** passed по `EditModeTestResults.xml`, 2026-08-12.
-- **5/5 PlayMode** passed по `PlayModeTestResults.xml`, 2026-08-12.
+- **184/184 EditMode** passed по `EditModeTestResults.xml`, 2026-08-21 (161 baseline + 23 Phase 2.3).
+- **5/5 PlayMode** passed по `PlayModeTestResults.xml`, 2026-08-21.
 
 ## Confirmed Foundation History
 

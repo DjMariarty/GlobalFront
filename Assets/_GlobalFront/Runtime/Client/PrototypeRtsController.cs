@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+using System;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
@@ -12,8 +11,18 @@ using CoreEntityId = GlobalFront.Core.Model.EntityId;
 
 namespace GlobalFront.Client
 {
+    /// <summary>
+    /// Client presentation/input controller for the prototype battle.
+    /// Owns no authoritative tick: since Phase 2.3 the server tick lifecycle
+    /// is driven by the <see cref="TickDriver"/> inside
+    /// <see cref="LocalMatchHost"/> (ADR-007). This component only pumps the
+    /// host's real-time driver once per frame, forwards client commands
+    /// through <see cref="ICommandChannel"/> on the host's
+    /// <see cref="LocalMatchHost.TickStarting"/> event and consumes
+    /// <see cref="ServerUnitSnapshot"/> arrays on
+    /// <see cref="LocalMatchHost.TickCompleted"/>.
+    /// </summary>
     [DisallowMultipleComponent]
-    [RequireComponent(typeof(FixedSimulationRunner))]
     public sealed class PrototypeRtsController : MonoBehaviour
     {
         private const int MillimetresPerMetre = 1000;
@@ -44,23 +53,28 @@ namespace GlobalFront.Client
         private PrototypeCommandQueue _commandQueue;
 
         private readonly PlayerId _localPlayer = new PlayerId(1);
-        private FixedSimulationRunner _runner;
         private Camera _camera;
         private Vector2 _selectionStart;
         private Vector2 _selectionCurrent;
         private bool _selectionPointerDown;
         private BattleOutcome _outcome = BattleOutcome.InProgress;
-        private bool _battleInitialized;
 
         /// <summary>
-        /// Authoritative local host that owns the <see cref="MatchServer"/>. The
-        /// host receives client commands, advances one server tick per
-        /// <see cref="FixedSimulationRunner.TickExecuted"/> and exposes
-        /// <see cref="ServerUnitSnapshot"/> arrays so presentation units are
-        /// synchronized from authoritative state. This is the bridge described
-        /// in the LocalMatchHost task.
+        /// Authoritative local host that owns both the
+        /// <see cref="MatchServer"/> and the <see cref="TickDriver"/> that
+        /// schedules its ticks (ADR-007). The client pumps the driver in
+        /// <see cref="Update"/> and consumes snapshots on
+        /// <see cref="LocalMatchHost.TickCompleted"/>; the client no longer
+        /// starts or owns authoritative server ticks.
         /// </summary>
         private LocalMatchHost _localHost;
+
+        /// <summary>
+        /// Command channel abstraction that decouples the command queue from
+        /// the concrete authoritative backend. Currently wraps the local
+        /// host; will be replaced by a network channel in Phase 2.
+        /// </summary>
+        private ICommandChannel _commandChannel;
 
         /// <summary>The authoritative local match host, for diagnostics and tests.</summary>
         public LocalMatchHost Host => _localHost;
@@ -108,7 +122,6 @@ namespace GlobalFront.Client
 
         private void Awake()
         {
-            _runner = GetComponent<FixedSimulationRunner>();
             _selection = new UnitSelection(_registry);
             _commandQueue = new PrototypeCommandQueue(
                 _registry, _localPlayer, FormationSpacingMm);
@@ -116,12 +129,11 @@ namespace GlobalFront.Client
 
         private void OnEnable()
         {
-            if (_runner == null)
+            if (_localHost != null)
             {
-                _runner = GetComponent<FixedSimulationRunner>();
+                _localHost.TickStarting += OnHostTickStarting;
+                _localHost.TickCompleted += OnHostTickCompleted;
             }
-
-            _runner.TickExecuted += OnTickExecuted;
         }
 
         private void Start()
@@ -132,15 +144,15 @@ namespace GlobalFront.Client
                 : FindAnyObjectByType<Camera>();
             InitializeLocalHost();
             UpdateRosterCounts();
-            _battleInitialized = FriendlyAlive > 0 && EnemyAlive > 0;
 #endif
         }
 
         private void OnDisable()
         {
-            if (_runner != null)
+            if (_localHost != null)
             {
-                _runner.TickExecuted -= OnTickExecuted;
+                _localHost.TickStarting -= OnHostTickStarting;
+                _localHost.TickCompleted -= OnHostTickCompleted;
             }
         }
 
@@ -149,6 +161,7 @@ namespace GlobalFront.Client
 #if !UNITY_SERVER
             ReadSelectionInput();
             ReadCommandInput();
+            PumpServerTicks();
 #endif
         }
 
@@ -156,10 +169,11 @@ namespace GlobalFront.Client
         {
 #if !UNITY_SERVER
             RefreshAttackHighlights();
-            var alpha = _runner.InterpolationAlpha;
+            var alpha = (float)((_localHost?.TickBacklogSeconds ?? 0.0) /
+                        SimulationConstants.ServerTickDurationSeconds);
             for (var index = 0; index < _registry.Count; index++)
             {
-                _registry[index].Render(alpha);
+                _registry[index].Render(Mathf.Clamp01(alpha));
             }
 #endif
         }
@@ -270,15 +284,15 @@ namespace GlobalFront.Client
                 return;
             }
 
-            QueueMoveCommand(ToWorldPointMm(ray.GetPoint(distance)));
+            QueueMoveCommandToWorld(PointMmFromWorld(ray.GetPoint(distance)));
         }
 
-        private void QueueMoveCommand(WorldPointMm destination)
+        private void QueueMoveCommandToWorld(WorldPointMm destination)
         {
             _commandQueue.QueueMove(
                 destination,
                 _selection.GetSelectedEntityIds(),
-                _runner.Tick + 1);
+                NextServerTick());
         }
 
         private void QueueAttackCommand(CoreEntityId target)
@@ -286,18 +300,60 @@ namespace GlobalFront.Client
             _commandQueue.QueueAttack(
                 target,
                 _selection.GetSelectedEntityIds(),
-                _runner.Tick + 1);
+                NextServerTick());
         }
 
-        private void OnTickExecuted(ulong tick)
+        /// <summary>
+        /// The next authoritative tick a newly issued command can target.
+        /// The server still applies this tick, so tick N+1 is the next tick
+        /// in which the command can take effect.
+        /// </summary>
+        private ulong NextServerTick() =>
+            (_localHost != null ? _localHost.CurrentTick : 0ul) + 1ul;
+
+        /// <summary>
+        /// Feeds frame time into the host's <see cref="TickDriver"/>. The
+        /// driver schedules the authoritative ticks (20 Hz, bounded
+        /// catch-up); the host runs the simulation for each scheduled tick.
+        /// The client presentation never starts ticks itself.
+        /// </summary>
+        private void PumpServerTicks()
         {
-            if (_outcome.IsTerminal || !_battleInitialized || _registry.Count == 0)
+            if (_localHost != null &&
+                _localHost.TickDriverMode == TickDriverMode.RealTime)
+            {
+                _localHost.AdvanceRealTime(Time.unscaledDeltaTime);
+            }
+        }
+
+        /// <summary>
+        /// Host phase 1: the server is still at tick N-1. Forwards every
+        /// client command requested for tick N so it is applied during tick
+        /// N, preserving the pre-Phase 2.3 command timing contract.
+        /// </summary>
+        private void OnHostTickStarting(ulong tick)
+        {
+            if (_outcome.IsTerminal ||
+                _localHost.UnitCount == 0 ||
+                _registry.Count == 0)
             {
                 return;
             }
 
             _commandQueue.ForwardPending(tick, _commandChannel);
-            _localHost.TickOnce();
+        }
+
+        /// <summary>
+        /// Host phase 3: the server has fully simulated tick N. Synchronizes
+        /// every presentation unit from the authoritative snapshots.
+        /// </summary>
+        private void OnHostTickCompleted(ulong tick)
+        {
+            if (_localHost.UnitCount == 0 || _registry.Count == 0)
+            {
+                return;
+            }
+
             ApplyHostSnapshots();
 
             for (var index = 0; index < _registry.Count; index++)
@@ -327,7 +383,7 @@ namespace GlobalFront.Client
 
         /// <summary>
         /// Synchronizes every client presentation unit from the authoritative
-        /// server snapshots produced by the last <see cref="LocalMatchHost.TickOnce"/>.
+        /// server snapshots produced by the last authoritative tick.
         /// </summary>
         private void ApplyHostSnapshots()
         {
@@ -342,22 +398,23 @@ namespace GlobalFront.Client
             }
         }
 
-        /// <summary>
-        /// Command channel abstraction that decouples the command queue from
-        /// the concrete <see cref="LocalMatchHost"/>. Currently wraps the
-        /// local host; will be replaced by a network channel in Phase 2.
-        /// </summary>
-        private ICommandChannel _commandChannel;
-
         private void InitializeLocalHost()
         {
             _localHost = new LocalMatchHost();
             _commandChannel = new LocalCommandChannel(_localHost);
+            _localHost.TickStarting += OnHostTickStarting;
+            _localHost.TickCompleted += OnHostTickCompleted;
 
             // 1. Discover presentation units without EntityIds
             var presentationUnits = _registry.DiscoverUnassignedUnits();
             if (presentationUnits.Length == 0)
+            {
+                // No armies in this scene: the server tick lifecycle still
+                // runs independently of match initialization (ADR-007), so
+                // the driver starts pacing an empty authoritative server.
+                _localHost.StartRealTime();
                 return;
+            }
 
             // 2. Build MatchConfig from presentation unit data
             var specs = new UnitSpawnSpec[presentationUnits.Length];
@@ -384,6 +441,9 @@ namespace GlobalFront.Client
 
             // 5. Refresh registry now that units have EntityIds
             _registry.Refresh(_localPlayer);
+
+            // 6. The server tick driver now owns the authoritative loop.
+            _localHost.StartRealTime();
         }
 
         private void RefreshAttackHighlights()
@@ -459,8 +519,7 @@ namespace GlobalFront.Client
             GUI.color = previousColor;
         }
 
-
-        private static WorldPointMm ToWorldPointMm(Vector3 position) =>
+        private static WorldPointMm PointMmFromWorld(Vector3 position) =>
             new WorldPointMm(
                 Mathf.RoundToInt(position.x * MillimetresPerMetre),
                 Mathf.RoundToInt(position.z * MillimetresPerMetre));

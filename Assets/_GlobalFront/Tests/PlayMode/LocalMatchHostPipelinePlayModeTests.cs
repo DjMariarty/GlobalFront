@@ -17,8 +17,9 @@ namespace GlobalFront.Tests.PlayMode
     ///
     /// These tests boot the real <c>SampleScene</c>, let
     /// <see cref="GlobalFrontRuntimeBootstrap"/> create the runtime root and
-    /// drive the actual <see cref="FixedSimulationRunner"/> /
-    /// <see cref="PrototypeRtsController"/> loop. Commands are queued through
+    /// drive the actual host-owned <see cref="TickDriver"/> /
+    /// <see cref="PrototypeRtsController"/> loop (Phase 2.3, ADR-007).
+    /// Commands are queued through
     /// the real <see cref="PrototypeCommandQueue"/>; no networking,
     /// serialization, prediction or reconciliation is involved.
     ///
@@ -270,8 +271,7 @@ namespace GlobalFront.Tests.PlayMode
         private void QueueMove(CoreEntityId[] entities, WorldPointMm destination)
         {
             var queue = GetCommandQueue();
-            var runner = _controller.GetComponent<FixedSimulationRunner>();
-            queue.QueueMove(destination, entities, runner.Tick + 1);
+            queue.QueueMove(destination, entities, NextServerTick());
         }
 
         private void QueueAttack(CoreEntityId attacker, CoreEntityId target) =>
@@ -280,14 +280,19 @@ namespace GlobalFront.Tests.PlayMode
         private void QueueAttack(CoreEntityId[] attackers, CoreEntityId target)
         {
             var queue = GetCommandQueue();
-            var runner = _controller.GetComponent<FixedSimulationRunner>();
-            queue.QueueAttack(target, attackers, runner.Tick + 1);
+            queue.QueueAttack(target, attackers, NextServerTick());
         }
 
         private PrototypeCommandQueue GetCommandQueue() =>
             (PrototypeCommandQueue)typeof(PrototypeRtsController)
                 .GetField("_commandQueue", BindingFlags.NonPublic | BindingFlags.Instance)
                 .GetValue(_controller);
+
+        /// <summary>
+        /// The next authoritative tick a newly issued command can target
+        /// (server is at tick N; tick N+1 is the next tick it can take effect).
+        /// </summary>
+        private ulong NextServerTick() => _controller.Host.CurrentTick + 1ul;
 
         private static PrototypeUnit GetPresentationUnit(CoreEntityId entity)
         {

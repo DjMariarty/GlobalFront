@@ -17,7 +17,10 @@ namespace GlobalFront.Client
             }
 
             var root = new GameObject(RuntimeRootName);
-            root.AddComponent<FixedSimulationRunner>();
+            // Phase 2.3 (ADR-007): the authoritative tick loop no longer
+            // lives on a client runner component. The TickDriver inside
+            // LocalMatchHost owns the server tick schedule; the controller
+            // pumps it from Update.
             root.AddComponent<PrototypeWorldBootstrap>();
             root.AddComponent<PrototypeRtsController>();
             root.AddComponent<PrototypeHud>();

@@ -427,22 +427,28 @@ namespace GlobalFront.Server
         }
 
         /// <summary>
-        /// Simulates exactly one tick. The hosting layer decides how often
-        /// this is called (20 Hz contract). The per-tick pipeline is the
-        /// authoritative simulation contract; the client presentation layer
-        /// no longer runs these phases locally and instead consumes
+        /// Simulates exactly one tick. The hosting layer (the server tick
+        /// driver, ADR-007) decides how often this is called (20 Hz
+        /// contract). The per-tick pipeline is the authoritative simulation
+        /// contract; the client presentation layer no longer runs these
+        /// phases locally and instead consumes
         /// <see cref="GetAllSnapshots"/> after each tick:
         ///   1. Apply scheduled commands (player-ordered).
         ///   2. Clear invalid attack targets (dead or friendly).
         ///   3. Auto-acquire closest enemy for units with the flag set.
         ///   4. Move units, with attack-target pursuit overriding move orders.
         ///   5. Resolve combat via Core.CombatTickResolver.
+        ///
+        /// A server without units advances the tick counter but simulates
+        /// nothing and must not report a terminal (draw) outcome before the
+        /// match is initialized — the server tick lifecycle is independent
+        /// of match initialization (local host and future dedicated server).
         /// </summary>
         public void TickOnce()
         {
             CurrentTick++;
 
-            if (Outcome.IsTerminal)
+            if (Outcome.IsTerminal || UnitCount == 0)
             {
                 return;
             }

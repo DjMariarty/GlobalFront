@@ -13,14 +13,15 @@ namespace GlobalFront.Tests.EditMode
 {
     /// <summary>
     /// Integration tests for the authoritative <see cref="LocalMatchHost"/>
-    /// wiring inside <see cref="PrototypeRtsController"/>. These verify that
-    /// the controller initializes the host, registers every client unit with a
-    /// matching entity id, advances exactly one server tick per
-    /// <see cref="FixedSimulationRunner.TickExecuted"/> and synchronizes
-    /// presentation units from authoritative snapshots. The host is accessed
-    /// through the public <see cref="PrototypeRtsController.Host"/> property,
-    /// replacing the reflection-based access used by the former shadow tests
-    /// (see ARCHITECTURE.md DEBT-004).
+    /// wiring inside <see cref="PrototypeRtsController"/> after Phase 2.3
+    /// (ADR-007). These verify that the controller initializes the host,
+    /// registers every client unit with a matching entity id, advances the
+    /// host-owned <see cref="TickDriver"/> tick by tick, and synchronizes
+    /// presentation units from authoritative snapshots on
+    /// <see cref="LocalMatchHost.TickCompleted"/>. The controller no longer
+    /// owns the authoritative tick: it is driven by the host's driver, and
+    /// these tests exercise that exact path through
+    /// <see cref="LocalMatchHost.TickOnce"/>.
     /// </summary>
     public sealed class LocalMatchHostIntegrationTests
     {
@@ -29,7 +30,6 @@ namespace GlobalFront.Tests.EditMode
 
         private readonly List<GameObject> _createdObjects = new List<GameObject>();
         private PrototypeRtsController _controller;
-        private FixedSimulationRunner _runner;
         private GameObject _controllerObject;
 
         [SetUp]
@@ -37,13 +37,12 @@ namespace GlobalFront.Tests.EditMode
         {
             _controllerObject = new GameObject("Test Controller");
             _createdObjects.Add(_controllerObject);
-            _runner = _controllerObject.AddComponent<FixedSimulationRunner>();
             _controller = _controllerObject.AddComponent<PrototypeRtsController>();
 
             // EditMode does not run the MonoBehaviour lifecycle (Awake/Start)
             // for AddComponent, so the controller's Awake must be invoked
-            // explicitly to initialize _runner, _selection and _commandQueue
-            // before the registration/tick methods are exercised.
+            // explicitly to initialize _selection and _commandQueue before
+            // the tick methods are exercised.
             InvokePrivateMethod(_controller, "Awake");
 
             // Spawn units WITHOUT EntityIds — InitializeLocalHost will
@@ -53,9 +52,14 @@ namespace GlobalFront.Tests.EditMode
 
             // InitializeLocalHost discovers unassigned units, builds
             // MatchConfig, calls InitializeMatch (server assigns EntityIds),
-            // assigns them to presentation units, and refreshes the registry.
+            // assigns them to presentation units, refreshes the registry and
+            // switches the host tick driver to real-time pacing.
             InvokePrivateMethod(_controller, "InitializeLocalHost");
             InvokePrivateMethod(_controller, "UpdateRosterCounts");
+
+            // The integration tests drive ticks deterministically, so return
+            // the driver to manual mode.
+            _controller.Host.StopRealTime();
         }
 
         [TearDown]
@@ -71,7 +75,6 @@ namespace GlobalFront.Tests.EditMode
 
             _createdObjects.Clear();
             _controller = null;
-            _runner = null;
             _controllerObject = null;
         }
 
@@ -80,6 +83,15 @@ namespace GlobalFront.Tests.EditMode
         {
             Assert.That(_controller.HostActive, Is.True);
             Assert.That(_controller.Host, Is.Not.Null);
+        }
+
+        [Test]
+        public void LocalMatchHost_OwnsTickDriverInRealTimeModeAfterInitialization()
+        {
+            // InitializeLocalHost leaves the driver in real-time mode for
+            // the runtime loop; the tests opt back into manual mode above.
+            Assert.That(_controller.Host.TickDriver, Is.Not.Null);
+            Assert.That(_controller.Host.TickDriverMode, Is.EqualTo(TickDriverMode.Manual));
         }
 
         [Test]
@@ -130,25 +142,23 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
-        public void TickExecuted_AdvancesHostByExactlyOneServerTick()
+        public void HostTick_AdvancesHostByExactlyOneServerTick()
         {
-            EnableBattle();
             Assert.That(_controller.Host.CurrentTick, Is.EqualTo(0ul));
 
-            InvokePrivateMethod(_controller, "OnTickExecuted", 1ul);
+            Assert.That(_controller.Host.TickOnce(), Is.True);
             Assert.That(_controller.Host.CurrentTick, Is.EqualTo(1ul));
 
-            InvokePrivateMethod(_controller, "OnTickExecuted", 2ul);
+            Assert.That(_controller.Host.TickOnce(), Is.True);
             Assert.That(_controller.Host.CurrentTick, Is.EqualTo(2ul));
         }
 
         [Test]
-        public void TickExecuted_SynchronizesPresentationFromServerSnapshots()
+        public void HostTick_SynchronizesPresentationFromServerSnapshots()
         {
-            EnableBattle();
-
+            var host = _controller.Host;
             Assert.That(
-                _controller.Host.TryEnqueueMove(
+                host.TryEnqueueMove(
                     new CommandHeader(LocalPlayer, 1, 1, GameCommandType.Move),
                     new[] { new CoreEntityId(1) },
                     new WorldPointMm(10000, 0),
@@ -158,10 +168,13 @@ namespace GlobalFront.Tests.EditMode
             var friendly = GetUnit(new CoreEntityId(1));
             Assert.That(friendly.CurrentPosition, Is.EqualTo(new WorldPointMm(0, 0)));
 
-            InvokePrivateMethod(_controller, "OnTickExecuted", 1ul);
+            // One host tick: the driver schedules it, the command requested
+            // for tick 1 is forwarded, the server simulates, and the
+            // controller's TickCompleted handler synchronizes presentation.
+            host.TickOnce();
 
             Assert.That(
-                _controller.Host.TryGetUnit(new CoreEntityId(1), out var snapshot),
+                host.TryGetUnit(new CoreEntityId(1), out var snapshot),
                 Is.True);
             Assert.That(friendly.CurrentPosition, Is.EqualTo(snapshot.Position));
             Assert.That(friendly.CurrentPosition, Is.EqualTo(new WorldPointMm(350, 0)));
@@ -187,19 +200,6 @@ namespace GlobalFront.Tests.EditMode
                 BindingFlags.NonPublic | BindingFlags.Instance);
             var registry = (UnitRegistry)field.GetValue(_controller);
             return registry.TryGetUnit(entity, out var unit) ? unit : null;
-        }
-
-        /// <summary>
-        /// Sets the private <c>_battleInitialized</c> flag so
-        /// <see cref="PrototypeRtsController.OnTickExecuted"/> does not early
-        /// return before ticking the host.
-        /// </summary>
-        private void EnableBattle()
-        {
-            var field = typeof(PrototypeRtsController).GetField(
-                "_battleInitialized",
-                BindingFlags.NonPublic | BindingFlags.Instance);
-            field.SetValue(_controller, true);
         }
 
         private static void InvokePrivateMethod(

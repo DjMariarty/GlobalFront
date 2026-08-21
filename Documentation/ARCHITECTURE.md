@@ -1,6 +1,6 @@
 # Архитектура GlobalFront
 
-> Живой нормативный документ • current baseline + approved target • обновлено 2026-08-15
+> Живой нормативный документ • current baseline + approved target • обновлено 2026-08-21
 
 ## Architectural Principle
 
@@ -13,8 +13,8 @@ GlobalFront строится вокруг authoritative server и deterministic 
 | Assembly | Current responsibility | Dependencies |
 |---|---|---|
 | `GlobalFront.Core` | детерминированные identifiers, commands, coordinates, movement, combat, formation, `MatchConfig`, constants | none; Unity API запрещён |
-| `GlobalFront.Server` | authoritative `MatchServer`, state, validation, tick phases, snapshots и Snapshot Protocol v1 | `GlobalFront.Core`; Unity API запрещён |
-| `GlobalFront.Client` | Unity input/presentation, selection, camera, HUD, bootstrap, `LocalMatchHost`, command channel adapter | Core, Server, Unity/Input System |
+| `GlobalFront.Server` | authoritative `MatchServer`, state, validation, tick phases, `TickDriver` (server tick scheduling), snapshots и Snapshot Protocol v1 | `GlobalFront.Core`; Unity API запрещён |
+| `GlobalFront.Client` | Unity input/presentation, selection, camera, HUD, bootstrap, `LocalMatchHost` (ServerHost: владеет `MatchServer` и `TickDriver`), command channel adapter | Core, Server, Unity/Input System |
 
 ```text
 GlobalFront.Core  ←  GlobalFront.Server
@@ -43,18 +43,15 @@ Client → Server является текущей временной связь�
 ## Current Tick Flow
 
 ```text
-Unity input → PrototypeCommandQueue → ICommandChannel
-                                      ↓
-                               LocalCommandChannel
-                                      ↓
-                                LocalMatchHost
-                                      ↓
-                                 MatchServer
-                                      ↓
-                           ServerUnitSnapshot → presentation
+TickDriver (GlobalFront.Server, 20 Hz, bounded catch-up)
+       ↓ TickDue (per tick)
+LocalMatchHost  (ServerHost: владеет MatchServer и TickDriver)
+       │ TickStarting(N): PrototypeCommandQueue → ICommandChannel → LocalCommandChannel
+       ↓ MatchServer.TickOnce (N)
+       │ TickCompleted(N): ServerUnitSnapshot → presentation
 ```
 
-Сейчас client-side fixed runner инициирует local host ticks. **Phase 2.3 Server Tick Driver — NEXT**. Его точный ownership, lifecycle, timing и failure behavior являются `TBD` до R&D и ADR.
+**Phase 2.3 Server Tick Driver — implementation complete, tests green, commit pending** (ADR-007). Server tick lifecycle больше не зависит от Unity client lifecycle: `TickDriver` в `GlobalFront.Server` расписывает тики (manual mode для тестов, real-time 20 Hz с bounded catch-up через `FixedStepClock`); `LocalMatchHost` выполняет роль ServerHost; `PrototypeRtsController` pump’ит driver и потребляет snapshots; `FixedSimulationRunner` удалён. Local и future dedicated server используют общий simulation core (`MatchServer` + `TickDriver`). Транспорт, session/identity, reconnect/resync — out of scope (Phase 2.4–2.7).
 
 ## Approved Target Architecture
 
@@ -95,9 +92,10 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 ## Verification Baseline
 
 - Unity `6000.5.6f1`
-- 161/161 EditMode passed 2026-08-12
-- 5/5 PlayMode passed 2026-08-12
-- last technical milestone: `313e9ef` Phase 2.2
+- 184/184 EditMode passed 2026-08-21 (`EditModeTestResults.xml`; baseline 161 + 23 Phase 2.3 tests)
+- 5/5 PlayMode passed 2026-08-21 (`PlayModeTestResults.xml`)
+- last committed technical milestone: `313e9ef` Phase 2.2
+- Phase 2.3 Server Tick Driver: implemented и проверен, commit pending (ADR-007)
 
 ## Связанные документы
 
