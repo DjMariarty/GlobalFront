@@ -12,9 +12,9 @@ GlobalFront строится вокруг authoritative server и deterministic 
 
 | Assembly | Current responsibility | Dependencies |
 |---|---|---|
-| `GlobalFront.Core` | детерминированные identifiers, commands, coordinates, movement, combat, formation, `MatchConfig`, constants | none; Unity API запрещён |
-| `GlobalFront.Server` | authoritative `MatchServer`, state, validation, tick phases, `TickDriver` (server tick scheduling), snapshots и Snapshot Protocol v1 | `GlobalFront.Core`; Unity API запрещён |
-| `GlobalFront.Client` | Unity input/presentation, selection, camera, HUD, bootstrap, `LocalMatchHost` (ServerHost: владеет `MatchServer` и `TickDriver`), command channel adapter | Core, Server, Unity/Input System |
+| `GlobalFront.Core` | детерминированные identifiers (`EntityId`, `PlayerId`, opaque `SessionId`/`MatchId`), commands, coordinates, movement, combat, formation, `MatchConfig`, constants | none; Unity API запрещён |
+| `GlobalFront.Server` | authoritative `MatchServer`, state, validation, tick phases, `TickDriver` (server tick scheduling), snapshots и Snapshot Protocol v1, session/player identity (`SessionManager`, Phase 2.4) | `GlobalFront.Core`; Unity API запрещён |
+| `GlobalFront.Client` | Unity input/presentation, selection, camera, HUD, bootstrap, `LocalMatchHost` (ServerHost: владеет `MatchServer`, `TickDriver` и `SessionManager`), command channel adapter, `ClientSession` | Core, Server, Unity/Input System |
 
 ```text
 GlobalFront.Core  ←  GlobalFront.Server
@@ -51,7 +51,11 @@ LocalMatchHost  (ServerHost: владеет MatchServer и TickDriver)
        │ TickCompleted(N): ServerUnitSnapshot → presentation
 ```
 
-**Phase 2.3 Server Tick Driver — implementation complete, tests green, commit pending** (ADR-007). Server tick lifecycle больше не зависит от Unity client lifecycle: `TickDriver` в `GlobalFront.Server` расписывает тики (manual mode для тестов, real-time 20 Hz с bounded catch-up через `FixedStepClock`); `LocalMatchHost` выполняет роль ServerHost; `PrototypeRtsController` pump’ит driver и потребляет snapshots; `FixedSimulationRunner` удалён. Local и future dedicated server используют общий simulation core (`MatchServer` + `TickDriver`). Транспорт, session/identity, reconnect/resync — out of scope (Phase 2.4–2.7).
+**Phase 2.3 Server Tick Driver — complete, commit `ea0435d`** (ADR-007). Server tick lifecycle больше не зависит от Unity client lifecycle: `TickDriver` в `GlobalFront.Server` расписывает тики (manual mode для тестов, real-time 20 Hz с bounded catch-up через `FixedStepClock`); `LocalMatchHost` выполняет роль ServerHost; `PrototypeRtsController` pump’ит driver и потребляет snapshots; `FixedSimulationRunner` удалён. Local и future dedicated server используют общий simulation core (`MatchServer` + `TickDriver`). Транспорт, session/identity, reconnect/resync — out of scope (Phase 2.4–2.7).
+
+## Session / Player Identity — Phase 2.4 Implemented (commit pending)
+
+Server-authoritative identity layer (ADR-008): opaque `SessionId`/`MatchId` в Core, `SessionManager` в `GlobalFront.Server` — единственный источник `PlayerId` (монотонное назначение по порядку join, без повторного использования). Command ingress проходит session gate перед неизменным `MatchServer`; `CommandHeader`, canonical command order и Snapshot Protocol v1 не изменяются. Match lifecycle в 2.4 завершается на `Finished`; `MatchPhase.Closed` (teardown/registry disposal) — reserved future state для dedicated/server lifecycle. Transport attribution, реализация reconnect, конкретная grace duration — Phase 2.5–2.7 / TBD.
 
 ## Approved Target Architecture
 
@@ -67,7 +71,7 @@ Product 1.0 требует:
 - 3000+ entity target;
 - pathfinding, performance и reliability, пригодные для 5v5.
 
-Transport technology, protocol cadence, session model, resync algorithm, replay format, desync hashing/telemetry, deployment topology и server infrastructure: **TBD / Architecture Decision Required**.
+Transport technology, protocol cadence, resync algorithm, replay format, desync hashing/telemetry, deployment topology и server infrastructure: **TBD / Architecture Decision Required**. Session model baseline зафиксирован ADR-008 (Phase 2.4); его transport attribution, grace duration и dedicated-server teardown — отдельные будущие решения.
 
 ## Gameplay Architecture Boundary
 
@@ -92,10 +96,10 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 ## Verification Baseline
 
 - Unity `6000.5.6f1`
-- 184/184 EditMode passed 2026-08-21 (`EditModeTestResults.xml`; baseline 161 + 23 Phase 2.3 tests)
-- 5/5 PlayMode passed 2026-08-21 (`PlayModeTestResults.xml`)
-- last committed technical milestone: `313e9ef` Phase 2.2
-- Phase 2.3 Server Tick Driver: implemented и проверен, commit pending (ADR-007)
+- 223/223 EditMode passed 2026-08-21 (`Artifacts/TestResults/editmode-phase24.xml`; baseline 184 + 39 Phase 2.4 tests)
+- 5/5 PlayMode passed 2026-08-21 (`Artifacts/TestResults/playmode-phase24.xml`)
+- last committed technical milestone: `ea0435d` Phase 2.3
+- Phase 2.4 Session / Player Identity: implemented и проверен, commit pending (ADR-008)
 
 ## Связанные документы
 

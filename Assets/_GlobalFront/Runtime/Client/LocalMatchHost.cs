@@ -4,6 +4,7 @@ using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Server;
+using GlobalFront.Server.Sessions;
 
 namespace GlobalFront.Client
 {
@@ -36,15 +37,42 @@ namespace GlobalFront.Client
     /// </summary>
     public sealed class LocalMatchHost
     {
+        /// <summary>
+        /// Default disconnect grace for session-managed matches, in server
+        /// ticks (5 seconds at the 20 Hz contract). The concrete production
+        /// grace duration remains an Owner Decision (Phase 2.4, OD-2).
+        /// </summary>
+        public const int DefaultDisconnectGraceTicks = 100;
+
         private readonly MatchServer _server;
         private readonly TickDriver _tickDriver;
+        private readonly SessionManager _sessions;
+
+        /// <summary>
+        /// The session-managed match started through
+        /// <see cref="TryStartSessionMatch"/>, if any. The local prototype
+        /// host runs exactly one session-managed match at a time; a future
+        /// dedicated host may manage several.
+        /// </summary>
+        private MatchId _activeSessionMatch;
 
         /// <summary>
         /// Creates a host around an externally-constructed server. Intended
         /// for tests and parity integrations where unit registration must be
         /// controlled by the caller. The tick driver starts in manual mode.
         /// </summary>
-        public LocalMatchHost(MatchServer server) : this(server, new TickDriver())
+        public LocalMatchHost(MatchServer server)
+            : this(server, new TickDriver(), DefaultDisconnectGraceTicks)
+        {
+        }
+
+        /// <summary>
+        /// Creates a host around an externally-constructed server with an
+        /// explicit session disconnect grace in server ticks (Phase 2.4,
+        /// OD-2). The tick driver starts in manual mode.
+        /// </summary>
+        public LocalMatchHost(MatchServer server, int disconnectGraceTicks)
+            : this(server, new TickDriver(), disconnectGraceTicks)
         {
         }
 
@@ -52,14 +80,15 @@ namespace GlobalFront.Client
         /// Creates a host with a fresh empty server and a driver for the
         /// canonical 20 Hz contract. The tick driver starts in manual mode.
         /// </summary>
-        public LocalMatchHost() : this(new MatchServer(), new TickDriver())
+        public LocalMatchHost() : this(new MatchServer(), new TickDriver(), DefaultDisconnectGraceTicks)
         {
         }
 
-        private LocalMatchHost(MatchServer server, TickDriver tickDriver)
+        private LocalMatchHost(MatchServer server, TickDriver tickDriver, int disconnectGraceTicks)
         {
             _server = server ?? throw new ArgumentNullException(nameof(server));
             _tickDriver = tickDriver ?? throw new ArgumentNullException(nameof(tickDriver));
+            _sessions = new SessionManager(disconnectGraceTicks);
             _tickDriver.TickDue += OnDriverTickDue;
         }
 
@@ -83,6 +112,16 @@ namespace GlobalFront.Client
 
         /// <summary>Underlying tick driver, exposed for diagnostics.</summary>
         public TickDriver TickDriver => _tickDriver;
+
+        /// <summary>
+        /// Session / player identity authority (Phase 2.4, ADR-008). The
+        /// host owns this manager alongside the MatchServer and TickDriver;
+        /// it is the sole source of authoritative PlayerId assignment.
+        /// </summary>
+        public SessionManager Sessions => _sessions;
+
+        /// <summary>The session-managed match started by this host, if any.</summary>
+        public MatchId ActiveSessionMatch => _activeSessionMatch;
 
         public ulong CurrentTick => _server.CurrentTick;
 
@@ -157,6 +196,119 @@ namespace GlobalFront.Client
         public MatchCommandRejection TryEnqueueStop(CommandHeader header, EntityId[] entities) =>
             _server.TryEnqueueStop(header, entities);
 
+        // -----------------------------------------------------------------
+        // Session / Player Identity (Phase 2.4, ADR-008). Server-authoritative
+        // identity APIs delegated to the owned SessionManager, plus the
+        // session gate every external command submission passes through.
+        // -----------------------------------------------------------------
+
+        /// <summary>Creates a session-managed match accepting up to <paramref name="capacity"/> players.</summary>
+        public MatchId CreateSessionMatch(int capacity) => _sessions.CreateMatch(capacity);
+
+        /// <summary>Registers a session attached through the given transport-agnostic handle.</summary>
+        public SessionId CreateSession(ConnectionHandle connection) => _sessions.CreateSession(connection);
+
+        /// <summary>Issues the next monotonic transport-agnostic connection handle.</summary>
+        public ConnectionHandle CreateConnectionHandle() => _sessions.CreateConnectionHandle();
+
+        /// <summary>
+        /// Binds a session to a forming match. The server assigns the
+        /// PlayerId; clients never choose it.
+        /// </summary>
+        public JoinResult TryJoinMatch(SessionId session, MatchId match, out PlayerId assigned) =>
+            _sessions.TryJoinMatch(session, match, out assigned);
+
+        /// <summary>
+        /// Session-aware match start (OD-6): maps the host-supplied template
+        /// onto the assigned PlayerIds deterministically and initializes the
+        /// authoritative server. Returns false — leaving the match forming —
+        /// when the roster does not exactly cover the template slots.
+        /// </summary>
+        public bool TryStartSessionMatch(MatchId match, MatchConfig template, out EntityId[] entityIds)
+        {
+            if (!_sessions.TryStartMatch(match, template, _server, out entityIds))
+            {
+                return false;
+            }
+
+            _activeSessionMatch = match;
+            return true;
+        }
+
+        /// <summary>Explicitly retires a running session-managed match (terminal outcomes are detected per tick).</summary>
+        public bool NotifySessionMatchFinished(MatchId match) => _sessions.NotifyMatchFinished(match);
+
+        /// <summary>Reports a lost connection for a connected session, starting the grace window.</summary>
+        public bool NotifyConnectionLost(SessionId session, ulong atTick) =>
+            _sessions.NotifyConnectionLost(session, atTick);
+
+        /// <summary>Rebinds a disconnected session within the grace window and issues the reconnect receipt.</summary>
+        public ReconnectResult TryReconnectSession(
+            SessionId session,
+            ConnectionHandle newConnection,
+            ulong atTick,
+            out ReconnectReceipt receipt) =>
+            _sessions.TryReconnect(session, newConnection, atTick, out receipt);
+
+        /// <summary>Terminates a session; its slot (if any) is abandoned and the PlayerId retired.</summary>
+        public bool CloseSession(SessionId session) => _sessions.CloseSession(session);
+
+        /// <summary>Read-only view of one session, for tests and diagnostics.</summary>
+        public bool TryGetSession(SessionId session, out SessionRecord record) =>
+            _sessions.TryGetSession(session, out record);
+
+        /// <summary>
+        /// Session-gated move submission (Phase 2.4). The session gate
+        /// decides attribution and binding first; only a command from a
+        /// connected session whose bound PlayerId equals
+        /// <c>header.Player</c> reaches the unchanged MatchServer validation.
+        /// </summary>
+        public SessionCommandResult TrySessionMove(
+            SessionId session,
+            CommandHeader header,
+            EntityId[] entities,
+            WorldPointMm destination,
+            FormationSpec formation)
+        {
+            var rejection = _sessions.ValidateCommand(session, header);
+            if (rejection != SessionRejection.None)
+            {
+                return SessionCommandResult.Rejected(rejection);
+            }
+
+            return SessionCommandResult.FromMatch(
+                _server.TryEnqueueMove(header, entities, destination, formation));
+        }
+
+        /// <summary>Session-gated attack submission (Phase 2.4). See <see cref="TrySessionMove"/>.</summary>
+        public SessionCommandResult TrySessionAttack(
+            SessionId session,
+            CommandHeader header,
+            EntityId[] attackers,
+            EntityId target)
+        {
+            var rejection = _sessions.ValidateCommand(session, header);
+            if (rejection != SessionRejection.None)
+            {
+                return SessionCommandResult.Rejected(rejection);
+            }
+
+            return SessionCommandResult.FromMatch(
+                _server.TryEnqueueAttack(header, attackers, target));
+        }
+
+        /// <summary>Session-gated stop submission (Phase 2.4). See <see cref="TrySessionMove"/>.</summary>
+        public SessionCommandResult TrySessionStop(SessionId session, CommandHeader header, EntityId[] entities)
+        {
+            var rejection = _sessions.ValidateCommand(session, header);
+            if (rejection != SessionRejection.None)
+            {
+                return SessionCommandResult.Rejected(rejection);
+            }
+
+            return SessionCommandResult.FromMatch(_server.TryEnqueueStop(header, entities));
+        }
+
         /// <summary>
         /// Deterministically executes exactly one authoritative tick in
         /// manual driver mode, running the two-phase host lifecycle. Returns
@@ -181,6 +333,17 @@ namespace GlobalFront.Client
             TickStarting?.Invoke(tick);
             _server.TickOnce();
             TickCompleted?.Invoke(tick);
+
+            // Phase 2.4 (ADR-008): grace expiry is tick-based (OD-2) and runs
+            // after the tick contract; it never blocks or reorders ticks.
+            _sessions.OnTickCompleted(tick);
+
+            // A terminal authoritative outcome retires the session-managed
+            // match: a finished match accepts no joins and no commands.
+            if (_activeSessionMatch.IsValid && _server.Outcome.IsTerminal)
+            {
+                _sessions.NotifyMatchFinished(_activeSessionMatch);
+            }
         }
     }
 }

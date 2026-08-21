@@ -5,6 +5,7 @@ using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Server;
+using GlobalFront.Server.Sessions;
 using NUnit.Framework;
 using CoreEntityId = GlobalFront.Core.Model.EntityId;
 
@@ -28,7 +29,7 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void ManualHost_TickOnce_ExecutesTwoPhaseLifecycleInOrder()
         {
-            var host = BuildHost();
+            var host = BuildHost(out _);
             var phaseLog = new List<string>();
             host.TickStarting += tick =>
                 phaseLog.Add($"start:{tick}:serverAt{host.CurrentTick}");
@@ -51,7 +52,7 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void ManualHost_CommandRequestedForTickN_IsAppliedDuringTickN()
         {
-            var host = BuildHost();
+            var host = BuildHost(out var localSession);
             var queue = BuildQueue(host);
 
             // The client requests the move for the next authoritative tick,
@@ -63,7 +64,7 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(queue.PendingCount, Is.EqualTo(1));
 
             host.TickStarting += tick =>
-                queue.ForwardPending(tick, new LocalCommandChannel(host));
+                queue.ForwardPending(tick, new LocalCommandChannel(host, localSession));
 
             host.TickOnce();
 
@@ -76,7 +77,7 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void ManualHost_MultipleTicks_AdvanceInSequentialDeterministicOrder()
         {
-            var host = BuildHost();
+            var host = BuildHost(out _);
             var completed = new List<ulong>();
             host.TickCompleted += completed.Add;
 
@@ -98,12 +99,12 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void RealTimeHost_AdvanceRealTime_ExecutesAuthoritativeTicksAt20Hz()
         {
-            var host = BuildHost();
+            var host = BuildHost(out var localSession);
             var queue = BuildQueue(host);
             var completed = new List<ulong>();
             host.TickCompleted += completed.Add;
             host.TickStarting += tick =>
-                queue.ForwardPending(tick, new LocalCommandChannel(host));
+                queue.ForwardPending(tick, new LocalCommandChannel(host, localSession));
 
             queue.QueueMove(
                 new WorldPointMm(10000, 0),
@@ -147,7 +148,7 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void RealTimeHost_UsesBoundedCatchUpPerAdvance()
         {
-            var host = BuildHost();
+            var host = BuildHost(out _);
             var completed = new List<ulong>();
             host.TickCompleted += completed.Add;
 
@@ -167,7 +168,7 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void RealTimeHost_TickOnce_IsRejectedUntilStopRealTime()
         {
-            var host = BuildHost();
+            var host = BuildHost(out _);
 
             host.StartRealTime();
             Assert.That(host.TickOnce(), Is.False);
@@ -255,15 +256,36 @@ namespace GlobalFront.Tests.EditMode
             }
         }
 
-        private static LocalMatchHost BuildHost()
+        /// <summary>
+        /// Builds the two-unit host through the Phase 2.4 session-aware
+        /// start (ADR-008): identical unit layout and EntityIds to the
+        /// previous raw spawn path, plus a connected local session bound to
+        /// PlayerId 1 for session-attributed command forwarding.
+        /// </summary>
+        private static LocalMatchHost BuildHost(out SessionId localSession)
         {
             var host = new LocalMatchHost();
-            host.SpawnUnitWithEntity(
-                new CoreEntityId(1), new PlayerId(1), StandardStats,
-                new WorldPointMm(0, 0), SpeedMmPerTick);
-            host.SpawnUnitWithEntity(
-                new CoreEntityId(2), new PlayerId(2), StandardStats,
-                new WorldPointMm(100_000, 0), SpeedMmPerTick);
+            var match = host.CreateSessionMatch(2);
+            localSession = host.CreateSession(host.CreateConnectionHandle());
+            var enemySession = host.CreateSession(host.CreateConnectionHandle());
+            Assert.That(
+                host.TryJoinMatch(localSession, match, out var localPlayer),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                host.TryJoinMatch(enemySession, match, out var enemyPlayer),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                host.TryStartSessionMatch(
+                    match,
+                    new MatchConfig(
+                        StandardStats,
+                        new[]
+                        {
+                            new UnitSpawnSpec(localPlayer, new WorldPointMm(0, 0), SpeedMmPerTick, false),
+                            new UnitSpawnSpec(enemyPlayer, new WorldPointMm(100_000, 0), SpeedMmPerTick, false)
+                        }),
+                    out _),
+                Is.True);
             return host;
         }
 

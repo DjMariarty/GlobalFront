@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
 using GlobalFront.Server;
+using GlobalFront.Server.Sessions;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using CoreEntityId = GlobalFront.Core.Model.EntityId;
@@ -52,7 +54,15 @@ namespace GlobalFront.Client
         private UnitSelection _selection;
         private PrototypeCommandQueue _commandQueue;
 
-        private readonly PlayerId _localPlayer = new PlayerId(1);
+        /// <summary>
+        /// Template marker for the locally controlled army in the prototype
+        /// scene. During <see cref="InitializeLocalHost"/> it is replaced by
+        /// the authoritative PlayerId assigned by the server-side session
+        /// layer (Phase 2.4, ADR-008): the client never chooses its
+        /// authoritative PlayerId.
+        /// </summary>
+        private PlayerId _localPlayer = new PlayerId(1);
+
         private Camera _camera;
         private Vector2 _selectionStart;
         private Vector2 _selectionCurrent;
@@ -76,8 +86,25 @@ namespace GlobalFront.Client
         /// </summary>
         private ICommandChannel _commandChannel;
 
+        /// <summary>
+        /// Server-assigned identity of the local client (Phase 2.4,
+        /// ADR-008). Null until <see cref="InitializeLocalHost"/> binds the
+        /// local session, or forever on the empty-server path.
+        /// </summary>
+        private ClientSession _clientSession;
+
+        /// <summary>
+        /// Server-side placeholder session for the prototype's non-local
+        /// army. Kept for diagnostics and future reconnect semantics; it
+        /// issues no commands in the prototype.
+        /// </summary>
+        private SessionId _enemySession;
+
         /// <summary>The authoritative local match host, for diagnostics and tests.</summary>
         public LocalMatchHost Host => _localHost;
+
+        /// <summary>Server-assigned local identity (Phase 2.4), for diagnostics and tests.</summary>
+        public ClientSession LocalSession => _clientSession;
 
         /// <summary>True when the local match host has been initialized.</summary>
         public bool HostActive => _localHost != null;
@@ -401,7 +428,6 @@ namespace GlobalFront.Client
         private void InitializeLocalHost()
         {
             _localHost = new LocalMatchHost();
-            _commandChannel = new LocalCommandChannel(_localHost);
             _localHost.TickStarting += OnHostTickStarting;
             _localHost.TickCompleted += OnHostTickCompleted;
 
@@ -416,7 +442,41 @@ namespace GlobalFront.Client
                 return;
             }
 
-            // 2. Build MatchConfig from presentation unit data
+            // 2. Phase 2.4 (ADR-008): identity is server-assigned. The
+            //    prototype template declares armies with scene-local owners;
+            //    the host's session layer assigns authoritative PlayerIds
+            //    and maps the template onto them deterministically. The
+            //    local army's session joins first, so the monotonic server
+            //    assignment deterministically gives it the lowest PlayerId.
+            var templateOwners = CollectSortedOwners(presentationUnits);
+            var match = _localHost.CreateSessionMatch(templateOwners.Length);
+
+            var localTemplateOwner = _localPlayer;
+            var ownerToAssigned = new Dictionary<PlayerId, PlayerId>();
+            var localSession = default(SessionId);
+            for (var index = 0; index < templateOwners.Length; index++)
+            {
+                var session = _localHost.CreateSession(_localHost.CreateConnectionHandle());
+                var join = _localHost.TryJoinMatch(session, match, out var assigned);
+                if (join != JoinResult.Assigned)
+                {
+                    throw new InvalidOperationException(
+                        "Prototype session join failed: " + join);
+                }
+
+                ownerToAssigned[templateOwners[index]] = assigned;
+                if (templateOwners[index] == localTemplateOwner)
+                {
+                    localSession = session;
+                }
+                else
+                {
+                    _enemySession = session;
+                }
+            }
+
+            // 3. Build the host-supplied MatchConfig template (OD-6) from
+            //    presentation unit data; owners are still template values.
             var specs = new UnitSpawnSpec[presentationUnits.Length];
             for (var index = 0; index < presentationUnits.Length; index++)
             {
@@ -430,20 +490,60 @@ namespace GlobalFront.Client
 
             var config = new MatchConfig(PrototypeCombatStats, specs);
 
-            // 3. Initialize server — server assigns EntityIds authoritatively
-            var serverEntityIds = _localHost.InitializeMatch(config);
-
-            // 4. Assign server EntityIds to presentation units
-            for (var index = 0; index < presentationUnits.Length; index++)
+            // 4. Session-aware start: the host maps the assigned PlayerIds
+            //    onto the template and initializes the authoritative server,
+            //    which assigns EntityIds.
+            if (!_localHost.TryStartSessionMatch(match, config, out var serverEntityIds))
             {
-                presentationUnits[index].AssignAuthoritativeEntity(serverEntityIds[index]);
+                throw new InvalidOperationException(
+                    "Prototype session match failed to start.");
             }
 
-            // 5. Refresh registry now that units have EntityIds
+            // 5. Adopt the server-assigned identity and bind the channel to
+            //    the local session; the command queue follows suit.
+            _localPlayer = ownerToAssigned[localTemplateOwner];
+            _clientSession = new ClientSession(localSession, match, _localPlayer);
+            _commandChannel = new LocalCommandChannel(_localHost, localSession);
+            _commandQueue = new PrototypeCommandQueue(
+                _registry, _localPlayer, FormationSpacingMm);
+
+            // 6. Remap presentation owners to the authoritative PlayerIds,
+            //    then assign the server EntityIds.
+            for (var index = 0; index < presentationUnits.Length; index++)
+            {
+                var unit = presentationUnits[index];
+                unit.AssignAuthoritativeEntity(serverEntityIds[index]);
+                unit.RemapAuthoritativePlayer(ownerToAssigned[unit.Owner]);
+            }
+
+            // 7. Refresh registry now that units have EntityIds
             _registry.Refresh(_localPlayer);
 
-            // 6. The server tick driver now owns the authoritative loop.
+            // 8. The server tick driver now owns the authoritative loop.
             _localHost.StartRealTime();
+        }
+
+        /// <summary>
+        /// Distinct template owners of the presentation units in ascending
+        /// PlayerId order. This order defines the deterministic join order
+        /// for the session-aware match start (Phase 2.4, ADR-008).
+        /// </summary>
+        private static PlayerId[] CollectSortedOwners(PrototypeUnit[] units)
+        {
+            var owners = new List<PlayerId>();
+            for (var index = 0; index < units.Length; index++)
+            {
+                var owner = units[index].Owner;
+                if (!owner.IsValid || owners.Contains(owner))
+                {
+                    continue;
+                }
+
+                owners.Add(owner);
+            }
+
+            owners.Sort((left, right) => left.Value.CompareTo(right.Value));
+            return owners.ToArray();
         }
 
         private void RefreshAttackHighlights()

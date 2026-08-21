@@ -4,6 +4,7 @@ using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Server;
+using GlobalFront.Server.Sessions;
 using NUnit.Framework;
 using UnityEngine;
 using CoreEntityId = GlobalFront.Core.Model.EntityId;
@@ -11,10 +12,11 @@ using CoreEntityId = GlobalFront.Core.Model.EntityId;
 namespace GlobalFront.Tests.EditMode
 {
     /// <summary>
-    /// Tests for the Command Channel abstraction (Phase 2).
-    /// Validates that:
+    /// Tests for the Command Channel abstraction (Phase 2.2) under the
+    /// Phase 2.4 session gate (ADR-008). Validates that:
     /// - ICommandChannel decouples PrototypeCommandQueue from LocalMatchHost
-    /// - LocalCommandChannel correctly delegates to LocalMatchHost
+    /// - LocalCommandChannel is session-attributed and delegates to the
+    ///   host's session-gated submission
     /// - ForwardPending uses the channel abstraction
     /// - QueueStop works through the channel
     /// </summary>
@@ -38,12 +40,14 @@ namespace GlobalFront.Tests.EditMode
         private PrototypeCommandQueue _queue;
         private PlayerId _player1;
         private PlayerId _player2;
+        private MatchId _match;
+        private SessionId _localSession;
+        private SessionId _enemySession;
 
         [SetUp]
         public void SetUp()
         {
             _host = new LocalMatchHost();
-            _channel = new LocalCommandChannel(_host);
             _registry = new UnitRegistry();
             _player1 = new PlayerId(1);
             _player2 = new PlayerId(2);
@@ -52,7 +56,7 @@ namespace GlobalFront.Tests.EditMode
             CreatePresentationUnit(_player1, new Vector3(0f, 0f, 0f));
             CreatePresentationUnit(_player2, new Vector3(5f, 0f, 0f));
 
-            // Build MatchConfig
+            // Build MatchConfig template
             var specs = new[]
             {
                 new UnitSpawnSpec(_player1, new WorldPointMm(0, 0), MovementSpeedMmPerTick, false),
@@ -60,20 +64,44 @@ namespace GlobalFront.Tests.EditMode
             };
             var config = new MatchConfig(TestCombatStats, specs);
 
-            // Initialize server
-            var entityIds = _host.InitializeMatch(config);
+            // Phase 2.4 (ADR-008): session-aware initialization. The server
+            // assigns the PlayerIds; the template owners here coincide with
+            // the assignment by construction (join order = template order).
+            _match = _host.CreateSessionMatch(2);
+            _localSession = _host.CreateSession(_host.CreateConnectionHandle());
+            _enemySession = _host.CreateSession(_host.CreateConnectionHandle());
+            Assert.That(_host.TryJoinMatch(_localSession, _match, out var assignedLocal),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(_host.TryJoinMatch(_enemySession, _match, out var assignedEnemy),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(assignedLocal, Is.EqualTo(_player1));
+            Assert.That(assignedEnemy, Is.EqualTo(_player2));
+            Assert.That(_host.TryStartSessionMatch(_match, config, out var entityIds), Is.True);
 
-            // Assign EntityIds to presentation units
+            // Assign EntityIds to presentation units deterministically by
+            // owner: FindObjectsByType ordering is not contractually stable,
+            // so the pairing follows the config spec order instead.
             var units = Object.FindObjectsByType<PrototypeUnit>(FindObjectsSortMode.None);
-            for (int i = 0; i < units.Length && i < entityIds.Length; i++)
+            for (var specIndex = 0; specIndex < config.UnitCount; specIndex++)
             {
-                units[i].AssignAuthoritativeEntity(entityIds[i]);
+                for (var unitIndex = 0; unitIndex < units.Length; unitIndex++)
+                {
+                    var unit = units[unitIndex];
+                    if (unit.Entity.IsValid || unit.Owner != config.Units[specIndex].Owner)
+                    {
+                        continue;
+                    }
+
+                    unit.AssignAuthoritativeEntity(entityIds[specIndex]);
+                    break;
+                }
             }
 
             // Refresh registry
             _registry.Refresh(_player1);
 
-            // Create command queue
+            // Channel attributed to the local session; queue follows.
+            _channel = new LocalCommandChannel(_host, _localSession);
             _queue = new PrototypeCommandQueue(_registry, _player1, FormationSpacingMm);
         }
 
@@ -92,6 +120,27 @@ namespace GlobalFront.Tests.EditMode
         public void LocalCommandChannel_WrapsLocalMatchHost()
         {
             Assert.That(_channel.Host, Is.SameAs(_host));
+        }
+
+        [Test]
+        public void LocalCommandChannel_ExposesItsSession()
+        {
+            Assert.That(_channel.Session, Is.EqualTo(_localSession));
+        }
+
+        [Test]
+        public void LocalCommandChannel_ForeignSessionSubmission_IsRejectedByGate()
+        {
+            var enemyChannel = new LocalCommandChannel(_host, _enemySession);
+            var header = new CommandHeader(_player1, 1, 1, GameCommandType.Move);
+            var entities = new[] { new CoreEntityId(1) };
+            var destination = new WorldPointMm(1000, 0);
+            var formation = new FormationSpec(1, FormationSpacingMm, CardinalFacing.North);
+
+            var result = enemyChannel.TrySubmitMove(header, entities, destination, formation);
+
+            Assert.That(result, Is.EqualTo(MatchCommandRejection.SessionRejected),
+                "An identity mismatch at the session gate surfaces as SessionRejected.");
         }
 
         [Test]
@@ -204,12 +253,12 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
-        public void ForwardPendingToHost_StillWorks_BackwardsCompatible()
+        public void ForwardPendingToHost_StillWorks_SessionAttributed()
         {
             var entity = new CoreEntityId(1);
 
             _queue.QueueMove(new WorldPointMm(1000, 0), new[] { entity }, requestedTick: 1);
-            _queue.ForwardPendingToHost(currentTick: 1, _host);
+            _queue.ForwardPendingToHost(currentTick: 1, _host, _localSession);
 
             Assert.That(_queue.PendingCount, Is.EqualTo(0));
         }

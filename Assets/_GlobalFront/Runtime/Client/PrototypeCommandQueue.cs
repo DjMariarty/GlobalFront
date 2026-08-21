@@ -319,14 +319,16 @@ namespace GlobalFront.Client
         /// is less than or equal to <paramref name="currentTick"/> to the
         /// authoritative <paramref name="host"/>, in the deterministic
         /// (tick, player, sequence) order established by
-        /// <see cref="CompareCommands"/>. The host validates and schedules the
-        /// commands; the client no longer applies gameplay commands locally.
-        /// This replaces <see cref="ApplyPending"/> for the authoritative
-        /// hosting model.
+        /// <see cref="CompareCommands"/>. The submission is attributed to
+        /// <paramref name="session"/> (Phase 2.4, ADR-008): the host's
+        /// session gate validates binding before the unchanged MatchServer
+        /// validation. The client no longer applies gameplay commands
+        /// locally. This replaces <see cref="ApplyPending"/> for the
+        /// authoritative hosting model.
         /// </summary>
-        public void ForwardPendingToHost(ulong currentTick, LocalMatchHost host)
+        public void ForwardPendingToHost(ulong currentTick, LocalMatchHost host, SessionId session)
         {
-            ForwardPending(currentTick, new LocalCommandChannel(host));
+            ForwardPending(currentTick, new LocalCommandChannel(host, session));
         }
 
         private static void ForwardMoveToChannel(

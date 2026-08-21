@@ -22,7 +22,15 @@ namespace GlobalFront.Server
         UnknownEntity = 6,
         NotEntityOwner = 7,
         EntityNotAlive = 8,
-        FormationOutOfBounds = 9
+        FormationOutOfBounds = 9,
+
+        /// <summary>
+        /// Phase 2.4 (ADR-008): the session gate refused the command before
+        /// it reached match-level validation (unknown/disconnected session,
+        /// identity mismatch, or match not running). The detailed reason is
+        /// reported by the session layer as SessionRejection.
+        /// </summary>
+        SessionRejected = 10
     }
 
     /// <summary>
@@ -483,6 +491,27 @@ namespace GlobalFront.Server
             }
 
             snapshot = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Returns the last accepted command sequence for a player (Phase
+        /// 2.4, ADR-008 / OD-8). Additive read-only accessor used for
+        /// reconnect receipts: a reconnecting client resumes numbering
+        /// strictly above this value and the existing duplicate-sequence
+        /// validation keeps replays safe. Returns false when no command from
+        /// this player has been accepted yet. Simulation semantics are
+        /// unchanged.
+        /// </summary>
+        public bool TryGetLastAcceptedSequence(PlayerId player, out uint sequence)
+        {
+            if (_lastSequenceByPlayer.TryGetValue(player, out var lastSequence))
+            {
+                sequence = lastSequence;
+                return true;
+            }
+
+            sequence = 0;
             return false;
         }
 

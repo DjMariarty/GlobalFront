@@ -38,7 +38,7 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 |---:|---|---|
 | 0 | Product Definition | scope утверждён на master-plan уровне; подробности GDD имеют TBD |
 | 1 | Simulation Foundation | **COMPLETE** |
-| 2 | Multiplayer Foundation | **CURRENT**; 2.1 и 2.2 complete, 2.3 next |
+| 2 | Multiplayer Foundation | **CURRENT**; 2.1–2.3 complete, 2.4 implemented (commit pending), 2.5 next |
 | 3 | RTS Core + Vertical Slice | planned |
 | 4 | Multiplayer Gameplay Integration | planned |
 | 5 | Full Five Factions | planned |

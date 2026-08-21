@@ -18,28 +18,27 @@
 |---|---|
 | Engine | Unity `6000.5.6f1`, URP |
 | Simulation | deterministic Core, 20 Hz |
-| Server | `MatchServer`, server-owned state, `MatchConfig` |
-| Local host | `LocalMatchHost` in Client process |
+| Server | `MatchServer`, server-owned state, `MatchConfig`; `TickDriver` (ADR-007); `SessionManager` — session/player identity (ADR-008) |
+| Local host | `LocalMatchHost` in Client process (owns `MatchServer`, `TickDriver`, `SessionManager`) |
 | Protocol | Snapshot Protocol v1 |
-| Commands | `ICommandChannel` + `LocalCommandChannel`, Phase 2.2 complete |
-| Verification | 161 EditMode + 5 PlayMode passed 2026-08-12 |
+| Commands | `ICommandChannel` + session-attributed `LocalCommandChannel`, Phase 2.2 complete; ingress через session gate (Phase 2.4) |
+| Verification | 223 EditMode + 5 PlayMode passed 2026-08-21 |
 
 ## Current Research Priority
 
-Phase 2.3 Server Tick Driver:
+Phase 2.5 Network Transport:
 
-- ownership и lifecycle;
-- fixed-tick scheduling вне client presentation;
-- startup/shutdown и error behavior;
-- границы с future session/transport layers;
+- transport technology selection;
+- delivery для commands и snapshots;
+- attribution boundary с session layer (`SessionManager`, ADR-008);
+- cadence и protocol compatibility с Snapshot Protocol v1;
 - test strategy.
 
 Все конкретные ответы являются **Architecture Decision Required**; этот документ их не предрешает.
 
 ## Later Research Questions
 
-- session/player identity и transport technology;
-- snapshot cadence, bandwidth, reconnect/resync algorithm;
+- transport-adjacent вопросы: snapshot cadence, bandwidth, reconnect/resync algorithm;
 - replay format и desync detection/diagnostics;
 - deterministic pathfinding для больших армий;
 - benchmark workloads и hardware profiles для 3000+/5000+;

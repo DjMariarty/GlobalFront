@@ -19,13 +19,14 @@
 - Phase 2.2 Command Channel — `313e9ef`.
 - `ICommandChannel` и `LocalCommandChannel` отделяют client command queue от конкретного local host.
 - `StopCommand` включён в command channel baseline.
-- Phase 2.3 Server Tick Driver — реализован и принят (ADR-007): engine-independent `TickDriver` в `GlobalFront.Server` (20 Hz, bounded catch-up, manual/real-time); `LocalMatchHost` (ServerHost) владеет `MatchServer` и `TickDriver`; `FixedSimulationRunner` удалён; server tick lifecycle отделён от Unity client lifecycle.
+- Phase 2.3 Server Tick Driver — реализован и принят (ADR-007), commit `ea0435d`: engine-independent `TickDriver` в `GlobalFront.Server` (20 Hz, bounded catch-up, manual/real-time); `LocalMatchHost` (ServerHost) владеет `MatchServer` и `TickDriver`; `FixedSimulationRunner` удалён; server tick lifecycle отделён от Unity client lifecycle.
+- Phase 2.4 Session / Player Identity — реализована и принята (ADR-008; commit pending): opaque `SessionId`/`MatchId` в Core; `SessionManager` в `GlobalFront.Server` — единственный источник `PlayerId` (монотонное назначение по порядку join, без повторного использования); session gate перед неизменным `MatchServer`; `LocalCommandChannel` session-attributed; клиент получает `PlayerId` от сервера (`ClientSession`); match lifecycle завершается на `MatchPhase.Finished` — `Closed` зарезервирован для будущего server lifecycle/teardown.
 
 ### Verified
 
 - Unity `6000.5.6f1`.
-- **184/184 EditMode** passed по `EditModeTestResults.xml`, 2026-08-21 (161 baseline + 23 Phase 2.3).
-- **5/5 PlayMode** passed по `PlayModeTestResults.xml`, 2026-08-21.
+- **223/223 EditMode** passed по `Artifacts/TestResults/editmode-phase24.xml`, 2026-08-21 (184 baseline + 39 Phase 2.4).
+- **5/5 PlayMode** passed по `Artifacts/TestResults/playmode-phase24.xml`, 2026-08-21.
 
 ## Confirmed Foundation History
 

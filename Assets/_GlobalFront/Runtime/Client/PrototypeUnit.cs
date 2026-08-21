@@ -87,6 +87,25 @@ namespace GlobalFront.Client
             _combatState = new CombatantState(entity, Owner, PrototypeCombatStats);
         }
 
+        /// <summary>
+        /// Remaps the presentation owner to the authoritative PlayerId
+        /// assigned by the server (Phase 2.4, ADR-008). The template owner
+        /// comes from the prototype scene; the authoritative owner is the
+        /// server-side session assignment. Must run after
+        /// <see cref="AssignAuthoritativeEntity"/> and before gameplay
+        /// starts.
+        /// </summary>
+        public void RemapAuthoritativePlayer(PlayerId player)
+        {
+            if (Owner == player)
+            {
+                return;
+            }
+
+            Owner = player;
+            _combatState = new CombatantState(Entity, Owner, PrototypeCombatStats);
+        }
+
         public void SetSelected(bool selected)
         {
             IsSelected = selected;

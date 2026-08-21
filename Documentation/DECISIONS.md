@@ -136,7 +136,7 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 
 ## ADR-007: Server Tick Driver — engine-independent tick scheduling (Phase 2.3)
 
-**Статус:** Accepted, 2026-08-21 (implementation и tests завершены; commit pending)
+**Статус:** Accepted, 2026-08-21 (commit `ea0435d`)
 
 ### Context
 
@@ -164,9 +164,42 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 - `LocalMatchHost` сохраняет публичный API Phase 2.1/2.2; поведение `TickOnce()` уточнено (driver-backed, manual mode по умолчанию).
 - Local и future dedicated server используют общий simulation core (`MatchServer` + `TickDriver`).
 
+## ADR-008: Session / Player Identity — server-authoritative identity layer (Phase 2.4)
+
+**Статус:** Accepted, 2026-08-21 (implementation и tests завершены; commit pending)
+
+### Context
+
+После Phase 2.1–2.3 (commit `ea0435d`) authoritative simulation, command validation и server tick lifecycle существовали, но identity модель отсутствовала: `PlayerId` выбирался caller'ом (`new PlayerId(1)` в клиенте, owners в `MatchConfig`), сервер проверял только диапазон 1..10, а не авторизацию отправителя; SessionId/MatchId/соединения не существовали. Phase 2.4 создаёт transport-agnostic identity layer, на который затем опираются Network Transport (2.5), Snapshot Networking (2.6) и Reconnect/Resync (2.7). Транспорт, реализация reconnect, matchmaking, lobby, prediction, аутентификация и deployment — out of scope.
+
+### Alternatives
+
+1. Расширить `CommandHeader` полем SessionId. Отклонено: ломает Phase 2.2 contract и связывает command layer с attribution, которая является свойством ingress path (transport), а не payload.
+2. Встроить session/identity логику в `MatchServer`. Отклонено: смешивает identity authority с simulation; затрудняет общий simulation core для future dedicated host (паттерн ADR-007).
+3. Отдельный `SessionManager` в `GlobalFront.Server` как gate перед `MatchServer`; value types `SessionId`/`MatchId` в `GlobalFront.Core`; `CommandHeader` и `MatchServer` не изменяются. Выбран.
+
+### Decision
+
+- `SessionId` и `MatchId` — opaque Guid-backed value types в Core (OD-1); генерация только в Server. Determinism firewall: identity значения не входят в simulation state, snapshot payload или порядок команд (`RequestedTick → PlayerId → Sequence`).
+- Адресация участника: `(MatchId, PlayerId)`; `SessionId` — attachment credential сессии к слоту и, до появления аутентификации, reconnect identity handle (OD-4, зафиксированный debt).
+- Server — единственный источник PlayerId: назначение монотонное по порядку join, без повторного использования в пределах матча (OD-3); capacity ≤ `MaxPlayers`; старт матча с нулём участников запрещён.
+- Состояния: Session `Created → Connected ⇄ Disconnected(grace) → Closed`; Match `Forming → Running → Finished`; слот `Assigned → Connected → Disconnected → Abandoned`. Grace считается в server ticks (OD-2; конкретная длительность TBD). **Lifecycle Phase 2.4 завершается на `Finished`; `MatchPhase.Closed` (teardown/registry disposal) зафиксирован как reserved future state для dedicated/server lifecycle и требует отдельного решения — в Phase 2.4 он не назначается.**
+- Session gate: команда допускается к `MatchServer` только при session == Connected, match == Running, slot == Connected и `header.Player` == связанный PlayerId (порядок: UnknownSession → SessionClosed → NoBoundMatch → SessionNotConnected → PlayerMismatch → MatchNotRunning); вся остальная валидация остаётся в `MatchServer` без изменений. Channel contract отображает отказ gate в `MatchCommandRejection.SessionRejected`.
+- `MatchConfig` остаётся host-supplied template (OD-6): `TryStartMatch` детерминированно отображает template slots (distinct owners по возрастанию) на joined players в порядке join; roster обязан точно покрывать slots.
+- Reconnect-ready semantics: `(SessionId, MatchId, PlayerId)` и last-accepted sequence переживают transport drop в пределах grace window; reconnect = rebind нового `ConnectionHandle` с выдачей `ReconnectReceipt` (identity semantics; реализация resync — Phase 2.7).
+- Spectators out of scope (OD-7). `MatchServer` получает только additive accessor `TryGetLastAcceptedSequence` (OD-8). `MatchId` не добавляется в Snapshot Protocol v1 (OD-5; revisiting в Phase 2.6).
+
+### Consequences
+
+- `LocalMatchHost` (ServerHost) дополнительно владеет `SessionManager`, pump’ит grace по `TickCompleted` и переводит session match в Finished при terminal outcome; command ingress проходит session gate (`TrySession*`), raw `TryEnqueue*` пути остаются internal/test путями.
+- `LocalCommandChannel` получает обязательный `SessionId`; `PrototypeCommandQueue.ForwardPendingToHost` получает session attribution; клиент получает `PlayerId` от сервера (`ClientSession`), а не выбирает его.
+- `ICommandChannel` contract, Snapshot Protocol v1, command ordering и simulation semantics `MatchServer` не изменены.
+- Verification: 223/223 EditMode (184 baseline + 39 Phase 2.4) и 5/5 PlayMode; Unity 6000.5.6f1.
+- Зафиксированные ограничения: disconnect без явного сигнала не детектируется до transport (2.5); конкретная grace duration — TBD (OD-2); dedicated-host teardown — отдельное будущее решение.
+
 ## Open Decision Queue
 
-- Session/player identity и transport technology.
+- Transport technology.
 - Snapshot networking cadence, reconnect/resync, replay и desync diagnostics.
 - Точные faction rosters, abilities, generals, stats и balance.
 - Economy/build/production rules, map layouts и presentation direction.

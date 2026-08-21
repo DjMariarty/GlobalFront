@@ -4,6 +4,7 @@ using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Server;
+using GlobalFront.Server.Sessions;
 using NUnit.Framework;
 
 namespace GlobalFront.Tests.EditMode
@@ -226,15 +227,36 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void CommandQueue_ForwardsPendingCommandsToHost()
         {
+            // Session-aware host setup (Phase 2.4, ADR-008): the same unit
+            // layout as the raw spawn path, with a connected local session
+            // bound to PlayerId 1 so the forwarded submission passes the
+            // session gate.
             var host = new LocalMatchHost();
-            host.SpawnUnitWithEntity(
-                new EntityId(1), new PlayerId(1), StandardStats,
-                new WorldPointMm(0, 0), 500);
-            SpawnPassiveOpponent(host);
+            var match = host.CreateSessionMatch(2);
+            var localSession = host.CreateSession(host.CreateConnectionHandle());
+            var enemySession = host.CreateSession(host.CreateConnectionHandle());
+            Assert.That(
+                host.TryJoinMatch(localSession, match, out var localPlayer),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                host.TryJoinMatch(enemySession, match, out var enemyPlayer),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                host.TryStartSessionMatch(
+                    match,
+                    new MatchConfig(
+                        StandardStats,
+                        new[]
+                        {
+                            new UnitSpawnSpec(localPlayer, new WorldPointMm(0, 0), 500, false),
+                            new UnitSpawnSpec(enemyPlayer, new WorldPointMm(100_000, 0), 500, false)
+                        }),
+                    out _),
+                Is.True);
 
             var registry = new UnitRegistry();
             var queue = new PrototypeCommandQueue(
-                registry, new PlayerId(1), formationSpacingMm: 2000);
+                registry, localPlayer, formationSpacingMm: 2000);
 
             queue.QueueMove(
                 new WorldPointMm(10000, 0),
@@ -243,7 +265,7 @@ namespace GlobalFront.Tests.EditMode
 
             Assert.That(queue.PendingCount, Is.EqualTo(1));
 
-            queue.ForwardPendingToHost(1, host);
+            queue.ForwardPendingToHost(1, host, localSession);
 
             Assert.That(queue.PendingCount, Is.EqualTo(0));
             host.TickOnce();
