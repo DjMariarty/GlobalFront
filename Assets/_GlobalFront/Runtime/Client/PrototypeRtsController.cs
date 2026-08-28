@@ -477,6 +477,13 @@ namespace GlobalFront.Client
 
             // 3. Build the host-supplied MatchConfig template (OD-6) from
             //    presentation unit data; owners are still template values.
+            //    Bugfix (regression from Phase 2.1, 8178110): non-local units
+            //    are autonomous — authoritative AutoAcquireEnemies must be
+            //    true for them, restoring the pre-2.1 prototype semantics
+            //    (8e687e3 armed enemies via UnitRegistry.Refresh BEFORE the
+            //    authoritative spawn; the MatchConfig flow captured the flag
+            //    too early, leaving enemy units passive). The presentation
+            //    flag is still false here, so it must not be the source.
             var specs = new UnitSpawnSpec[presentationUnits.Length];
             for (var index = 0; index < presentationUnits.Length; index++)
             {
@@ -485,7 +492,7 @@ namespace GlobalFront.Client
                     unit.Owner,
                     unit.CurrentPosition,
                     MovementPerTickMm,
-                    unit.AutoAcquireEnemies);
+                    autoAcquireEnemies: unit.Owner != localTemplateOwner);
             }
 
             var config = new MatchConfig(PrototypeCombatStats, specs);

@@ -37,7 +37,17 @@ namespace GlobalFront.Tests.PlayMode
         private const int ExpectedUnitCount = 40;
         private const float BootstrapTimeoutSeconds = 20f;
         private const float TickTimeoutSeconds = 30f;
-        private const float BattleTimeoutSeconds = 100f;
+
+        /// <summary>
+        /// Two-sided battles (enemy auto-acquire restored by the Phase 2.1
+        /// ordering bugfix) run a mutual-attrition engagement that terminates
+        /// in roughly two minutes of simulation time (measured terminal tick
+        /// ≈ 2316 ≈ 116 s); the one-sided calibration (~15 s) no longer
+        /// applies. Terminal outcome — not duration — is what this suite
+        /// asserts.
+        /// </summary>
+        private const float BattleTimeoutSeconds = 240f;
+        private const float EnemyCounterAttackTimeoutSeconds = 90f;
 
         private PrototypeRtsController _controller;
 
@@ -156,28 +166,154 @@ namespace GlobalFront.Tests.PlayMode
 
         [UnityTest]
         [Order(5)]
+        public IEnumerator EnemyUnits_AutoAcquireAndAttackPlayer_ThroughAuthoritativePipeline()
+        {
+            // Regression guard for the Phase 2.1 (8178110) initialization
+            // ordering bug: enemy units must carry authoritative
+            // AutoAcquireEnemies=true at match start, so non-local units
+            // detect, acquire and damage player units without any command
+            // ever being issued on their behalf.
+            yield return WaitForBootstrap();
+            var host = _controller.Host;
+            var localPlayer = _controller.LocalSession.Player;
+            Assert.That(localPlayer.IsValid, Is.True);
+
+            var initial = host.GetAllSnapshots();
+            Assert.That(initial.Length, Is.GreaterThanOrEqualTo(ExpectedUnitCount));
+
+            // Move a fresh local unit (index 1 is unused by the other
+            // ordered tests) into the enemy army so enemy auto-acquire has
+            // a target inside its acquisition range.
+            var probeEntity = initial[1].Entity;
+            Assert.That(initial[1].Owner, Is.EqualTo(localPlayer));
+            QueueMove(probeEntity, new WorldPointMm(20000, 15000));
+
+            // Phase 1: an enemy unit auto-acquires a local unit. No attack
+            // command is queued for the enemy side anywhere in this test.
+            var elapsed = 0f;
+            var enemyEntity = default(CoreEntityId);
+            var victimEntity = default(CoreEntityId);
+            var victimHealthAtAcquire = 0;
+            while (elapsed < EnemyCounterAttackTimeoutSeconds)
+            {
+                var current = host.GetAllSnapshots();
+                for (var index = 0; index < current.Length; index++)
+                {
+                    var candidate = current[index];
+                    if (candidate.Owner == localPlayer || !candidate.AttackTarget.IsValid)
+                    {
+                        continue;
+                    }
+
+                    if (host.TryGetUnit(candidate.AttackTarget, out var target) &&
+                        target.Owner == localPlayer)
+                    {
+                        enemyEntity = candidate.Entity;
+                        victimEntity = candidate.AttackTarget;
+                        victimHealthAtAcquire = target.CurrentHealth;
+                        break;
+                    }
+                }
+
+                if (enemyEntity.IsValid)
+                {
+                    break;
+                }
+
+                elapsed += Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            Assert.That(enemyEntity.IsValid, Is.True,
+                $"No enemy unit auto-acquired a player unit within {EnemyCounterAttackTimeoutSeconds} seconds; " +
+                "authoritative AutoAcquireEnemies for non-local units is likely false.");
+
+            // Phase 2: the acquisition turns into actual combat — the
+            // acquired local unit takes damage from enemy fire.
+            elapsed = 0f;
+            var damaged = false;
+            while (elapsed < EnemyCounterAttackTimeoutSeconds)
+            {
+                if (host.TryGetUnit(victimEntity, out var victim) &&
+                    victim.CurrentHealth < victimHealthAtAcquire)
+                {
+                    damaged = true;
+                    break;
+                }
+
+                elapsed += Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            Assert.That(damaged, Is.True,
+                "The enemy acquired a player unit but never damaged it; enemy combat is not resolving.");
+            Assert.That(host.TryGetUnit(enemyEntity, out var enemy), Is.True);
+            Assert.That(enemy.AttackTarget, Is.EqualTo(victimEntity),
+                "The enemy must keep its authoritative attack target on the player unit.");
+        }
+
+        [UnityTest]
+        [Order(6)]
+        [Timeout(420000)]
         public IEnumerator FullBattle_ReachesTerminalOutcomeAndStopsPresentation()
         {
             yield return WaitForBootstrap();
             var host = _controller.Host;
+            var localPlayer = _controller.LocalSession.Player;
 
-            // Get units from the host (server-assigned EntityIds)
             var snapshots = host.GetAllSnapshots();
             Assert.That(snapshots.Length, Is.GreaterThanOrEqualTo(40), "Host must have 40 units after initialization.");
 
-            // First 20 units are PlayerId(1), next 20 are PlayerId(2)
-            var targetEntity = snapshots[20].Entity;  // First enemy unit (Player 2)
-
-            // Order the whole local army to focus one enemy unit. After the
-            // focus target dies, auto-acquire keeps the battle running until
-            // one side is fully eliminated.
-            var blueEntities = new CoreEntityId[20];
-            for (var index = 0; index < blueEntities.Length; index++)
+            // Enemy counter-attacks are live (Phase 2.1 ordering bugfix), so
+            // the earlier ordered tests may have cost the local army units;
+            // the focus order is issued with the surviving roster only, and
+            // the target must be alive to pass authoritative validation.
+            var blueEntities = new System.Collections.Generic.List<CoreEntityId>();
+            var targetEntity = default(CoreEntityId);
+            long rallyX = 0;
+            long rallyZ = 0;
+            var enemyCount = 0;
+            for (var index = 0; index < snapshots.Length; index++)
             {
-                blueEntities[index] = snapshots[index].Entity;
+                var snapshot = snapshots[index];
+                if (snapshot.CurrentHealth <= 0)
+                {
+                    continue;
+                }
+
+                if (snapshot.Owner == localPlayer)
+                {
+                    blueEntities.Add(snapshot.Entity);
+                }
+                else
+                {
+                    rallyX += snapshot.Position.X;
+                    rallyZ += snapshot.Position.Z;
+                    enemyCount++;
+                    if (!targetEntity.IsValid)
+                    {
+                        targetEntity = snapshot.Entity;
+                    }
+                }
             }
 
-            QueueAttack(blueEntities, targetEntity);
+            Assert.That(blueEntities.Count, Is.GreaterThan(0), "The local army must have survivors.");
+            Assert.That(targetEntity.IsValid, Is.True, "The enemy army must have survivors.");
+
+            var rallyPoint = new WorldPointMm(
+                (int)(rallyX / enemyCount),
+                (int)(rallyZ / enemyCount));
+
+            // March the surviving army into the center of the enemy
+            // formation: the explicit move order guarantees convergence
+            // (two-sided pursuit-only dynamics otherwise produce slow,
+            // chaotic engagements), then the delayed focus attack
+            // re-enables auto-acquire and turns the contact into a decisive
+            // attrition battle. After the focus target dies, auto-acquire
+            // keeps the battle running until one side is fully eliminated.
+            var queue = GetCommandQueue();
+            queue.QueueMove(rallyPoint, blueEntities.ToArray(), NextServerTick());
+            queue.QueueAttack(targetEntity, blueEntities.ToArray(), NextServerTick() + 120);
 
             var elapsed = 0f;
             while (!_controller.Outcome.IsTerminal && elapsed < BattleTimeoutSeconds)
