@@ -1,6 +1,6 @@
 # Архитектурные и проектные решения (ADR)
 
-> Живой нормативный и исторический журнал • обновлено 2026-08-21
+> Живой нормативный и исторический журнал • обновлено 2026-08-22
 
 Каждое долговременное решение содержит Context, Alternatives, Decision и Consequences. Детали, которых нет в утверждённом плане, не считаются решёнными.
 
@@ -197,9 +197,44 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 - Verification: 223/223 EditMode (184 baseline + 39 Phase 2.4) и 5/5 PlayMode; Unity 6000.5.6f1.
 - Зафиксированные ограничения: disconnect без явного сигнала не детектируется до transport (2.5); конкретная grace duration — TBD (OD-2); dedicated-host teardown — отдельное будущее решение.
 
+## ADR-009: Network Transport Architecture (Phase 2.5)
+
+**Статус:** Accepted, 2026-08-22 (OD-1 одобрен владельцем: LiteNetLib — preferred initial carrier, subject to implementation and validation; implementation не начат)
+
+### Context
+
+После Phase 2.1–2.4 (commit `73d1276`) существуют authoritative simulation, command channel, server tick lifecycle (ADR-007) и session/player identity (ADR-008), но весь трафик остаётся in-process (`LocalCommandChannel`). ARCHITECTURE фиксировал transport technology как TBD. R&D (`Documentation/Research/Phase_02_05_Network_Transport_RND.md`) и draft ADR-009 прошли independent review (rev.2, rev.3) и одобрены владельцем. Phase 2.5 определяет transport contract, на который затем опираются Snapshot Networking (2.6) и Reconnect/Resync (2.7). Snapshot cadence/delta/FoW, реализация reconnect/resync, matchmaking, lobby, authentication, anti-cheat, шифрование, NAT traversal и deployment — out of scope.
+
+### Alternatives
+
+1. TCP-only. Отклонено: head-of-line blocking недопустим для latest-wins snapshot стрима; reliability TCP не контролируется проектом.
+2. QUIC. Отложен: избыточная коннект-модель и молодой game-dev ecosystem; кандидат на замену носителя под тем же контрактом.
+3. Unity Transport. Отклонён для общего core: Unity-bound пакет не может жить в `GlobalFront.Server` без Unity API; расщепляет стек.
+4. Собственный минимальный UDP-слой. Fallback: полный контроль, но полная maintenance/reliability нагрузка (High risk корректности).
+5. LiteNetLib как несущий слой. Выбран (OD-1): pure .NET, engine-independent, зрелая reliability, MIT; внутренние ARQ/sequence-механизмы не нормируются — требуется эквивалентность только delivery semantics за контрактом `INetworkCarrier`.
+
+### Decision
+
+- Три канала поверх UDP: **C0 Control** (reliable ordered), **C1 Command** (reliable ordered, client→server), **C2 Snapshot** (unreliable sequenced, latest-wins по `SnapshotTick` конверта C2, payload opaque — Snapshot Protocol v1 не изменяется и транспортом не интерпретируется).
+- Разделение version spaces: `CarrierVersion` (конверт собственного носителя, существует только при custom), `MessageVersion` (версия проектной message-модели, проверяется в handshake при любом носителе), `SnapshotProtocol.Version` (payload).
+- Delivery semantics, обязательные для любого носителя: reliable ordered C0+C1; unreliable sequenced C2 latest-wins; фрагментация с bounded reassembly (lifetime 2000 мс по инжектируемым часам `ITransportClock`; ≤ 4 групп на peer; ≤ 2048 фрагментов на группу; ≤ 1 MB на сообщение; per-peer budget ≤ 2 MB; admission control → drop старейшей группы); delivery не влияет на авторитетный порядок команд (`RequestedTick → PlayerId → Sequence`). Invariants собственного носителя (при OD-1 = custom): единое uint16 reliable-пространство на направление для C0+C1, отдельное snapshot-пространство без ACK, serial-number arithmetic (RFC 1982), receive window W = 1024, reorder window R = 64.
+- Attribution: после handshake `token → ConnectionHandle → SessionId` (64-битный crypto-random токен); команды проходят неизменённый session gate ADR-008; `SessionManager` остаётся единственным источником PlayerId; `SessionId` (Guid) по проводу после handshake не летает.
+- Команды: additive `CommandWireCodec` в Core; `CommandHeader` не изменяется. Авторитетные отказы — асинхронный `CommandAck { PlayerId (uint8), CommandSequence (uint32), SessionRejection (uint8), MatchCommandRejection (uint8) }` (C0); `NetworkCommandChannel` возвращает только локальный pre-flight/queued результат; `ICommandChannel` не изменяется.
+- Транспорт не владеет тиками: команды дренируются в существующей фазе `TickStarting` (ADR-007); все транспортные таймеры — на инжектируемом монотонном `ITransportClock`; grace Phase 2.4 остаётся в server ticks.
+- Concurrency invariant: worker thread принимает только raw datagrams в bounded queue; парсинг, attribution и любые вызовы `SessionManager`/`MatchServer`/binder — только на host/simulation thread.
+- Message-size ceiling 1 MB (конфигурируемо) — готовность к full-state resync (2.7) > 64 KB по reliable-пространству; Snapshot Networking здесь не решается.
+- Security baseline: magic/version/length фильтры, crypto-random токены, sequence window против replay, rate limiting per endpoint; шифрование и настоящая аутентификация явно отложены.
+- OD-1 = **LiteNetLib** как preferred initial transport carrier за контрактом `INetworkCarrier`/`INetworkEndpoint` — subject to implementation and validation; message-модель, attribution, версии, `CommandAck` и lifecycle остаются project-owned; зависимость вводится только в рамках implementation Phase 2.5 (pinned version + ThirdPartyAssetsRegistry), контракт допускает замену вплоть до собственного носителя.
+
+### Consequences
+
+- `GlobalFront.Server` получит `…Server.Transport`, `GlobalFront.Core` — `CommandWireCodec`, `GlobalFront.Client` — `NetworkCommandChannel` и клиентский endpoint pump. `MatchServer`, `TickDriver`, `SessionManager`, `CommandHeader`, Snapshot Protocol v1 не изменяются.
+- Тестовый фундамент: детерминированный `VirtualNetworkPipe` с loss/duplication/reorder/corruption/latency/timeout профилями и виртуальными часами; version-space, wrap-around и reassembly-budget проверки; end-to-end multi-client сценарии.
+- Timing constants (OD-8) — TBD; retransmission timeout и idle timeout должны быть явно согласованы во время implementation (с keepalive, grace-ожиданиями 2.4 и impairment test matrix).
+- Остальные OD (размещение, формат токена, MTU/ceiling, threading, ordering, CommandAck, IPv4) зафиксированы в принятом R&D; их конкретные значения уточняются при implementation без смены архитектуры.
+
 ## Open Decision Queue
 
-- Transport technology.
 - Snapshot networking cadence, reconnect/resync, replay и desync diagnostics.
 - Точные faction rosters, abilities, generals, stats и balance.
 - Economy/build/production rules, map layouts и presentation direction.

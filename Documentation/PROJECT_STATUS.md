@@ -1,10 +1,10 @@
 # Статус проекта GlobalFront
 
-> Фактический технический статус • обновлено 2026-08-21
+> Фактический технический статус • обновлено 2026-08-22
 
 ## Summary
 
-GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 1 завершена. Phase 2.1 Server-Owned Match State, Phase 2.2 Command Channel и Phase 2.3 Server Tick Driver завершены commits `8178110`, `313e9ef` и `ea0435d` (ADR-007). Phase 2.4 Session / Player Identity реализована и проверена (commit pending, ADR-008). Следующий шаг после commit — Phase 2.5 Network Transport.
+GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 1 завершена. Phase 2.1 Server-Owned Match State, Phase 2.2 Command Channel, Phase 2.3 Server Tick Driver и Phase 2.4 Session / Player Identity завершены commits `8178110`, `313e9ef`, `ea0435d` и `73d1276` (ADR-007, ADR-008). Phase 2.5 Network Transport — IN_PROGRESS: ADR-009 принят (OD-1 = LiteNetLib как preferred initial carrier за контрактом `INetworkCarrier`), implementation не начат, зависимость не добавлена.
 
 ## Confirmed Baseline
 
@@ -25,8 +25,8 @@ GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 
 - 2.1 Server-Owned Match State — COMPLETE
 - 2.2 Command Channel — COMPLETE
 - 2.3 Server Tick Driver — COMPLETE, `ea0435d` (ADR-007)
-- 2.4 Session / Player Identity — implemented, tests green, **commit pending** (ADR-008); lifecycle завершается на `MatchPhase.Finished`, `Closed` зарезервирован для будущего server lifecycle/teardown
-- 2.5 Network Transport — not implemented
+- 2.4 Session / Player Identity — COMPLETE, `73d1276` (ADR-008); lifecycle завершается на `MatchPhase.Finished`, `Closed` зарезервирован для будущего server lifecycle/teardown
+- 2.5 Network Transport — IN_PROGRESS (ADR-009 Accepted, OD-1 = LiteNetLib за контрактом `INetworkCarrier`; implementation не начат, зависимость не добавлена)
 - 2.6 Snapshot Networking — not implemented
 - 2.7 Reconnect / Resync — not implemented
 
@@ -40,7 +40,7 @@ GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 
 
 - Client пока напрямую ссылается на Server из-за local host.
 - Server tick lifecycle engine-independent (ADR-007); тот же `TickDriver`/`MatchServer` core будет использован future dedicated host.
-- Session/player identity реализованы server-authoritative (ADR-008): PlayerId назначается только сервером; transport attribution, конкретная grace duration и dedicated-server teardown — будущие решения.
+- Session/player identity реализованы server-authoritative (ADR-008): PlayerId назначается только сервером; транспортная архитектура определена ADR-009 (OD-1 = LiteNetLib за контрактом `INetworkCarrier`); transport implementation, timing constants (OD-8) и ввод зависимости — впереди, в рамках Phase 2.5.
 - Snapshot serialization реализована, но network delivery отсутствует.
 - Pathfinding и детерминированное разрешение препятствий отсутствуют.
 - Детали roster, abilities, stats, balance, generals и map layouts остаются TBD.

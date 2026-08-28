@@ -1,6 +1,6 @@
 # Phase 02 — Multiplayer Foundation
 
-> Status: **CURRENT** • 2.1–2.3 complete • 2.4 implemented (commit pending)
+> Status: **CURRENT** • 2.1–2.4 complete • 2.5 in progress
 
 ## Goal
 
@@ -17,8 +17,8 @@
 1. 2.1 Server-Owned Match State — **COMPLETE**, `8178110`.
 2. 2.2 Command Channel — **COMPLETE**, `313e9ef`.
 3. 2.3 Server Tick Driver — **COMPLETE**, `ea0435d` (ADR-007).
-4. 2.4 Session / Player Identity — implemented и проверен (ADR-008); commit pending. Lifecycle завершается на `Finished`; `MatchPhase.Closed` (teardown/registry disposal) — reserved future state для dedicated/server lifecycle.
-5. 2.5 Network Transport.
+4. 2.4 Session / Player Identity — **COMPLETE**, `73d1276` (ADR-008). Lifecycle завершается на `Finished`; `MatchPhase.Closed` (teardown/registry disposal) — reserved future state для dedicated/server lifecycle.
+5. 2.5 Network Transport — **IN_PROGRESS**: ADR-009 Accepted (OD-1 = LiteNetLib как preferred initial carrier за контрактом `INetworkCarrier`); implementation не начат, зависимость не добавлена.
 6. 2.6 Snapshot Networking.
 7. 2.7 Reconnect / Resync.
 
@@ -36,7 +36,8 @@
 - 2.1 — complete;
 - 2.2 — complete;
 - 2.3 — complete (`ea0435d`);
-- 2.4 — implemented (commit pending, ADR-008);
+- 2.4 — complete (`73d1276`, ADR-008);
+- 2.5 — in progress (ADR-009 Accepted);
 - Phase 2 complete — prerequisite для multiplayer integration и M1.
 
 ## Acceptance Criteria
@@ -72,4 +73,4 @@
 
 ## Definition of Done
 
-Steps 2.1–2.7 реализованы, протестированы и документированы; authoritative dedicated-server foundation поддерживает sessions, command/snapshot networking и reconnect/resync. Сейчас Definition of Done **не выполнен**; 2.4 реализован и проверен (commit pending, ADR-008), next — 2.5 Network Transport.
+Steps 2.1–2.7 реализованы, протестированы и задокументированы; authoritative dedicated-server foundation поддерживает sessions, command/snapshot networking и reconnect/resync. Сейчас Definition of Done **не выполнен**; 2.4 complete (`73d1276`), 2.5 Network Transport — in progress (ADR-009 Accepted, implementation не начат).

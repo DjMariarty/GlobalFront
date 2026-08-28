@@ -12,6 +12,7 @@
 - Фазовые документы приведены к единой структуре Goal → Definition of Done.
 - Зафиксированы пять основных фракций 1.0 и перенос подфракций в post-1.0.
 - Current baseline отделён от approved target architecture.
+- ADR-009 Network Transport Architecture (Phase 2.5) — Accepted (OD-1 = LiteNetLib как preferred initial carrier за контрактом `INetworkCarrier`); R&D-документы в `Documentation/Research/`.
 
 ### Technical Milestones
 
@@ -20,7 +21,8 @@
 - `ICommandChannel` и `LocalCommandChannel` отделяют client command queue от конкретного local host.
 - `StopCommand` включён в command channel baseline.
 - Phase 2.3 Server Tick Driver — реализован и принят (ADR-007), commit `ea0435d`: engine-independent `TickDriver` в `GlobalFront.Server` (20 Hz, bounded catch-up, manual/real-time); `LocalMatchHost` (ServerHost) владеет `MatchServer` и `TickDriver`; `FixedSimulationRunner` удалён; server tick lifecycle отделён от Unity client lifecycle.
-- Phase 2.4 Session / Player Identity — реализована и принята (ADR-008; commit pending): opaque `SessionId`/`MatchId` в Core; `SessionManager` в `GlobalFront.Server` — единственный источник `PlayerId` (монотонное назначение по порядку join, без повторного использования); session gate перед неизменным `MatchServer`; `LocalCommandChannel` session-attributed; клиент получает `PlayerId` от сервера (`ClientSession`); match lifecycle завершается на `MatchPhase.Finished` — `Closed` зарезервирован для будущего server lifecycle/teardown.
+- Phase 2.4 Session / Player Identity — реализована и принята (ADR-008), commit `73d1276`: opaque `SessionId`/`MatchId` в Core; `SessionManager` в `GlobalFront.Server` — единственный источник `PlayerId` (монотонное назначение по порядку join, без повторного использования); session gate перед неизменным `MatchServer`; `LocalCommandChannel` session-attributed; клиент получает `PlayerId` от сервера (`ClientSession`); match lifecycle завершается на `MatchPhase.Finished` — `Closed` зарезервирован для будущего server lifecycle/teardown.
+- Phase 2.5 Network Transport — IN_PROGRESS: ADR-009 принят (OD-1 = LiteNetLib как preferred initial carrier за контрактом `INetworkCarrier`, subject to implementation and validation); implementation не начат, LiteNetLib-зависимость не добавлена.
 
 ### Verified
 
