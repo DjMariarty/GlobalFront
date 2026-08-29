@@ -53,9 +53,13 @@ LocalMatchHost  (ServerHost: владеет MatchServer и TickDriver)
 
 **Phase 2.3 Server Tick Driver — complete, commit `ea0435d`** (ADR-007). Server tick lifecycle больше не зависит от Unity client lifecycle: `TickDriver` в `GlobalFront.Server` расписывает тики (manual mode для тестов, real-time 20 Hz с bounded catch-up через `FixedStepClock`); `LocalMatchHost` выполняет роль ServerHost; `PrototypeRtsController` pump’ит driver и потребляет snapshots; `FixedSimulationRunner` удалён. Local и future dedicated server используют общий simulation core (`MatchServer` + `TickDriver`). Транспорт, session/identity, reconnect/resync — out of scope (Phase 2.4–2.7).
 
-## Session / Player Identity — Phase 2.4 Implemented (commit pending)
+## Session / Player Identity — Phase 2.4 Complete (`73d1276`)
 
-Server-authoritative identity layer (ADR-008): opaque `SessionId`/`MatchId` в Core, `SessionManager` в `GlobalFront.Server` — единственный источник `PlayerId` (монотонное назначение по порядку join, без повторного использования). Command ingress проходит session gate перед неизменным `MatchServer`; `CommandHeader`, canonical command order и Snapshot Protocol v1 не изменяются. Match lifecycle в 2.4 завершается на `Finished`; `MatchPhase.Closed` (teardown/registry disposal) — reserved future state для dedicated/server lifecycle. Transport attribution, реализация reconnect, конкретная grace duration — Phase 2.5–2.7 / TBD.
+Server-authoritative identity layer (ADR-008): opaque `SessionId`/`MatchId` в Core, `SessionManager` в `GlobalFront.Server` — единственный источник `PlayerId` (монотонное назначение по порядку join, без повторного использования). Command ingress проходит session gate перед неизменным `MatchServer`; `CommandHeader`, canonical command order и Snapshot Protocol v1 не изменяются. Match lifecycle в 2.4 завершается на `Finished`; `MatchPhase.Closed` (teardown/registry disposal) — reserved future state для dedicated/server lifecycle. Transport attribution реализован в Phase 2.5 (ADR-009); реализация reconnect, конкретная grace duration — Phase 2.7 / TBD.
+
+## Network Transport — Phase 2.5 Complete (`feat: implement network transport (Phase 2.5)`)
+
+Транспортный слой по ADR-009 (OD-1 = LiteNetLib 1.3.5): контракт `INetworkCarrier` с двумя носителями — детерминированный `OwnDatagramCarrier` поверх `VirtualNetworkPipe` и `LiteNetLibCarrier` (real UDP). C0 Control и C1 Command — reliable ordered (единое seq-пространство на направление), C2 Snapshot — unreliable sequenced latest-wins по `SnapshotTick`; Snapshot Protocol v1 переносится как opaque payload. Атрибуция: токен → `ConnectionHandle` → `SessionId` → session gate ADR-008; `NetworkCommandChannel` реализует `ICommandChannel` (local pre-flight отдельно от асинхронного авторитетного `CommandAckPayload`). Транспорт не владеет simulation: `MatchServer`/`TickDriver`/`SessionManager`/`CommandHeader`/Snapshot Protocol v1 не изменены. Финальный независимый review = APPROVE (P0=0/P1=0/P2=0). Delta snapshots / cadence / Fog of War replication — Phase 2.6; reconnect/resync — Phase 2.7.
 
 ## Approved Target Architecture
 
@@ -71,7 +75,7 @@ Product 1.0 требует:
 - 3000+ entity target;
 - pathfinding, performance и reliability, пригодные для 5v5.
 
-Transport technology, protocol cadence, resync algorithm, replay format, desync hashing/telemetry, deployment topology и server infrastructure: **TBD / Architecture Decision Required**. Session model baseline зафиксирован ADR-008 (Phase 2.4); его transport attribution, grace duration и dedicated-server teardown — отдельные будущие решения.
+Transport technology определена ADR-009 (Accepted; OD-1 = LiteNetLib 1.3.5 — preferred initial carrier за контрактом `INetworkCarrier`) и реализована в Phase 2.5. Protocol cadence, resync algorithm, replay format, desync hashing/telemetry, deployment topology и server infrastructure: **TBD / Architecture Decision Required**. Session model baseline зафиксирован ADR-008 (Phase 2.4); его dedicated-server teardown — отдельное будущее решение.
 
 ## Gameplay Architecture Boundary
 
@@ -96,10 +100,10 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 ## Verification Baseline
 
 - Unity `6000.5.6f1`
-- 223/223 EditMode passed 2026-08-21 (`Artifacts/TestResults/editmode-phase24.xml`; baseline 184 + 39 Phase 2.4 tests)
-- 5/5 PlayMode passed 2026-08-21 (`Artifacts/TestResults/playmode-phase24.xml`)
-- last committed technical milestone: `ea0435d` Phase 2.3
-- Phase 2.4 Session / Player Identity: implemented и проверен, commit pending (ADR-008)
+- 301/301 EditMode passed 2026-08-29 (`Artifacts/TestResults/editmode-phase25-r4.xml`; baseline 223 + 78 Phase 2.5 tests)
+- 6/6 PlayMode passed 2026-08-29 (`Artifacts/TestResults/playmode-phase25-r4.xml`)
+- last committed technical milestone: `feat: implement network transport (Phase 2.5)`
+- Phase 2.4 Session / Player Identity: complete, `73d1276` (ADR-008); Phase 2.5 Network Transport: complete (ADR-009, final review APPROVE)
 
 ## Связанные документы
 

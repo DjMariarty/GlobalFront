@@ -1,6 +1,6 @@
 # Phase 02 — Multiplayer Foundation
 
-> Status: **CURRENT** • 2.1–2.4 complete • 2.5 in progress
+> Status: **CURRENT** • 2.1–2.5 complete • next: 2.6 Snapshot Networking
 
 ## Goal
 
@@ -18,7 +18,7 @@
 2. 2.2 Command Channel — **COMPLETE**, `313e9ef`.
 3. 2.3 Server Tick Driver — **COMPLETE**, `ea0435d` (ADR-007).
 4. 2.4 Session / Player Identity — **COMPLETE**, `73d1276` (ADR-008). Lifecycle завершается на `Finished`; `MatchPhase.Closed` (teardown/registry disposal) — reserved future state для dedicated/server lifecycle.
-5. 2.5 Network Transport — **IN_PROGRESS**: ADR-009 Accepted (OD-1 = LiteNetLib как preferred initial carrier за контрактом `INetworkCarrier`); implementation не начат, зависимость не добавлена.
+5. 2.5 Network Transport — **COMPLETE**, `feat: implement network transport (Phase 2.5)` (ADR-009, OD-1 = LiteNetLib 1.3.5): контракт `INetworkCarrier` + собственный детерминированный `OwnDatagramCarrier` (`VirtualNetworkPipe`) и `LiteNetLibCarrier` (real UDP); C0/C1 reliable ordered, C2 unreliable sequenced latest-wins, async CommandAck, attribution token → session gate, security/rate-limit/fragmentation baseline, connection/admission hardening; финальный независимый review = **APPROVE** (P0=0/P1=0/P2=0); 301/301 EditMode (включая real-UDP loopback integration, oversized snapshot, retransmission bound, lifecycle/cleanup/spoof soak, admission churn), 6/6 PlayMode.
 6. 2.6 Snapshot Networking.
 7. 2.7 Reconnect / Resync.
 
@@ -37,7 +37,7 @@
 - 2.2 — complete;
 - 2.3 — complete (`ea0435d`);
 - 2.4 — complete (`73d1276`, ADR-008);
-- 2.5 — in progress (ADR-009 Accepted);
+- 2.5 — complete (`feat: implement network transport (Phase 2.5)`, ADR-009);
 - Phase 2 complete — prerequisite для multiplayer integration и M1.
 
 ## Acceptance Criteria
@@ -73,4 +73,4 @@
 
 ## Definition of Done
 
-Steps 2.1–2.7 реализованы, протестированы и задокументированы; authoritative dedicated-server foundation поддерживает sessions, command/snapshot networking и reconnect/resync. Сейчас Definition of Done **не выполнен**; 2.4 complete (`73d1276`), 2.5 Network Transport — in progress (ADR-009 Accepted, implementation не начат).
+Steps 2.1–2.7 реализованы, протестированы и задокументированы; authoritative dedicated-server foundation поддерживает sessions, command/snapshot networking и reconnect/resync. Сейчас Definition of Done **не выполнен**; 2.4 complete (`73d1276`), 2.5 Network Transport — complete (ADR-009, final review APPROVE), 2.6–2.7 впереди.

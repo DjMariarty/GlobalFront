@@ -166,7 +166,7 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 
 ## ADR-008: Session / Player Identity — server-authoritative identity layer (Phase 2.4)
 
-**Статус:** Accepted, 2026-08-21 (implementation и tests завершены; commit pending)
+**Статус:** Accepted, 2026-08-21 (implementation и tests завершены; коммит `73d1276`)
 
 ### Context
 
@@ -199,7 +199,7 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 
 ## ADR-009: Network Transport Architecture (Phase 2.5)
 
-**Статус:** Accepted, 2026-08-22 (OD-1 одобрен владельцем: LiteNetLib — preferred initial carrier, subject to implementation and validation; implementation не начат)
+**Статус:** Accepted, 2026-08-22 (OD-1 одобрен владельцем: LiteNetLib — preferred initial carrier, subject to implementation and validation). **Реализация: завершена и верифицирована — Phase 2.5 COMPLETE, `feat: implement network transport (Phase 2.5)` (2026-08-29): финальный независимый review = APPROVE, P0=0/P1=0/P2=0; LiteNetLib 1.3.5 validated real-UDP loopback; large C2 fragmentation validated на обоих носителях.**
 
 ### Context
 

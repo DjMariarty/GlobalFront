@@ -1,6 +1,7 @@
-# ADR-009: Network Transport Architecture (Phase 2.5) — DRAFT
+# ADR-009: Network Transport Architecture (Phase 2.5) — Accepted
 
 > **Статус: Accepted, 2026-08-22** (OD-1 = LiteNetLib одобрен владельцем: preferred initial transport carrier behind `INetworkCarrier`, subject to implementation and validation).
+> **Реализация: завершена и верифицирована — Phase 2.5 COMPLETE (2026-08-29)**: финальный независимый review = APPROVE (P0=0/P1=0/P2=0); LiteNetLib 1.3.5 validated (real-UDP loopback integration), large C2 fragmentation validated на обоих носителях, условия "subject to implementation and validation" выполнены.
 > Финальная версия записана в [DECISIONS.md](../DECISIONS.md); этот файл сохраняется как approved research-источник (rev. 3).
 > Основание: [Phase 2.5 Network Transport — R&D Report](Phase_02_05_Network_Transport_RND.md), контрольная точка `73d1276`.
 

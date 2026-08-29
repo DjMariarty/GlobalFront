@@ -1,6 +1,6 @@
 # Phase 2.5 — Network Transport: R&D Report
 
-> Статус: **R&D Report — основание принятого ADR-009 (Accepted, 2026-08-22; OD-1 = LiteNetLib)** • rev. 3 по итогам independent review rev.2 (P0=0/P1=0) • контрольная точка `73d1276` (Phase 2.4)
+> Статус: **R&D Report — основание принятого ADR-009 (Accepted, 2026-08-22; OD-1 = LiteNetLib)** • rev. 3 по итогам independent review rev.2 (P0=0/P1=0) • контрольная точка `73d1276` (Phase 2.4) • реализация верифицирована: Phase 2.5 **COMPLETE** (2026-08-29), финальный независимый review = APPROVE (P0=0/P1=0/P2=0), LiteNetLib 1.3.5 validated real-UDP loopback, large C2 fragmentation validated на обоих носителях, retransmission amplification исправлена, connection/admission hardening завершён; оставшиеся заметки документа — только informational/future (2.6/2.7)
 > Документ не является принятым ADR; финальное решение — ADR-009 в [DECISIONS.md](../DECISIONS.md).
 
 ## 1. Проверенный текущий technical baseline
@@ -284,7 +284,7 @@ Snapshot cadence policy, delta snapshots, FoW-фильтрация реплик�
 
 ## Связанные документы
 
-- [ADR-009 Network Transport (DRAFT)](ADR-009-Network-Transport-DRAFT.md)
+- [ADR-009 Network Transport (Accepted)](ADR-009-Network-Transport-DRAFT.md)
 - [Architecture](../ARCHITECTURE.md)
 - [Decisions](../DECISIONS.md)
 - [Phase 02](../Phases/Phase_02_Multiplayer.md)
