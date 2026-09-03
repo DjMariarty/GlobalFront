@@ -379,6 +379,102 @@ namespace GlobalFront.Core.Snapshot
             return DeltaCodecResult.Ok;
         }
 
+        /// <summary>
+        /// Encodes a run of ADD records without a packet header (39 bytes each,
+        /// byte-identical to the v1 unit record). This is the record framing of
+        /// the keyframe slice codec (step 2.6.4): a baseline streams as one
+        /// slice header followed by fixed-size record runs, so no second
+        /// decoder exists beside the delta one.
+        /// </summary>
+        /// <param name="adds">Records in canonical ascending entity-id order.</param>
+        /// <param name="destination">Caller-owned buffer; needs exactly
+        /// <c>adds.Length * <see cref="DeltaSnapshotProtocol.AddRecordSizeBytes"/></c> bytes.</param>
+        /// <param name="bytesWritten">Exact run size on success, 0 otherwise.</param>
+        public static DeltaCodecResult TryEncodeAddRecords(
+            ReadOnlySpan<DeltaAddRecord> adds,
+            Span<byte> destination,
+            out int bytesWritten)
+        {
+            bytesWritten = 0;
+
+            var total = adds.Length * DeltaSnapshotProtocol.AddRecordSizeBytes;
+            if (destination.Length < total)
+            {
+                return DeltaCodecResult.BufferTooSmall;
+            }
+
+            // ReadAdds enforces strictly ascending non-zero ids; reject the same
+            // violations on the encode side so a failure can never pass silently.
+            var previous = 0L;
+            for (var index = 0; index < adds.Length; index++)
+            {
+                if (!TryGetEncodableId(adds[index].Entity, out var id) || id <= previous)
+                {
+                    return DeltaCodecResult.Malformed;
+                }
+
+                previous = id;
+            }
+
+            var writer = new SpanWriter(destination);
+            WriteAdds(ref writer, adds);
+            if (writer.HasOverflowed || writer.Offset != total)
+            {
+                return DeltaCodecResult.BufferTooSmall;
+            }
+
+            bytesWritten = total;
+            return DeltaCodecResult.Ok;
+        }
+
+        /// <summary>
+        /// Decodes a run of ADD records written by
+        /// <see cref="TryEncodeAddRecords"/>. The source must hold exactly
+        /// <paramref name="recordCount"/> records: the run length is implied by
+        /// the framing (slice header or reassembly), so shorter input is
+        /// truncated and longer input carries bytes the framing cannot account
+        /// for — both are rejected instead of being guessed at.
+        /// </summary>
+        public static DeltaCodecResult TryDecodeAddRecords(
+            ReadOnlySpan<byte> source,
+            int recordCount,
+            Span<DeltaAddRecord> adds,
+            out int recordsRead)
+        {
+            recordsRead = 0;
+
+            if (recordCount < 0)
+            {
+                return DeltaCodecResult.InvalidArgument;
+            }
+
+            if (adds.Length < recordCount)
+            {
+                return DeltaCodecResult.BufferTooSmall;
+            }
+
+            var total = recordCount * DeltaSnapshotProtocol.AddRecordSizeBytes;
+            if (source.Length < total)
+            {
+                return DeltaCodecResult.BufferTooSmall;
+            }
+
+            if (source.Length > total)
+            {
+                return DeltaCodecResult.Malformed;
+            }
+
+            var reader = new SpanReader(source, 0);
+            var result = ReadAdds(ref reader, recordCount, adds);
+            if (result != DeltaCodecResult.Ok)
+            {
+                return result;
+            }
+
+            recordsRead = recordCount;
+            return DeltaCodecResult.Ok;
+        }
+
         private static DeltaCodecResult ReadHeader(
             ReadOnlySpan<byte> source,
             out DeltaSnapshotHeader header)

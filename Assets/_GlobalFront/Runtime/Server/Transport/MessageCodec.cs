@@ -143,7 +143,7 @@ namespace GlobalFront.Server.Transport
             }
 
             var type = (TransportMessageType)data[offset + 4];
-            if (type == TransportMessageType.None || type > TransportMessageType.Snapshot)
+            if (type == TransportMessageType.None || type > TransportMessageType.ReplicationRequest)
             {
                 return MessageError.UnknownMessageType;
             }

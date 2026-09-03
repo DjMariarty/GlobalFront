@@ -37,6 +37,13 @@ namespace GlobalFront.Server.Transport
         /// <summary>Raised on the host thread when a session is lost/closed.</summary>
         public event Action<SessionId, TransportDisconnectReason> SessionDetached;
 
+        /// <summary>
+        /// Raised on the host thread for every valid client→server replication
+        /// feedback message (SnapshotAck / ReplicationRequest, Phase 2.6 step
+        /// 2.6.4). The payload slice is valid only inside the handler call.
+        /// </summary>
+        public event Action<ReplicationFeedbackMessage> ReplicationFeedbackReceived;
+
         public ServerTransportHost(
             INetworkCarrier carrier,
             SessionManager sessions,
@@ -201,8 +208,20 @@ namespace GlobalFront.Server.Transport
                     HandlePing(transportEvent, header);
                     return;
 
+                case TransportMessageType.SnapshotAck:
+                    HandleReplicationFeedback(
+                        transportEvent, header, TransportMessageType.SnapshotAck,
+                        GlobalFront.Core.Snapshot.SnapshotAckCodec.SizeBytes);
+                    return;
+
+                case TransportMessageType.ReplicationRequest:
+                    HandleReplicationFeedback(
+                        transportEvent, header, TransportMessageType.ReplicationRequest,
+                        GlobalFront.Core.Snapshot.ReplicationRequestCodec.SizeBytes);
+                    return;
+
                 default:
-                    // Snapshots/acks from clients are protocol violations.
+                    // Snapshots from clients are protocol violations.
                     _carrier.Metrics.DroppedMalformed++;
                     return;
             }
@@ -361,6 +380,39 @@ namespace GlobalFront.Server.Transport
             offset = MessageCodec.EncodePingPong(_messageBuffer, offset, timestamp);
             _carrier.Send(
                 transportEvent.ConnectionId, TransportChannel.Control, _messageBuffer, 0, offset);
+        }
+
+        /// <summary>
+        /// Validates one client→server replication feedback message (session
+        /// token plus minimum payload size) and forwards the payload slice to
+        /// the replication layer (step 2.6.4). The buffer is owned by the
+        /// transport event; handlers decode immediately and never retain it.
+        /// </summary>
+        private void HandleReplicationFeedback(
+            TransportEvent transportEvent,
+            TransportMessageHeader header,
+            TransportMessageType expectedType,
+            int minimumPayloadBytes)
+        {
+            if (!_binder.TryGetByToken(header.SessionToken, out var binding) ||
+                binding.ConnectionId != transportEvent.ConnectionId)
+            {
+                _carrier.Metrics.DroppedBadToken++;
+                return;
+            }
+
+            if (header.PayloadLength < minimumPayloadBytes)
+            {
+                _carrier.Metrics.DroppedMalformed++;
+                return;
+            }
+
+            ReplicationFeedbackReceived?.Invoke(new ReplicationFeedbackMessage(
+                binding.Session,
+                expectedType,
+                transportEvent.Data,
+                header.PayloadOffset,
+                header.PayloadLength));
         }
 
         private void SendConnectDenied(int connectionId, ConnectDenyReason reason)

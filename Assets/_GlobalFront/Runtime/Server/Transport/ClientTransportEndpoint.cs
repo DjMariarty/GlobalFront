@@ -99,6 +99,31 @@ namespace GlobalFront.Server.Transport
                 _connectionId, TransportChannel.Command, _messageBuffer, 0, offset + length);
         }
 
+        /// <summary>
+        /// Queues one client→server replication feedback record (a 34-byte
+        /// SnapshotAck or a repair request, Phase 2.6 step 2.6.4) for delivery
+        /// on the reliable control channel. The returned value reflects local
+        /// pre-flight only; the record itself is the authoritative content.
+        /// </summary>
+        public bool TrySendReplicationFeedback(
+            TransportMessageType type,
+            byte[] payload,
+            int length)
+        {
+            if (State != ClientTransportState.Established ||
+                length <= 0 ||
+                (type != TransportMessageType.SnapshotAck &&
+                    type != TransportMessageType.ReplicationRequest))
+            {
+                return false;
+            }
+
+            var offset = MessageCodec.WriteHeader(_messageBuffer, 0, type, Token, 0);
+            Array.Copy(payload, 0, _messageBuffer, offset, length);
+            return _carrier.Send(
+                _connectionId, TransportChannel.Control, _messageBuffer, 0, offset + length);
+        }
+
         public void GracefulDisconnect()
         {
             if (State == ClientTransportState.Disconnected || State == ClientTransportState.Idle)

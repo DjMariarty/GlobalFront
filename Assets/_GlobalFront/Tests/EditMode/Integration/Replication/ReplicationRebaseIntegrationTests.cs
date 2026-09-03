@@ -1,0 +1,152 @@
+using System;
+using GlobalFront.Client.Replication;
+using GlobalFront.Core.Model;
+using GlobalFront.Core.Movement;
+using GlobalFront.Core.Snapshot;
+using GlobalFront.Server.Replication;
+using GlobalFront.Server.Transport;
+using NUnit.Framework;
+
+namespace GlobalFront.Tests.EditMode.Integration.Replication
+{
+    /// <summary>
+    /// Step 2.6.4 re-baseline evidence (ADR-010): when the client falls behind
+    /// the retained 120-tick history window, the guard sends it to REBASING,
+    /// the emitter answers the SnapshotRequest with a freshly sliced keyframe
+    /// and the stream resumes. Also covers the server-side fallback: a
+    /// DeltaResume whose base the ring has already evicted must degrade to a
+    /// keyframe instead of an unusable cumulative delta.
+    /// </summary>
+    [TestFixture]
+    public sealed class ReplicationRebaseIntegrationTests
+    {
+        [Test]
+        public void Rebase_WindowExceeded_KeyframeRestoresStreaming()
+        {
+            var profile = new ImpairmentProfile { LatencyMs = 2, Seed = 11 };
+            // Two clients keep the match non-terminal (a one-sided roster would
+            // end the match instantly and freeze the simulation).
+            var world = ReplicationIntegrationWorld.Create(
+                profile, ServerReplicationEmitterConfig.Default, clientCount: 2);
+            world.StartMatch(new PlayerId(1), new PlayerId(2));
+
+            var client = world.Clients[0];
+            var entityA = client.FirstEntityOf(new PlayerId(1));
+            var entityB = client.FirstEntityOf(new PlayerId(2));
+            client.SubmitMoveTo(
+                new PlayerId(1), entityA, new WorldPointMm(500_000, 0), world.Rig.Host.CurrentTick + 1);
+            client.SubmitMoveTo(
+                new PlayerId(2), entityB, new WorldPointMm(-500_000, 0), world.Rig.Host.CurrentTick + 1);
+
+            // Establish the stream.
+            for (var tick = 0; tick < 10; tick++)
+            {
+                world.PumpTick();
+            }
+
+            Assert.That(client.Receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+            var streamingLastApplied = client.Receiver.LastAppliedTick;
+            Assert.That(streamingLastApplied, Is.GreaterThan(0UL));
+
+            // Full loss for more than the 120-tick history window. The pump
+            // steps are compressed so the virtual clock stays far below the
+            // transport idle timeout: the protocol window is tick-based, the
+            // transport liveness is millisecond-based, and this test isolates
+            // the former.
+            world.Profile.LossProbability = 1.0;
+            const int blackoutTicks = 130;
+            for (var tick = 0; tick < blackoutTicks; tick++)
+            {
+                world.PumpTick(2);
+            }
+
+            Assert.That(world.Rig.Host.CurrentTick,
+                Is.GreaterThanOrEqualTo(streamingLastApplied + 120),
+                "the blackout must push the server beyond the retained window");
+
+            // Connectivity returns: the next surviving delta depends on a base
+            // the client cannot reach, so the receiver must go to REBASING and
+            // request a fresh keyframe over the reliable control channel.
+            world.Profile.LossProbability = 0.0;
+            Assert.That(
+                world.PumpUntilCaughtUp(client, budgetMs: 30000, keepTicking: true), Is.True,
+                "the keyframe re-baseline must restore streaming");
+
+            world.AssertWorldsMatch(client);
+            Assert.That(client.Receiver.RebaseCount, Is.GreaterThanOrEqualTo(1),
+                "the window escape must be handled by a re-baseline");
+            Assert.That(client.Bridge.AssembledKeyframeCount, Is.GreaterThanOrEqualTo(2),
+                "the client must have assembled the initial keyframe and the re-baseline keyframe");
+            Assert.That(world.Emitter.RequestCount, Is.GreaterThanOrEqualTo(1),
+                "the emitter must have received the SnapshotRequest");
+            Assert.That(world.Emitter.EmittedKeyframeCount, Is.GreaterThanOrEqualTo(2));
+            Assert.That(client.Receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+            Assert.That(client.Receiver.FailureReason, Is.EqualTo(ReplicationFailureReason.None));
+            Assert.That(client.Receiver.IsWorldUsable, Is.True);
+        }
+
+        [Test]
+        public void Rebase_DeltaResumeWithEvictedBase_FallsBackToKeyframe()
+        {
+            var profile = new ImpairmentProfile { LatencyMs = 2, Seed = 13 };
+            // Two clients keep the match non-terminal (see the test above).
+            var world = ReplicationIntegrationWorld.Create(
+                profile, ServerReplicationEmitterConfig.Default, clientCount: 2);
+            world.StartMatch(new PlayerId(1), new PlayerId(2));
+
+            var client = world.Clients[0];
+            var entityA = client.FirstEntityOf(new PlayerId(1));
+            var entityB = client.FirstEntityOf(new PlayerId(2));
+            client.SubmitMoveTo(
+                new PlayerId(1), entityA, new WorldPointMm(500_000, 0), world.Rig.Host.CurrentTick + 1);
+            client.SubmitMoveTo(
+                new PlayerId(2), entityB, new WorldPointMm(-500_000, 0), world.Rig.Host.CurrentTick + 1);
+
+            // Stream well past the retention window so tick 1 is evicted.
+            for (var tick = 0; tick < 140; tick++)
+            {
+                world.PumpTick();
+            }
+
+            Assert.That(client.Receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+            Assert.That(world.Emitter.History.HasEvicted, Is.True,
+                "the history ring must have evicted early ticks by now");
+
+            var keyframesBefore = world.Emitter.EmittedKeyframeCount;
+
+            // Inject a DeltaResume for a base the ring has already evicted —
+            // exactly what a stalled client would ask for. The emitter must
+            // detect the impossibility and answer with a fresh keyframe.
+            var request = new ReplicationRequestWire(
+                ReplicationRequestWireKind.DeltaResume,
+                attempt: 1,
+                lastAppliedTick: 1,
+                baseKeyframeTick: 1,
+                keyframeTick: 0);
+            var buffer = new byte[ReplicationRequestCodec.SizeBytes];
+            Assert.That(
+                ReplicationRequestCodec.TryEncode(request, buffer, out var written),
+                Is.EqualTo(ReplicationRequestCodecResult.Ok));
+            Assert.That(
+                client.Endpoint.TrySendReplicationFeedback(
+                    TransportMessageType.ReplicationRequest, buffer, written), Is.True);
+            world.Pump();
+
+            // The fallback keyframe is queued and paced out on the next ticks.
+            world.PumpTick();
+            world.PumpTick();
+            Assert.That(
+                world.PumpUntilCaughtUp(client, budgetMs: 20000, keepTicking: true), Is.True,
+                "the keyframe fallback must re-baseline the client");
+
+            world.AssertWorldsMatch(client);
+            Assert.That(world.Emitter.KeyframeFallbackCount, Is.GreaterThanOrEqualTo(1),
+                "the evicted base must be reported as a keyframe fallback");
+            Assert.That(world.Emitter.EmittedKeyframeCount,
+                Is.GreaterThanOrEqualTo(keyframesBefore + 1));
+            Assert.That(client.Receiver.KeyframeCount, Is.GreaterThanOrEqualTo(2),
+                "the client must have installed the re-baseline keyframe");
+            Assert.That(client.Receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+        }
+    }
+}

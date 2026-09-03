@@ -1,26 +1,26 @@
 # Статус проекта GlobalFront
 
-> Фактический технический статус • обновлено 2026-09-03
+> Фактический технический статус • обновлено 2026-09-04
 
 ## Summary
 
-GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 1 и Phase 2.1–2.5 завершены. Phase 2.6 Snapshot Networking — **IN PROGRESS** по ADR-010: Шаг 2.6.1 Core Delta Wire Codec (`028e646`), Шаг 2.6.2 Server Replication Engine & History Ring (`6c5e37e`) и Шаг 2.6.3 Client Replication Receiver & FSM (`c49eeda`) — **COMPLETE**. Проверка: **558/558 EditMode passed** (`Artifacts/TestResults/editmode-phase26-step3.xml`, 2026-09-03) и **6/6 PlayMode passed** (`Artifacts/TestResults/playmode-phase26-step3.xml`, 2026-09-03). Текущая задача — Шаг 2.6.4: сквозная интеграция, rate-pacing, keyframe slicing и стресс-тесты под потерями сети.
+GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 1 и Phase 2.1–2.5 завершены. Phase 2.6 Snapshot Networking — **IMPLEMENTATION COMPLETE** по ADR-010: Шаги 2.6.1 (Core Codec), 2.6.2 (Server Diff & Ring), 2.6.3 (Client Receiver & FSM) и 2.6.4 (Full Integration & Impairment Tests) — **COMPLETE**. Проверка: **597/597 EditMode passed** (`Artifacts/TestResults/editmode-phase26-step4.xml`, 2026-09-04) и **6/6 PlayMode passed** (`Artifacts/TestResults/playmode-phase26-step4.xml`, 2026-09-04). Текущая задача — независимый аудит Phase 2.6 (DeepSeek V4 Pro) перед переходом к Phase 2.7.
 
 ## Confirmed Baseline
 
 | Область | Фактическое состояние |
 |---|---|
 | Unity | `6000.5.6f1`, URP |
-| Core | детерминированный, без Unity API, 20 Hz; opaque `SessionId`/`MatchId`; `DeltaSnapshotWireCodec` и фиксированный 34-байтный `SnapshotAckCodec` (Шаги 2.6.1/2.6.3) |
-| Server | `MatchServer`, `TickDriver`, `SessionManager`; `Server.Transport` по ADR-009; Server Replication Engine и `ReplicationHistoryRing` реализованы и верифицированы в Шаге 2.6.2 |
-| Transport | `INetworkCarrier` + `OwnDatagramCarrier` (детерминированные тесты через `VirtualNetworkPipe`) и `LiteNetLibCarrier` (LiteNetLib 1.3.5, real UDP); `NetworkCommandChannel` реализует `ICommandChannel` с асинхронным авторитетным `CommandAckPayload` |
-| Client replication | `ClientReplicationReceiver`, `ClientReplicationWorld`, `ReplicationReceiverFSM` и `ReplicationFeedbackGenerator` реализованы и верифицированы в Шаге 2.6.3 |
-| Local integration | `LocalMatchHost` (ServerHost) внутри Client process: владеет `MatchServer`, `TickDriver` и `SessionManager`; сквозная интеграция репликации с transport/tick-loop — текущий Шаг 2.6.4 |
+| Core | детерминированный, без Unity API, 20 Hz; opaque `SessionId`/`MatchId`; `DeltaSnapshotWireCodec`, `SnapshotAckCodec` (34 B), `KeyframeSliceCodec`, `ReplicationRequestCodec` |
+| Server | `MatchServer`, `TickDriver`, `SessionManager`; `Server.Transport` по ADR-009; `ServerReplicationEmitter` интегрирован с тиками, history ring (120 тиков) и pacing-слайсингом keyframe |
+| Transport | `INetworkCarrier` + `OwnDatagramCarrier` (детерминированные тесты через `VirtualNetworkPipe`) и `LiteNetLibCarrier` (LiteNetLib 1.3.5, real UDP); `NetworkCommandChannel` реализует `ICommandChannel` с асинхронным авторитетным `CommandAckPayload`; каналы C0/C1/C2 |
+| Client replication | `ClientReplicationReceiver`, `ClientReplicationWorld`, `ReplicationReceiverFSM`, `ClientTransportReplicationBridge`; накат дельт, сборка keyframe-слайсов, 10 Hz `SnapshotAck` по C0 |
+| Local integration | `LocalMatchHost` (ServerHost) внутри Client process: владеет `MatchServer`, `TickDriver` и `SessionManager`; сквозная интеграция репликации верифицирована в EditMode |
 | Commands | Move, Attack и Stop; `ICommandChannel` + session-attributed `LocalCommandChannel`; ingress проходит session gate |
-| Snapshots | Snapshot Protocol v1 сохраняется; Delta Snapshot Core/Server/Client слои Шагов 2.6.1–2.6.3 завершены, rate-pacing/keyframe slicing/end-to-end integration и loss stress относятся к Шагу 2.6.4 |
+| Snapshots | Delta Snapshot Core/Server/Client слои Шагов 2.6.1–2.6.4 завершены, rate-pacing/keyframe slicing/end-to-end integration и loss stress (1–5% loss) верифицированы |
 | Presentation | выбор, движение, атака, камера, HUD, runtime prototype world |
 | Scene | одна включённая `Assets/Scenes/SampleScene.unity` |
-| Tests | **558/558 EditMode passed** (`Artifacts/TestResults/editmode-phase26-step3.xml`, 2026-09-03); **6/6 PlayMode passed** (`Artifacts/TestResults/playmode-phase26-step3.xml`, 2026-09-03) |
+| Tests | **597/597 EditMode passed** (`Artifacts/TestResults/editmode-phase26-step4.xml`, 2026-09-04); **6/6 PlayMode passed** (`Artifacts/TestResults/playmode-phase26-step4.xml`, 2026-09-04) |
 
 ## Phase 2 Status
 
@@ -29,7 +29,7 @@ GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 
 - 2.3 Server Tick Driver — COMPLETE, `ea0435d` (ADR-007)
 - 2.4 Session / Player Identity — COMPLETE, `73d1276` (ADR-008); lifecycle завершается на `MatchPhase.Finished`, `Closed` зарезервирован для будущего server lifecycle/teardown
 - 2.5 Network Transport — COMPLETE, `feat: implement network transport (Phase 2.5)` (ADR-009, OD-1 = LiteNetLib 1.3.5 за контрактом `INetworkCarrier`; финальный независимый review = APPROVE, P0=0/P1=0/P2=0)
-- 2.6 Snapshot Networking — IN PROGRESS (Шаги 2.6.1, 2.6.2, 2.6.3 complete; Шаг 2.6.4 in progress)
+- 2.6 Snapshot Networking — COMPLETE (Шаги 2.6.1, 2.6.2, 2.6.3, 2.6.4 complete; pending independent audit)
 - 2.7 Reconnect / Resync — not implemented
 
 ## Product Scope vs Implementation

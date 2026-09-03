@@ -531,6 +531,28 @@ namespace GlobalFront.Server
             return snapshots;
         }
 
+        /// <summary>
+        /// Allocation-free variant of <see cref="GetAllSnapshots"/> for the
+        /// replication emitter (Phase 2.6, step 2.6.4): copies every unit in
+        /// deterministic entity-id order into the caller-owned span. Returns
+        /// the number of copied records, or -1 when the span cannot hold the
+        /// whole world (nothing is copied then).
+        /// </summary>
+        public int CopySnapshots(Span<ServerUnitSnapshot> destination)
+        {
+            if (destination.Length < _orderedUnits.Count)
+            {
+                return -1;
+            }
+
+            for (var index = 0; index < _orderedUnits.Count; index++)
+            {
+                destination[index] = CreateSnapshot(_orderedUnits[index]);
+            }
+
+            return _orderedUnits.Count;
+        }
+
         private static ServerUnitSnapshot CreateSnapshot(UnitRecord record) =>
             new ServerUnitSnapshot(
                 record.Combat.Entity,

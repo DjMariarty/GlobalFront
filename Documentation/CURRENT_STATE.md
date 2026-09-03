@@ -8,18 +8,18 @@
 
 ## Current Task
 
-**Phase 2.6 — Snapshot Networking: Implementation (Шаг 2.6.4: сквозная интеграция, rate-pacing, keyframe slicing и стресс-тесты под потерями сети).**
+**Phase 2.6 — Snapshot Networking: COMPLETE. Текущая задача — Independent Review Gate (DeepSeek V4 Pro) по Phase 2.6.**
 
-Шаг 2.6.3 Client Replication Receiver & FSM — **COMPLETE** (`c49eeda`): 558/558 EditMode тестов green (429 baseline + 129 новых клиентских тестов репликации), Zero-GC hot path валидирован. Текущая задача — Шаг 2.6.4: сквозная интеграция, rate-pacing, keyframe slicing и стресс-тесты под потерями сети.
+Шаг 2.6.4 End-to-End Integration & Impairment Tests — **COMPLETE**: 597/597 EditMode тестов green (558 baseline + 39 новых интеграционных тестов: сквозной стрим 0% loss, потеря пакетов 1-5% с reconvergence через DeltaResume, burst 100% loss на 25 тиков, вылет за 120 тиков с REBASING, Zero-GC hot path эмиттера и моста на 1000 тиках). Все четыре шага Фазы 2.6 реализованы.
 
 ## Last Commit
 
-`c49eeda` — `feat(client): implement replication receiver and FSM (Phase 2.6 step 3)` (предыдущий: `6c5e37e` — Шаг 2.6.2)
+`7fa4145` — `docs: sync project status and R&D for Phase 2.6 step 3` (предыдущий: `c49eeda` — Шаг 2.6.3)
 
 ## Tests
 
-- EditMode: **558/558 passed** (`Artifacts/TestResults/editmode-phase26-step3.xml`, 2026-09-03; 429 baseline + 129 новых тестов Шага 2.6.3: world table 36, FSM 37, feedback 23, receiver 27, cross-assembly pipeline 6; включая проверку Zero-GC hot path клиента через GC.Alloc recorder)
-- PlayMode: **6/6 passed** (`Artifacts/TestResults/playmode-phase26-step3.xml`, 2026-09-03)
+- EditMode: **597/597 passed** (`Artifacts/TestResults/editmode-phase26-step4.xml`, 2026-09-04; 558 baseline + 39 новых интеграционных тестов Шага 2.6.4; Zero-GC hot path эмиттера и моста валидирован)
+- PlayMode: **6/6 passed** (`Artifacts/TestResults/playmode-phase26-step4.xml`, 2026-09-04)
 - Unity: `6000.5.6f1`
 
 ## Completed Milestones
@@ -35,10 +35,11 @@
 - Phase 2.6 Step 2.6.1 Core Delta Wire Codec — COMPLETE (355/355 EditMode passed; Zero-GC hot path валидирован)
 - Phase 2.6 Step 2.6.2 Server Replication Engine & History Ring — COMPLETE (429/429 EditMode passed; 74 новых теста репликации; Zero-GC hot path валидирован)
 - Phase 2.6 Step 2.6.3 Client Replication Receiver & FSM — COMPLETE (`c49eeda`; 558/558 EditMode passed; 129 новых тестов; Zero-GC hot path клиента валидирован)
+- Phase 2.6 Step 2.6.4 Full Integration & Impairment Tests — COMPLETE (597/597 EditMode passed; 39 новых интеграционных тестов; Zero-GC hot path эмиттера и моста валидирован)
 
 ## Next Step
 
-Phase 2.6, шаг 2.6.4: сквозная связка — server tick-loop → `ReplicationHistoryRing`/diff engine → C2-эмиттер с rate-pacing, keyframe slicing + NACK repair, multipart-сборка и pump `ClientReplicationReceiver` через `ClientTransportEndpoint`, плюс серверный декодер `SnapshotAck` (C0) и использование `LastAppliedTick` как `BaseTick`. Reconnect/resync — Phase 2.7.
+Независимый аудит реализации Phase 2.6 аудитором DeepSeek V4 Pro. После утверждения — переход к Phase 2.7 (Reconnect / Resync) и Phase 2.8 (Network Prototype Playtest 2v2).
 
 ## Important Constraints
 

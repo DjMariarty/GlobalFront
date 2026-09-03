@@ -1,3 +1,6 @@
+using System;
+using GlobalFront.Core.Model;
+
 namespace GlobalFront.Server.Transport
 {
     /// <summary>
@@ -31,7 +34,21 @@ namespace GlobalFront.Server.Transport
         Pong = 6,
         Command = 7,
         CommandAck = 8,
-        Snapshot = 9
+        Snapshot = 9,
+
+        /// <summary>
+        /// Client→server C0 payload carrying a 34-byte SnapshotAck record
+        /// (Phase 2.6, step 2.6.4, ADR-010): the receiver's confirmed
+        /// <c>LastAppliedTick</c> plus advisory gap information.
+        /// </summary>
+        SnapshotAck = 10,
+
+        /// <summary>
+        /// Client→server C0 payload carrying a repair request
+        /// (<see cref="GlobalFront.Core.Snapshot.ReplicationRequestWire"/>,
+        /// kind SnapshotRequest or DeltaResume) for the replication emitter.
+        /// </summary>
+        ReplicationRequest = 11
     }
 
     /// <summary>Why the server denied a connect request.</summary>
@@ -42,6 +59,44 @@ namespace GlobalFront.Server.Transport
         SnapshotVersionMismatch = 2,
         ServerFull = 3,
         Internal = 4
+    }
+
+    /// <summary>
+    /// One decoded client→server replication feedback message (Phase 2.6,
+    /// step 2.6.4): the payload slice of a
+    /// <see cref="TransportMessageType.SnapshotAck"/> or
+    /// <see cref="TransportMessageType.ReplicationRequest"/> C0 message.
+    /// The buffer is owned by the transport event and is only valid for the
+    /// duration of the handler call — consumers must decode immediately and
+    /// never retain the reference.
+    /// </summary>
+    public readonly struct ReplicationFeedbackMessage
+    {
+        public ReplicationFeedbackMessage(
+            SessionId session,
+            TransportMessageType type,
+            byte[] buffer,
+            int offset,
+            int length)
+        {
+            Session = session;
+            Type = type;
+            Buffer = buffer;
+            Offset = offset;
+            Length = length;
+        }
+
+        public SessionId Session { get; }
+
+        public TransportMessageType Type { get; }
+
+        public byte[] Buffer { get; }
+
+        public int Offset { get; }
+
+        public int Length { get; }
+
+        public ReadOnlySpan<byte> Payload => Buffer.AsSpan(Offset, Length);
     }
 
     /// <summary>Reason carried by graceful disconnects and reported on loss.</summary>
