@@ -13,6 +13,12 @@ Phase 2.5 **COMPLETE** (2026-08-29): ADR-009 реализован и прошё�
 | [Phase 2.5 Network Transport — R&D Report](Phase_02_05_Network_Transport_RND.md) | R&D Report — основание ADR-009 (Accepted, 2026-08-22); реализация верифицирована 2026-08-29 |
 | [ADR-009 Network Transport Architecture](ADR-009-Network-Transport-DRAFT.md) | **Accepted, 2026-08-22** (OD-1 = LiteNetLib) — реализован и верифицирован (Phase 2.5 COMPLETE); финальная версия в [DECISIONS.md](../DECISIONS.md) |
 
+## Phase 2.6 — Delta Snapshot Protocol
+
+| Документ | Статус |
+|---|---|
+| [Phase 2.6 Delta Snapshot Protocol — R&D Report](Phase_02_06_Delta_Snapshot_Protocol_RND.md) | **R&D Report — DRAFT, Owner Decisions Required** (rev. 1); реализация требует отдельного ADR |
+
 ## Связанные документы
 
 - [Decisions](../DECISIONS.md)

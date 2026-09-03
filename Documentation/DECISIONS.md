@@ -1,8 +1,8 @@
 # Архитектурные и проектные решения (ADR)
 
-> Живой нормативный и исторический журнал • обновлено 2026-08-22
+> Живой нормативный и исторический журнал • обновлено 2026-09-02
 
-Каждое долговременное решение содержит Context, Alternatives, Decision и Consequences. Детали, которых нет в утверждённом плане, не считаются решёнными.
+Каждое долговременное решение содержит Context, Alternatives, Decision, Consequences и при необходимости Open Decisions. Детали, которых нет в утверждённом плане, не считаются решёнными.
 
 ## ADR-001: Общепроектная документация хранится вне Assets
 
@@ -233,12 +233,52 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 - Timing constants (OD-8) — TBD; retransmission timeout и idle timeout должны быть явно согласованы во время implementation (с keepalive, grace-ожиданиями 2.4 и impairment test matrix).
 - Остальные OD (размещение, формат токена, MTU/ceiling, threading, ordering, CommandAck, IPv4) зафиксированы в принятом R&D; их конкретные значения уточняются при implementation без смены архитектуры.
 
+## ADR-010: Snapshot Networking Architecture (Phase 2.6)
+
+**Статус:** Accepted, 2026-09-02 (OD-10…OD-17 утверждены владельцем; R&D Revision 2 прошёл независимый аудит DeepSeek V4 Pro с финальным вердиктом **APPROVE**, P0=0/P1=0/P2=0).
+
+### Context
+
+После завершения Phase 2.1–2.5 (commit `dadc593`, ADR-009) проект обладает детерминированной симуляцией 20 Hz, сессионным слоем и сетевым транспортом (`INetworkCarrier`, C0/C1 reliable, C2 unreliable sequenced latest-wins). Однако Snapshot Protocol v1 передает полный снимок мира (16 Б header + 39 Б/юнит). При целевых 3000 юнитах один кадр весит ~117 КБ, что при 20 Hz генерирует ~187 Мбит/с трафика на 10 игроков (на два порядка выше допустимого). Требуется архитектура репликации состояния, укладывающаяся в 50–100 КБ/с на игрока при сохранении детерминизма, устойчивости к потерям пакетов и мгновенного отклика команд.
+
+### Alternatives
+
+1. **Full-only по C2 (отклонено):** передача 117 КБ (98 датаграмм) по ненадёжному каналу статистически невозможна при потерях (при 5% потерь вероятность целой доставки всего 0.59%).
+2. **Чистые кумулятивные дельты 10–30 с (отклонено):** в активном бою дрейф от базы охватывает почти все юниты, и поток дельт разрастается до размера полного кадра.
+3. **Строгая последовательная инкрементальная цепочка (Модель B, отклонено):** потеря одной дельты рвёт всю цепочку и требует постоянных запросов базы.
+4. **Keyframe по надёжному каналу C0/C1 (отклонено):** общий reliable sequence space каналов C0 и C1 при потере пакета кейфрейма замораживает доставку команд игрока (C1) и подтверждений (CommandAck) на время RTO (в 62% случаев при 1% потерь).
+5. **Модель D: Hybrid (Выбрана):** нарезанный Keyframe по C2 с точечным NACK-ремонтом по C0 + абсолютные устанавливающие дельты (Establishing Deltas) по C2 + подтверждения 10 Hz + кольцевое окно истории (120 тиков) на сервере + StateChecksum (xxHash32).
+
+### Decision
+
+- **OD-10 (Доставка Keyframe и устранение HOL):** Keyframe передаётся слайсами по 8–16 КБ по ненадёжному каналу C2 с ключом `(Tick << 8) | SliceIndex`. Инвариант: `SliceIndex <= 255`. Командный канал C1 полностью изолирован от HOL-блокировок. Недостающие слайсы дозапрашиваются клиентом через `SnapshotRequest` на C0 (не более 2 NACK-циклов; при неудаче — немедленный запрос свежего кадра). На всём C2-эмиттере действует rate-pacing (burst <= 16 KB на такт).
+- **OD-11 (Окно истории и плановый Keyframe):** сервер держит кольцо компактных change-set'ов на `RetainedDeltaHistoryWindow = 120 тиков (6 с при 20 Hz)`. Плановый интервал Keyframe: 15–20 с.
+- **OD-12 (Cadence репликации):** базовая частота отправки — 10 Hz (decoupled от 20 Hz симуляции); при всплесках потерь адаптивно снижается до 5 Hz через BandwidthGovernor.
+- **OD-13 (Бюджеты):** целевой эгресс — 50–100 КБ/с на клиента, soft cap 128 КБ/с. Суммарный эгресс на 10 игроков <= 1 МБ/с (4–8 Мбит/с). Действует Pre-emption Rule: C0 CommandAck > KeyframeSlice > Delta > Catch-up/Repair.
+- **OD-14 (Кодирование и FSM дельт):** модель **Establishing Deltas**. Поля в UPDATE несут абсолютные значения. Apply-Guard: дельта применяется, если `Tick > LastAppliedTick && BaseTick <= LastAppliedTick && KeyframeRef == CurrentKeyframeSeq`. Пропуск промежуточных тиков безопасен.
+- **Обратная связь (Feedback):** `SnapshotAck` отправляется на C0 после каждого применённого такта репликации (10 Hz, 330 Б/с) с 64-битной маской `MissingBitmap`.
+- **Wire Format:** заголовок 36 Б (с xxHash32 StateChecksum), entity ID через zigzag-varint delta от предыдущего, `dirtyMask u8` (8 полей). Бит 3 маски — сброс `MoveTarget` без передачи координат. ADD = 39 Б; REMOVE = varint id + Cause. Строгий инвариант: `EntityId` монотонно возрастает и не переиспользуется в рамках матча.
+- **Zero-GC Hot Path:** сервер держит ровно 2 полных среза мира для вычисления дельт и 120 change-set'ов в кольце. Все буферы сериализации предвыделены (Zero-GC).
+- **OD-16 (Граница Fog of War):** вводится интерфейс `IReplicationFilter` с пакетным методом `BuildView(ReplicationContext, ReplicationViewBuilder)`. Дефолтная реализация в Phase 2.6 — passthrough `AllVisibleFilter`.
+- **OD-17 (Версионирование):** вводится независимое пространство `DeltaSnapshotProtocol.Version = 1`. Полный `SnapshotProtocol.Version = 1` не изменяется.
+
+### Consequences
+
+- `GlobalFront.Core` получит `DeltaSnapshotWireCodec` и структуры дельта-пакетов.
+- `GlobalFront.Server` получит `ReplicationPipeline`, кольцо истории `ReplicationHistoryRing` и фильтр `IReplicationFilter`.
+- `GlobalFront.Client` получит `ReplicationReceiver` и клиентский FSM репликации.
+- Контракты `MatchServer`, `TickDriver`, `SessionManager`, `CommandHeader` и Snapshot Protocol v1 остаются неизменными.
+
+### Open Decisions
+
+В рамках Snapshot Networking Phase 2.6 открытых архитектурных решений нет: OD-10…OD-17 приняты владельцем. Смежные вопросы остаются в общей очереди ниже.
+
 ## Open Decision Queue
 
-- Snapshot networking cadence, reconnect/resync, replay и desync diagnostics.
-- Точные faction rosters, abilities, generals, stats и balance.
-- Economy/build/production rules, map layouts и presentation direction.
-- Hardware profiles и pass thresholds для scale benchmarks.
+- Reconnect/resync (Phase 2.7), replay и desync diagnostics.
+- Faction rosters, abilities, stats и balance.
+- Economy/build/production rules, map layouts и presentation.
+- Scale benchmarks hardware profiles.
 
 ## Связанные документы
 
