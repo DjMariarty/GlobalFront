@@ -23,7 +23,7 @@ Snapshot Protocol v1 рассылает полный снапшот на каж�
 | # | Решение | Рекомендация |
 |---|---|---|
 | 1 | HOL Blocking для Keyframes | Keyframe **не** идёт в reliable-пространство C0/C1. Слайсы keyframe передаются по C2 (unreliable) с клиентским NACK-repair (`SnapshotRequest`); rate-pacing — на всём C2-эмиттере. Отдельный reliable sub-channel — отложенная альтернатива (§3) |
-| 2 | Client State Feedback | `SnapshotAck { LastAppliedTick, BaseKeyframeTick, MissingBase, MissingBitmap }` на C0 после каждого применённого такта репликации: 10 Hz, 330 B/s + немедленно при невозможности применения (§4) |
+| 2 | Client State Feedback | `SnapshotAck { LastAppliedTick, BaseKeyframeTick, MissingBase, MissingBitmap }` на C0 после каждого применённого такта репликации: 10 Hz, 340 B/s + немедленно при невозможности применения (§4) |
 | 3 | DeltaResume vs SnapshotRequest | DeltaResume — гэп внутри окна истории (кумулятивный дельта-пакет); SnapshotRequest — выпадение за окно или нет базы (полный keyframe). Защита: token bucket на запросы (§5) |
 | 4 | Wire format | Byte-aligned little-endian; per-unit `dirtyMask u8` (8 полей), entity-id через zigzag-varint delta; ADD = 39-байтная v1-record; UPDATE/REMOVE = компактные записи (§6) |
 | 5 | Tombstone Horizon | Tombstones удерживаются и переотправляются в течение всего окна истории (рекомендация 120 тиков = 6 с) + 1 Hz integrity-fingerprint живого множества сущностей (§7) |
@@ -147,7 +147,7 @@ Keyframe 117 КБ через надёжный канал = 98 датаграмм
 ### 4.2. Структура SnapshotAck (C0, reliable ordered, client → server)
 
 ```text
-SnapshotAck (33 байта, little-endian):
+SnapshotAck (34 байта, little-endian):
   0   u8   MessageType       = SnapshotAck
   1   u8   HealthFlags       = { GapPresent:1, BitmapOverflow:1, BaseStale:1, Reserved:5 }
   2   u64  LastAppliedTick   — последний тик, полностью применённый клиентом
@@ -155,15 +155,17 @@ SnapshotAck (33 байта, little-endian):
   18  u64  MissingBase       — первый тик непрерывного пропуска (0 = нет гэпа)
   26  u64  MissingBitmap     — бит i = тик (MissingBase + i) не получен;
                                  все 64 бита = «гэп длиннее 64 тиков» (overflow)
-  34  —    (если BitmapOverflow) continuation-блоки u64 по необходимости
+  34  —    конец фиксированной записи; continuation-блоки в v1 отсутствуют
 ```
+
+Нормативный размер `SnapshotAck` составляет ровно **34 байта**: `1 + 1 + 8 + 8 + 8 + 8 = 34`, что соответствует смещениям `0/1/2/10/18/26`. Число 33 в исходной редакции было арифметической опечаткой. При 10 Hz uplink равен `34 B × 10 Hz = 340 B/s` на клиента.
 
 Семантика битовой маски: пропуски почти всегда короткие (1–5 тиков, §10), поэтому 64-битного окна достаточно; overflow-флаг честно сигнализирует «я далеко позади», и сервер не обязан вычислять точную маску — он ответит кумулятивным пакетом или keyframe.
 
 ### 4.3. Частота и правила отправки
 
-- **Регулярно**: после **каждого применённого такта репликации** при базовой cadence 10 Hz. `33 B × 10 Hz = 330 B/s` uplink на клиента — пренебрежимо мало, зато сервер получает актуальный `BaseTick` с задержкой не более одного RTT.
-- **Немедленно, если новый тик не был применён** (rate-limited ≥ 100 ms между сигналами): при неполной multipart-сборке, `BitmapOverflow`, `BaseTick > LastAppliedTick`, несовпадении `KeyframeRef` или устаревании базы за `WindowEst`.
+- **Регулярно**: после **каждого применённого такта репликации** при базовой cadence 10 Hz. `34 B × 10 Hz = 340 B/s` uplink на клиента — пренебрежимо мало, зато сервер получает актуальный `BaseTick` с задержкой не более одного RTT.
+- **Немедленно, если новый тик не был применён** (rate-limited ≥ 100 ms между сигналами): при неполной multipart-сборке, `BitmapOverflow`, `BaseTick > LastAppliedTick`, несовпадении `KeyframeRef` или нормативном разрыве `BaseTick − LastAppliedTick > WindowEst`.
 - **Не подавлять ACK прогресса**: подтверждение каждого успешно применённого `Tick` обязательно. Дубликат того же ACK сервер может идемпотентно проигнорировать, но клиент не пропускает ACK ради экономии нескольких десятков байт.
 - Канал — C0 (reliable ordered): потеря ACK недопустима, а ordered-доставка гарантирует монотонность наблюдаемого сервером `LastAppliedTick`.
 
@@ -188,7 +190,7 @@ join / resync ──▶ UNBASED ──(полный keyframe)──────�
 STREAMING ──(Establishing Delta прошла Apply-Guard)────────────────────────▶ STREAMING
     │ BaseTick > LastAppliedTick, зависимость внутри 120 тиков
     ├────────────────────────▶ CATCHING_UP ──(CumulativeDelta)──────────────▶ STREAMING
-    │ KeyframeRef mismatch / база старше 120 тиков / 2 NACK-цикла исчерпаны
+    │ KeyframeRef mismatch / BaseTick − LastAppliedTick > 120 / 2 NACK-цикла исчерпаны
     └────────────────────────▶ REBASING ──(свежий keyframe)─────────────────▶ STREAMING
 ```
 
@@ -200,9 +202,9 @@ STREAMING ──(Establishing Delta прошла Apply-Guard)──────�
    - дельта принимается и применяется, если `Tick > LastAppliedTick` **и** `BaseTick <= LastAppliedTick` **и** `KeyframeRef == CurrentKeyframeSeq`;
    - все `PartCount` частей данного `Tick` должны быть собраны; затем абсолютные ADD/UPDATE/REMOVE устанавливают состояние мира на `Tick`, после чего `LastAppliedTick = Tick` и немедленно отправляется `SnapshotAck`;
    - пакет с `Tick > LastAppliedTick` не отбрасывается из-за reorder. Ожидание отсутствующих промежуточных тиков и локальный ring последовательных тиков не используются: более новая полная Establishing Delta безопасно пропускает их;
-   - `BaseTick > LastAppliedTick` запускает CATCHING_UP, если зависимость ещё внутри WindowEst; `KeyframeRef != CurrentKeyframeSeq` или возраст базы > 120 тиков запускает REBASING.
+   - `BaseTick > LastAppliedTick` запускает CATCHING_UP, если `BaseTick − LastAppliedTick <= 120`; нормативный разрыв `BaseTick − LastAppliedTick > 120` или `KeyframeRef != CurrentKeyframeSeq` запускает REBASING. Возраст keyframe-базы (`Now − BaseKeyframeTick`) сам по себе не является триггером: плановые keyframe с интервалом 15–20 с не должны вызывать ложный ребейз через 6 с.
 3. **CATCHING_UP**: используется только когда входящая дельта зависит от ещё не установленного `BaseTick`, но нужная история остаётся внутри 120 тиков. Клиент отправляет `DeltaResume{LastAppliedTick, BaseKeyframeTick}`; применимый кумулятивный пакет возвращает FSM в STREAMING.
-4. **REBASING**: при устаревшей/несовместимой базе либо после 2 неудачных NACK-циклов клиент немедленно отправляет `SnapshotRequest` свежего keyframe в рамках token bucket, не ожидая плановый интервал 15–20 с. Успех → STREAMING; полная потеря базы использует тот же лимит трёх попыток, что UNBASED.
+4. **REBASING**: при `BaseTick − LastAppliedTick > 120`, несовпадении `KeyframeRef` либо после 2 неудачных NACK-циклов клиент немедленно отправляет `SnapshotRequest` свежего keyframe в рамках token bucket, не ожидая плановый интервал 15–20 с. Успех → STREAMING; полная потеря базы использует тот же лимит трёх попыток, что UNBASED.
 5. **ConnectionFailed / ResyncRequired**: терминальная локальная эскалация Phase 2.6; восстановление соединения и полного состояния выполняет контур Phase 2.7.
 
 ### 5.2. FSM сервера (ReplicationSender, per-client)
@@ -214,12 +216,12 @@ STREAMING:
   cadence tick → EstablishingDelta(BaseTick = LastAppliedAck, KeyframeRef = active keyframe)
   BaseTick..Tick → свернуть compact change-set'ы по last-wins per field
   DeltaResume(LastAppliedTick) внутри 120 тиков → CumulativeDelta (§10.2)
-  запрос/база за пределами 120 тиков → свежий keyframe (rate-limited)
+  разрыв BaseTick − LastAppliedTick > 120 → свежий keyframe (rate-limited)
   egress-бюджет превышен → применить Pre-emption Rule и понизить cadence (§9.2)
 REBASE_SERVING: SnapshotRequest → свежие слайсы; ≤ 2 NACK-цикла на конкретный keyframe
 ```
 
-Инварианты: `BaseTick` обычной Establishing Delta равен последнему подтверждённому `LastAppliedTick`; пакет покрывает все изменения `(BaseTick, Tick]` абсолютными значениями. Сервер хранит ровно `RetainedDeltaHistoryWindow = 120` compact change-set'ов; клиент, чья база старше окна, получает keyframe вместо расширения истории.
+Инварианты: `BaseTick` обычной Establishing Delta равен последнему подтверждённому `LastAppliedTick`; пакет покрывает все изменения `(BaseTick, Tick]` абсолютными значениями. Сервер хранит ровно `RetainedDeltaHistoryWindow = 120` compact change-set'ов; клиент с разрывом `BaseTick − LastAppliedTick > 120` получает keyframe вместо расширения истории. Возраст установленного keyframe не используется как самостоятельный критерий.
 
 ### 5.3. DeltaResume vs SnapshotRequest — критерий выбора
 
@@ -229,7 +231,7 @@ REBASE_SERVING: SnapshotRequest → свежие слайсы; ≤ 2 NACK-цик
 |---|---|---|
 | Пропущены промежуточные тики, но новая дельта устанавливающая | `Tick > LastAppliedTick`, `BaseTick <= LastAppliedTick`, `KeyframeRef` совпадает | Применить сразу по Apply-Guard; запрос не нужен |
 | Не хватает заявленной базы внутри окна | `BaseTick > LastAppliedTick` и зависимость не старше 120 тиков | `DeltaResume` → кумулятивный пакет от `LastAppliedTick` |
-| База старше окна | `Now − BaseKeyframeTick > 120` | Немедленный переход в REBASING и `SnapshotRequest` свежего keyframe |
+| Заявленная зависимость за пределами окна | `BaseTick − LastAppliedTick > 120` | Немедленный переход в REBASING и `SnapshotRequest` свежего keyframe; возраст keyframe сам по себе не учитывается |
 | Базы нет (join/reconnect) | `BaseKeyframeTick = 0` | UNBASED и не более 3 `SnapshotRequest` с backoff 0.5/1.0/2.0 с |
 | Гэп > 64 тиков (`BitmapOverflow`) | advisory bitmap переполнен | Сервер проверяет 120-тактовое окно: CumulativeDelta при покрытии, иначе свежий keyframe |
 
@@ -334,7 +336,7 @@ UpdateEntry:
 
 > **`WindowEst = RetainedDeltaHistoryWindow = Tombstone Horizon = 120 тиков (6 секунд при 20 Hz)`.**
 
-Сервер удерживает tombstone тика `T` как минимум до `T + 120` и включает его в: (1) Establishing/Cumulative Delta, покрывающую `(BaseTick, Tick]`; (2) `TombstoneEcho`-хвост §7.3. Если `Now − BaseKeyframeTick > 120`, клиент гарантированно переходит в REBASING и принимает свежий keyframe, который не содержит удалённую сущность. Третьего состояния нет; «юниты-призраки» исключаются при соблюдении FSM §5.
+Сервер удерживает tombstone тика `T` как минимум до `T + 120` и включает его в: (1) Establishing/Cumulative Delta, покрывающую `(BaseTick, Tick]`; (2) `TombstoneEcho`-хвост §7.3. Если заявленная зависимость выходит за окно (`BaseTick − LastAppliedTick > 120`), клиент гарантированно переходит в REBASING и принимает свежий keyframe, который не содержит удалённую сущность. Возраст keyframe сам по себе не форсирует ребейз; «юниты-призраки» исключаются при соблюдении FSM §5.
 
 ### 7.3. TombstoneEcho-хвост
 
@@ -408,7 +410,7 @@ Ingress-лимит и egress-бюджет — **разные вещи**: реа�
 
 ### 9.3. Сводка по 10 игрокам (N = 3000, каденция 10 Hz, dirty 10%, keyframe/20 с)
 
-- Дельта: `10 · (300·14 + 36) ≈ 42.4 КБ/с`; keyframe: `117 КБ / 20 с · 1.5 ≈ 8.8 КБ/с`; server control ≈ 0.1 КБ/с. Клиентский `SnapshotAck` = 330 B/s uplink и в server egress не входит.
+- Дельта: `10 · (300·14 + 36) ≈ 42.4 КБ/с`; keyframe: `117 КБ / 20 с · 1.5 ≈ 8.8 КБ/с`; server control ≈ 0.1 КБ/с. Клиентский `SnapshotAck` = 340 B/s uplink и в server egress не входит.
 - Итого ≈ **51 КБ/с на клиента ≈ 0.51 МБ/с ≈ 4.1 Мбит/с** на 10 клиентов — внутри целевого коридора.
 
 ---
@@ -438,7 +440,7 @@ Revision 2 фиксирует `WindowEst = RetainedDeltaHistoryWindow = 120 ти
 
 ### 10.3. Re-Baseline (полный keyframe)
 
-Триггеры: база старше 120 тиков; Overflow вне окна; JOIN; mismatch StateChecksum (§7.4); 2 исчерпанных NACK-цикла. В последнем случае клиент немедленно запрашивает **свежий** keyframe и не ждёт плановый интервал. Keyframe передаётся слайсами (§3.4) по C2 с `Tick = Now`, v1-record-совместимым телом; периодический интервал — Owner Decision, рекомендация **15–20 с**, плюс «микро-ребейз» при изменении числа живых юнитов > 25%.
+Триггеры: нормативный разрыв `BaseTick − LastAppliedTick > 120`; Overflow вне окна; JOIN; mismatch `KeyframeRef`; mismatch StateChecksum (§7.4); 2 исчерпанных NACK-цикла. Возраст keyframe не является триггером. После исчерпания NACK клиент немедленно запрашивает **свежий** keyframe и не ждёт плановый интервал. Keyframe передаётся слайсами (§3.4) по C2 с `Tick = Now`, v1-record-совместимым телом; периодический интервал — Owner Decision, рекомендация **15–20 с**, плюс «микро-ребейз» при изменении числа живых юнитов > 25%.
 
 ### 10.4. Локальный догон на клиенте
 
