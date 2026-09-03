@@ -378,7 +378,10 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void LocalMatchHost_InitializeMatch_DelegatesToServer()
         {
-            var host = new Client.LocalMatchHost();
+            // Fully qualified on purpose: GlobalFront.Tests.EditMode.Client.* is a
+            // real test namespace since Phase 2.6 step 2.6.3, so the relative
+            // "Client.LocalMatchHost" would resolve to it instead of the runtime.
+            var host = new GlobalFront.Client.LocalMatchHost();
             var specs = new[]
             {
                 new UnitSpawnSpec(new PlayerId(1), new WorldPointMm(0, 0), 350, false),
@@ -397,7 +400,7 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void LocalMatchHost_InitializeMatch_ThenTick_Works()
         {
-            var host = new Client.LocalMatchHost();
+            var host = new GlobalFront.Client.LocalMatchHost();
             var specs = new[]
             {
                 new UnitSpawnSpec(new PlayerId(1), new WorldPointMm(0, 0), 500, false),
