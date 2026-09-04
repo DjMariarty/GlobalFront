@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using GlobalFront.Client;
 using GlobalFront.Core.Commands;
@@ -56,8 +57,9 @@ namespace GlobalFront.Tests.EditMode
                 world.ChannelB = new NetworkCommandChannel(world.ClientB);
                 world.ChannelA.CommandResultReceived += world.AcksA.Add;
                 world.ChannelB.CommandResultReceived += world.AcksB.Add;
-                world.ClientA.SnapshotReceived += (tick, payload) =>
-                    world.SnapshotsA.Add((tick, payload));
+                world.ClientA.SnapshotReceived += (tick, payload, length) =>
+                    // The endpoint hands out reusable buffers: retain a copy.
+                    world.SnapshotsA.Add((tick, payload.AsSpan(0, length).ToArray()));
                 return world;
             }
 

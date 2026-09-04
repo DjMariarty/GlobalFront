@@ -66,7 +66,8 @@ namespace GlobalFront.Core.Snapshot
     ///   28  u16  AddCount
     ///   30  u16  UpdateCount
     ///   32  u16  RemoveCount
-    ///   34  u16  Reserved0            written as 0, ignored on decode
+    ///   34  u16  KeyframeRef          keyframe generation the delta extends
+    ///                                 (OD-14 apply-gating reference)
     /// Sections, in this order: ADD | UPDATE | REMOVE
     ///
     /// ADD record, fixed 39 bytes (byte-identical to the v1 unit record):
@@ -502,12 +503,12 @@ namespace GlobalFront.Core.Snapshot
                 !reader.TryReadUInt32(out var stateChecksum) ||
                 !reader.TryReadUInt16(out var addCount) ||
                 !reader.TryReadUInt16(out var updateCount) ||
-                !reader.TryReadUInt16(out var removeCount))
+                !reader.TryReadUInt16(out var removeCount) ||
+                !reader.TryReadUInt16(out var keyframeRef))
             {
                 return DeltaCodecResult.BufferTooSmall;
             }
 
-            // Reserved0 (2 bytes) closes the header; it is not interpreted in v1.
             header = new DeltaSnapshotHeader(
                 messageType,
                 version,
@@ -519,7 +520,8 @@ namespace GlobalFront.Core.Snapshot
                 stateChecksum,
                 addCount,
                 updateCount,
-                removeCount);
+                removeCount,
+                keyframeRef);
 
             return ValidateHeader(in header, source.Length - DeltaSnapshotProtocol.HeaderSizeBytes);
         }
@@ -707,7 +709,7 @@ namespace GlobalFront.Core.Snapshot
             writer.WriteUInt16(header.AddCount);
             writer.WriteUInt16(header.UpdateCount);
             writer.WriteUInt16(header.RemoveCount);
-            writer.WriteUInt16(0); // Reserved0
+            writer.WriteUInt16(header.KeyframeRef);
         }
 
         private static void WriteAdds(ref SpanWriter writer, ReadOnlySpan<DeltaAddRecord> adds)

@@ -28,8 +28,10 @@ namespace GlobalFront.Core.Snapshot
     /// types and never enters deterministic simulation state.
     ///
     /// The header describes an establishing delta covering the interval
-    /// <c>(BaseTick, Tick]</c>. Apply-gating (staleness, duplicates, keyframe
-    /// reference) belongs to the replication consumer, not to the codec.
+    /// <c>(BaseTick, Tick]</c>. Staleness and duplicate gating belong to the
+    /// replication consumer, not to the codec; the consumer's keyframe
+    /// reference (<c>KeyframeRef</c>, OD-14) travels on the wire since delta
+    /// protocol version 1 as used by Phase 2.6.4.
     /// </summary>
     public readonly struct DeltaSnapshotHeader : IEquatable<DeltaSnapshotHeader>
     {
@@ -44,7 +46,8 @@ namespace GlobalFront.Core.Snapshot
             uint stateChecksum,
             ushort addCount,
             ushort updateCount,
-            ushort removeCount)
+            ushort removeCount,
+            ushort keyframeRef = 0)
         {
             MessageType = messageType;
             DeltaProtocolVersion = deltaProtocolVersion;
@@ -57,6 +60,7 @@ namespace GlobalFront.Core.Snapshot
             AddCount = addCount;
             UpdateCount = updateCount;
             RemoveCount = removeCount;
+            KeyframeRef = keyframeRef;
         }
 
         /// <summary>
@@ -70,7 +74,8 @@ namespace GlobalFront.Core.Snapshot
             uint stateChecksum,
             ushort addCount,
             ushort updateCount,
-            ushort removeCount)
+            ushort removeCount,
+            ushort keyframeRef = 0)
         {
             return new DeltaSnapshotHeader(
                 DeltaSnapshotProtocol.MessageTypeDelta,
@@ -83,7 +88,8 @@ namespace GlobalFront.Core.Snapshot
                 stateChecksum,
                 addCount,
                 updateCount,
-                removeCount);
+                removeCount,
+                keyframeRef);
         }
 
         /// <summary>
@@ -99,7 +105,8 @@ namespace GlobalFront.Core.Snapshot
             uint stateChecksum,
             ushort addCount,
             ushort updateCount,
-            ushort removeCount)
+            ushort removeCount,
+            ushort keyframeRef = 0)
         {
             return new DeltaSnapshotHeader(
                 DeltaSnapshotProtocol.MessageTypeDelta,
@@ -112,7 +119,8 @@ namespace GlobalFront.Core.Snapshot
                 stateChecksum,
                 addCount,
                 updateCount,
-                removeCount);
+                removeCount,
+                keyframeRef);
         }
 
         /// <summary>C2 message type; <c>0x03</c> for an establishing delta.</summary>
@@ -151,6 +159,14 @@ namespace GlobalFront.Core.Snapshot
         /// <summary>Number of REMOVE records in the packet.</summary>
         public ushort RemoveCount { get; }
 
+        /// <summary>
+        /// Keyframe generation the delta extends (OD-14 apply-gating reference):
+        /// the sender's <c>KeyframeSeq</c> at the moment the delta was built.
+        /// The receiver applies the delta only while this equals the generation
+        /// of its installed baseline.
+        /// </summary>
+        public ushort KeyframeRef { get; }
+
         public bool HasChecksum => (Flags & (byte)DeltaFlags.HasChecksum) != 0;
 
         public bool HasTombstoneEcho => (Flags & (byte)DeltaFlags.HasTombstoneEcho) != 0;
@@ -166,7 +182,8 @@ namespace GlobalFront.Core.Snapshot
             StateChecksum == other.StateChecksum &&
             AddCount == other.AddCount &&
             UpdateCount == other.UpdateCount &&
-            RemoveCount == other.RemoveCount;
+            RemoveCount == other.RemoveCount &&
+            KeyframeRef == other.KeyframeRef;
 
         public override bool Equals(object obj) =>
             obj is DeltaSnapshotHeader other && Equals(other);
@@ -185,12 +202,14 @@ namespace GlobalFront.Core.Snapshot
             hash.Add(AddCount);
             hash.Add(UpdateCount);
             hash.Add(RemoveCount);
+            hash.Add(KeyframeRef);
             return hash.ToHashCode();
         }
 
         public override string ToString() =>
             $"DeltaSnapshot(type=0x{MessageType:X2}, v{DeltaProtocolVersion}, tick={Tick}, base={BaseTick}, " +
-            $"part={PartIndex}/{PartCount}, flags=0x{Flags:X2}, add={AddCount}, update={UpdateCount}, remove={RemoveCount})";
+            $"part={PartIndex}/{PartCount}, flags=0x{Flags:X2}, kfRef={KeyframeRef}, " +
+            $"add={AddCount}, update={UpdateCount}, remove={RemoveCount})";
 
         public static bool operator ==(DeltaSnapshotHeader left, DeltaSnapshotHeader right) =>
             left.Equals(right);

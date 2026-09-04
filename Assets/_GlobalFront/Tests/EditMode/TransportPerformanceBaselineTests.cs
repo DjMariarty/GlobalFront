@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using GlobalFront.Client;
 using GlobalFront.Core.Commands;
@@ -56,11 +57,12 @@ namespace GlobalFront.Tests.EditMode
             var largeTick = (ulong)CommandCount + 1;
             var snapshotsReceived = 0;
             var largeDeliveries = new List<byte[]>();
-            client.SnapshotReceived += (tick, payload) =>
+            client.SnapshotReceived += (tick, payload, length) =>
             {
                 if (tick == largeTick)
                 {
-                    largeDeliveries.Add(payload);
+                    // The endpoint hands out reusable buffers: retain a copy.
+                    largeDeliveries.Add(payload.AsSpan(0, length).ToArray());
                 }
                 else
                 {

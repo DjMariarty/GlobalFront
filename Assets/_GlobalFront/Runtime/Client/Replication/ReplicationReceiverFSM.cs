@@ -339,11 +339,11 @@ namespace GlobalFront.Client.Replication
     /// wall-clock and never uses simulation ticks, so tests drive it with plain
     /// integers. Zero-GC: all queues and counters are preallocated.
     ///
-    /// <c>KeyframeRef</c> is an explicit argument because delta wire format v1
-    /// still writes header bytes 34..35 as <c>Reserved0</c> and does not
-    /// interpret them (step 2.6.1 decision); exposing the field on the wire is a
-    /// separate owner decision, and the step 2.6.4 integration supplies the
-    /// value the sender used.
+    /// <c>KeyframeRef</c> is an explicit argument so the receiver stays
+    /// decoupled from the wire: the transport bridge supplies the reference
+    /// carried by the delta header's own <c>KeyframeRef</c> field (header
+    /// bytes 34..35 since the 2.6.4 wire revision, audit P1-1), and direct
+    /// callers may pass any generation they want the guard to evaluate.
     /// </summary>
     public sealed class ReplicationReceiverFSM
     {

@@ -78,6 +78,101 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
                 Assert.That(world.Emitter.EmittedDeltaCount, Is.GreaterThanOrEqualTo((long)tickCount),
                     "every tick must have produced a delta per client");
             }
+
+            // Audit P1-2: deltas carry the deterministic state fingerprint at
+            // the 1 Hz cadence — 40 streamed ticks must include at least two
+            // checksummed deltas per client stream (ticks 20 and 40).
+            Assert.That(world.Emitter.StateChecksumCount,
+                Is.GreaterThanOrEqualTo(2 * world.Clients.Count),
+                "the 1 Hz state checksum cadence must mark deltas with HasChecksum");
+        }
+
+        [Test]
+        public void Stream_IdleWorld_150Ticks_NoRebaselinesAndStableStreaming()
+        {
+            // Audit P1-4: a quiet world must not stall the delta stream. The
+            // emitter's header-only keep-alive deltas (one per 20 silent
+            // ticks) keep the client's confirmed tick — and with it the shared
+            // delta base — inside the 120-tick history window, so no
+            // re-baseline ever fires, while the world stands still and after
+            // content returns.
+            var world = ReplicationIntegrationWorld.Create(
+                new ImpairmentProfile(), ServerReplicationEmitterConfig.Default, clientCount: 2);
+            world.StartMatch(new PlayerId(1), new PlayerId(2));
+
+            // The baseline episode installs one keyframe per client; nothing
+            // moves afterwards.
+            for (var tick = 0; tick < 6; tick++)
+            {
+                world.PumpTick();
+            }
+
+            foreach (var client in world.Clients)
+            {
+                Assert.That(client.Receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+            }
+
+            var baselineKeyframes = world.Emitter.EmittedKeyframeCount;
+            var baselineSlices = world.Emitter.EmittedSliceCount;
+
+            // 150 idle ticks: no command, no movement. The stream stays
+            // stable — Streaming throughout, no repair, and the confirmed
+            // tick tracks the server within one keep-alive horizon.
+            for (var tick = 0; tick < 150; tick++)
+            {
+                world.PumpTick();
+                foreach (var client in world.Clients)
+                {
+                    Assert.That(client.Receiver.State,
+                        Is.EqualTo(ReplicationReceiverState.Streaming), $"idle tick {tick}");
+                    Assert.That(client.Receiver.RebaseCount, Is.Zero, $"idle tick {tick}");
+                    Assert.That(client.Receiver.CatchUpCount, Is.Zero, $"idle tick {tick}");
+                }
+            }
+
+            foreach (var client in world.Clients)
+            {
+                Assert.That(client.Receiver.LastAppliedTick,
+                    Is.GreaterThanOrEqualTo(world.Rig.Host.CurrentTick -
+                        (ServerReplicationEmitterConfig.DefaultIdleKeepAliveTicks - 1)),
+                    "the keep-alive deltas must keep the confirmed tick near the server");
+            }
+
+            // Content returns: plain deltas must pick up from the keep-alive
+            // base — no re-baseline, no catch-up, no extra keyframe.
+            var entityA = world.Clients[0].FirstEntityOf(new PlayerId(1));
+            var entityB = world.Clients[1].FirstEntityOf(new PlayerId(2));
+            world.Clients[0].SubmitMoveTo(
+                new PlayerId(1), entityA, new WorldPointMm(500_000, 0), world.Rig.Host.CurrentTick + 1);
+            world.Clients[1].SubmitMoveTo(
+                new PlayerId(2), entityB, new WorldPointMm(-500_000, 0), world.Rig.Host.CurrentTick + 1);
+
+            foreach (var client in world.Clients)
+            {
+                Assert.That(
+                    world.PumpUntilCaughtUp(client, budgetMs: 20000, keepTicking: true), Is.True,
+                    "content after the idle period must converge over plain deltas");
+                world.AssertWorldsMatch(client);
+
+                Assert.That(client.Receiver.RebaseCount, Is.Zero,
+                    "an idle world must never force a re-baseline");
+                Assert.That(client.Receiver.CatchUpCount, Is.Zero,
+                    "the keep-alive base must still cover the content delta");
+                Assert.That(client.Receiver.StaleDropCount, Is.Zero,
+                    "keep-alive deltas must never arrive stale");
+                Assert.That(client.Receiver.FailureReason, Is.EqualTo(ReplicationFailureReason.None));
+                Assert.That(client.Receiver.IsWorldUsable, Is.True);
+            }
+
+            // Not a single extra keyframe was emitted: the eviction fallback
+            // never fired during or after the quiet period.
+            Assert.That(world.Emitter.EmittedKeyframeCount, Is.EqualTo(baselineKeyframes),
+                "an idle world must not produce re-baseline keyframes");
+            Assert.That(world.Emitter.EmittedSliceCount, Is.EqualTo(baselineSlices));
+            Assert.That(world.Emitter.KeyframeFallbackCount, Is.Zero);
+            Assert.That(world.Emitter.IdleKeepAliveDeltaCount,
+                Is.GreaterThanOrEqualTo(2 * 5),
+                "each client's stream must have carried keep-alive deltas");
         }
 
         [Test]

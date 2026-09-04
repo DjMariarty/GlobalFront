@@ -29,15 +29,20 @@ namespace GlobalFront.Client.Replication
         /// </summary>
         bool TrySendFeedback(ReplicationFeedbackKind kind, byte[] payload, int length);
 
-        /// <summary>Raised for every C2 snapshot payload with its envelope tick.</summary>
-        event Action<ulong, byte[]> SnapshotPayloadReceived;
+        /// <summary>
+        /// Raised for every C2 snapshot payload with its envelope tick. The
+        /// buffer may be a transport-owned reusable slot: only the
+        /// <paramref name="length"/>-prefixed bytes are the payload, and the
+        /// content is only guaranteed for the duration of the handler call.
+        /// </summary>
+        event Action<ulong, byte[], int> SnapshotPayloadReceived;
     }
 
     /// <summary>Production uplink over the client transport endpoint.</summary>
     public sealed class ClientTransportUplink : IReplicationUplink
     {
         private readonly ClientTransportEndpoint _endpoint;
-        private readonly Action<ulong, byte[]> _onSnapshot;
+        private readonly Action<ulong, byte[], int> _onSnapshot;
 
         public ClientTransportUplink(ClientTransportEndpoint endpoint)
         {
@@ -46,7 +51,7 @@ namespace GlobalFront.Client.Replication
             _endpoint.SnapshotReceived += _onSnapshot;
         }
 
-        public event Action<ulong, byte[]> SnapshotPayloadReceived;
+        public event Action<ulong, byte[], int> SnapshotPayloadReceived;
 
         public bool TrySendFeedback(ReplicationFeedbackKind kind, byte[] payload, int length)
         {
@@ -56,8 +61,8 @@ namespace GlobalFront.Client.Replication
             return _endpoint.TrySendReplicationFeedback(type, payload, length);
         }
 
-        private void OnSnapshot(ulong tick, byte[] payload) =>
-            SnapshotPayloadReceived?.Invoke(tick, payload);
+        private void OnSnapshot(ulong tick, byte[] buffer, int length) =>
+            SnapshotPayloadReceived?.Invoke(tick, buffer, length);
     }
 
     /// <summary>
@@ -157,9 +162,10 @@ namespace GlobalFront.Client.Replication
     /// handed to <see cref="ClientReplicationReceiver.ReceiveKeyframe"/>, a
     /// delta packet (0x03) is decoded into preallocated sinks and handed to
     /// <see cref="ClientReplicationReceiver.ReceiveDelta"/> with the keyframe
-    /// generation of the last assembled baseline (delta wire v1 keeps the
-    /// reference off the wire; the bridge supplies the value the sender
-    /// used), and the legacy full snapshot (0x01) is ignored.
+    /// generation the delta header carries (<c>KeyframeRef</c> — since the
+    /// 2.6.4 wire revision the reference travels on the wire, so the guard
+    /// sees exactly the generation the sender used), and the legacy full
+    /// snapshot (0x01) is ignored.
     ///
     /// Outbound (C0): every pump drains the receiver's cadence-gated
     /// acknowledgement into a 34-byte <see cref="SnapshotAck"/> record and the
@@ -237,7 +243,12 @@ namespace GlobalFront.Client.Replication
 
         public ClientTransportReplicationBridgeConfig Config => _config;
 
-        /// <summary>Keyframe generation the bridge currently forwards deltas with.</summary>
+        /// <summary>
+        /// Keyframe generation of the last assembled baseline; gates the
+        /// staleness of a completed slice assembly. Delta forwarding no longer
+        /// uses it — the generation rides the delta header's
+        /// <c>KeyframeRef</c> (audit P1-1).
+        /// </summary>
         public ushort AssembledKeyframeSeq => _assembledKeyframeSeq;
 
         public int AssembledKeyframeCount => _assembledKeyframeCount;
@@ -320,8 +331,8 @@ namespace GlobalFront.Client.Replication
             }
         }
 
-        private void OnSnapshotPayload(ulong envelopeTick, byte[] payload) =>
-            HandleSnapshotPayload(envelopeTick, payload, payload?.Length ?? 0, _lastPumpMs);
+        private void OnSnapshotPayload(ulong envelopeTick, byte[] buffer, int length) =>
+            HandleSnapshotPayload(envelopeTick, buffer, length, _lastPumpMs);
 
         // ------------------------------------------------------------------
         // Delta path
@@ -353,7 +364,7 @@ namespace GlobalFront.Client.Replication
             _ = _receiver.ReceiveDelta(
                 nowMs,
                 in header,
-                _assembledKeyframeSeq,
+                header.KeyframeRef,
                 _addSink,
                 _updateSink,
                 _removeSink);

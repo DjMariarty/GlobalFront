@@ -22,16 +22,41 @@ namespace GlobalFront.Server.Transport
 
     public sealed class ClientTransportEndpoint
     {
+        /// <summary>
+        /// Size of one reusable snapshot payload buffer: a message payload can
+        /// never exceed the transport message bound minus the message header
+        /// and the C2 SnapshotTick envelope field.
+        /// </summary>
+        private static readonly int SnapshotBufferBytes =
+            TransportProtocol.MaxMessageBytes - TransportProtocol.MessageHeaderSize -
+            TransportProtocol.SnapshotTickSize;
+
+        /// <summary>
+        /// Depth of the reusable snapshot payload ring (audit P1-3): instead of
+        /// allocating <c>new byte[payloadLength]</c> per incoming packet, every
+        /// <see cref="SnapshotReceived"/> dispatch copies into the next slot.
+        /// Depth 4 lets a consumer retain a handful of payloads (test rigs do)
+        /// while the steady-state hot path stays allocation-free.
+        /// </summary>
+        private const int SnapshotBufferCount = 4;
+
         private readonly INetworkCarrier _carrier;
         private readonly byte[] _messageBuffer =
             new byte[TransportProtocol.MaxMessageBytes];
+        private readonly byte[][] _snapshotBuffers = new byte[SnapshotBufferCount][];
 
+        private int _snapshotBufferIndex;
         private int _connectionId;
         private bool _connectRequested;
 
         public ClientTransportEndpoint(INetworkCarrier carrier)
         {
             _carrier = carrier ?? throw new ArgumentNullException(nameof(carrier));
+
+            for (var index = 0; index < SnapshotBufferCount; index++)
+            {
+                _snapshotBuffers[index] = new byte[SnapshotBufferBytes];
+            }
         }
 
         public ClientTransportState State { get; private set; } = ClientTransportState.Idle;
@@ -53,7 +78,15 @@ namespace GlobalFront.Server.Transport
         public event Action<CommandAckPayload> CommandAckReceived;
 
         /// <summary>Opaque Snapshot Protocol v1 payload + envelope SnapshotTick.</summary>
-        public event Action<ulong, byte[]> SnapshotReceived;
+        /// <remarks>
+        /// The payload is one of <see cref="SnapshotBufferCount"/> rotating
+        /// preallocated buffers, handed out with its live length: it is valid
+        /// during the handler call and until
+        /// <see cref="SnapshotBufferCount"/> further snapshots arrive on this
+        /// endpoint. Consumers decode synchronously (the replication bridge
+        /// does); anything that must outlive the call copies the bytes.
+        /// </remarks>
+        public event Action<ulong, byte[], int> SnapshotReceived;
 
         public event Action<TransportDisconnectReason> Lost;
 
@@ -240,10 +273,21 @@ namespace GlobalFront.Server.Transport
 
                 case TransportMessageType.Snapshot:
                     var payloadLength = header.PayloadLength;
-                    var payload = new byte[payloadLength];
+                    if (payloadLength < 0 || payloadLength > SnapshotBufferBytes)
+                    {
+                        _carrier.Metrics.DroppedMalformed++;
+                        return;
+                    }
+
+                    // Zero-GC dispatch (audit P1-3): copy into the next pooled
+                    // slot instead of allocating per packet. The event handler
+                    // receives a buffer reused after SnapshotBufferCount more
+                    // snapshots (see the event remarks).
+                    var payload = _snapshotBuffers[_snapshotBufferIndex];
+                    _snapshotBufferIndex = (_snapshotBufferIndex + 1) % SnapshotBufferCount;
                     Array.Copy(
                         transportEvent.Data, header.PayloadOffset, payload, 0, payloadLength);
-                    SnapshotReceived?.Invoke(header.SnapshotTick, payload);
+                    SnapshotReceived?.Invoke(header.SnapshotTick, payload, payloadLength);
                     return;
 
                 case TransportMessageType.Ping:

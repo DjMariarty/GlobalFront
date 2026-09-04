@@ -4,6 +4,7 @@ using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Server;
+using GlobalFront.Server.Replication;
 using GlobalFront.Server.Sessions;
 
 namespace GlobalFront.Client
@@ -103,12 +104,19 @@ namespace GlobalFront.Client
         /// <summary>
         /// Raised after the server has fully simulated tick N. The client
         /// presentation layer consumes <see cref="GetAllSnapshots"/> from
-        /// this point.
+        /// this point, and the replication emitter attached through
+        /// <see cref="AttachReplication"/> streams its deltas from here.
         /// </summary>
         public event Action<ulong> TickCompleted;
 
         /// <summary>Underlying authoritative server, exposed for diagnostics.</summary>
         public MatchServer Server => _server;
+
+        /// <summary>
+        /// The replication emitter attached through
+        /// <see cref="AttachReplication"/>, or null while replication is off.
+        /// </summary>
+        public ServerReplicationEmitter Replication { get; private set; }
 
         /// <summary>Underlying tick driver, exposed for diagnostics.</summary>
         public TickDriver TickDriver => _tickDriver;
@@ -179,6 +187,50 @@ namespace GlobalFront.Client
             bool autoAcquire = false) =>
             _server.SpawnUnitWithEntity(
                 entity, owner, stats, position, speedMmPerTick, autoAcquire);
+
+        // -----------------------------------------------------------------
+        // Replication pipeline (Phase 2.6, step 2.6.4, audit P1-5). The host
+        // owns the emitter lifecycle: it creates the emitter over the given
+        // transport seam and drives it from TickCompleted, so every host
+        // runtime (local prototype, dedicated server, integration rig) uses
+        // the same replication pipeline instead of wiring it by hand.
+        // -----------------------------------------------------------------
+
+        /// <summary>
+        /// Creates the <see cref="ServerReplicationEmitter"/> over
+        /// <paramref name="transport"/> and hooks it to
+        /// <see cref="TickCompleted"/>: from the next completed tick on, the
+        /// host streams deltas and keyframes through the Phase 2.6 pipeline.
+        ///
+        /// Call BEFORE clients connect — session attachments are only tracked
+        /// from the moment the emitter exists (the emitter is request-driven:
+        /// clients pull their baseline with a SnapshotRequest). Attaching
+        /// twice is an error; the config overload selects non-default
+        /// protocol pacing/capacity values.
+        /// </summary>
+        public ServerReplicationEmitter AttachReplication(IReplicationTransport transport) =>
+            AttachReplication(transport, ServerReplicationEmitterConfig.Default);
+
+        public ServerReplicationEmitter AttachReplication(
+            IReplicationTransport transport,
+            in ServerReplicationEmitterConfig config)
+        {
+            if (transport == null)
+            {
+                throw new ArgumentNullException(nameof(transport));
+            }
+
+            if (Replication != null)
+            {
+                throw new InvalidOperationException(
+                    "the replication emitter is already attached to this host");
+            }
+
+            var emitter = new ServerReplicationEmitter(_server, transport, config);
+            Replication = emitter;
+            TickCompleted += emitter.OnTickCompleted;
+            return emitter;
+        }
 
         public MatchCommandRejection TryEnqueueMove(
             CommandHeader header,

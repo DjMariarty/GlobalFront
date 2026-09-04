@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using GlobalFront.Client;
@@ -68,7 +69,9 @@ namespace GlobalFront.Tests.EditMode
             endpoint.Connect("127.0.0.1", port);
 
             var snapshots = new List<(ulong Tick, byte[] Payload)>();
-            endpoint.SnapshotReceived += (tick, payload) => snapshots.Add((tick, payload));
+            endpoint.SnapshotReceived += (tick, payload, length) =>
+                // The endpoint hands out reusable buffers: retain a copy.
+                snapshots.Add((tick, payload.AsSpan(0, length).ToArray()));
 
             // Handshake over real UDP.
             var deadline = clock.NowMs + 10000;
@@ -206,7 +209,8 @@ namespace GlobalFront.Tests.EditMode
             endpoint.Connect("127.0.0.1", port);
 
             var snapshots = new List<(ulong Tick, byte[] Payload)>();
-            endpoint.SnapshotReceived += (tick, payload) => snapshots.Add((tick, payload));
+            endpoint.SnapshotReceived += (tick, payload, length) =>
+                snapshots.Add((tick, payload.AsSpan(0, length).ToArray()));
 
             var deadline = clock.NowMs + 10000;
             while (endpoint.State != ClientTransportState.Established && clock.NowMs < deadline)

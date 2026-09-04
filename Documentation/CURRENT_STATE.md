@@ -8,17 +8,17 @@
 
 ## Current Task
 
-**Phase 2.6 — Snapshot Networking: COMPLETE. Текущая задача — Independent Review Gate (DeepSeek V4 Pro) по Phase 2.6.**
+**Phase 2.6 — Snapshot Networking: COMPLETE (P1-1..P1-5 закрыты). Текущая задача — Independent Review Gate Re-check (DeepSeek).**
 
-Шаг 2.6.4 End-to-End Integration & Impairment Tests — **COMPLETE**: 597/597 EditMode тестов green (558 baseline + 39 новых интеграционных тестов: сквозной стрим 0% loss, потеря пакетов 1-5% с reconvergence через DeltaResume, burst 100% loss на 25 тиков, вылет за 120 тиков с REBASING, Zero-GC hot path эмиттера и моста на 1000 тиках). Все четыре шага Фазы 2.6 реализованы.
+Шаг 2.6.4 End-to-End Integration & Impairment Tests — **COMPLETE**: 598/598 EditMode тестов green (558 baseline + 39 интеграционных + 1 тест простоя мира). Замечания аудита P1-1 (KeyframeRef на проводе), P1-2 (StateChecksum 1 Hz), P1-3 (Zero-GC в ClientTransportEndpoint через кольцевой пул), P1-4 (Idle keep-alive дельта каждые 20 тиков для предотвращения ложного ребейза), P1-5 (проводка `LocalMatchHost.AttachReplication`) полностью устранены и верифицированы.
 
 ## Last Commit
 
-`7fa4145` — `docs: sync project status and R&D for Phase 2.6 step 3` (предыдущий: `c49eeda` — Шаг 2.6.3)
+`09366d5` — `feat(replication): complete end-to-end integration and impairment tests (Phase 2.6 step 4)`
 
 ## Tests
 
-- EditMode: **597/597 passed** (`Artifacts/TestResults/editmode-phase26-step4.xml`, 2026-09-04; 558 baseline + 39 новых интеграционных тестов Шага 2.6.4; Zero-GC hot path эмиттера и моста валидирован)
+- EditMode: **598/598 passed** (`Artifacts/TestResults/editmode-phase26-step4-final.xml`, 2026-09-04; 558 baseline + 40 интеграционных тестов Шага 2.6.4 с P1-1..P1-5; Zero-GC hot path эмиттера, моста и транспорта валидирован)
 - PlayMode: **6/6 passed** (`Artifacts/TestResults/playmode-phase26-step4.xml`, 2026-09-04)
 - Unity: `6000.5.6f1`
 

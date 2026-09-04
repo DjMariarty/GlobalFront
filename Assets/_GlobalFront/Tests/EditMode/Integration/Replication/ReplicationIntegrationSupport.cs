@@ -85,8 +85,9 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
             };
 
             var adapter = new TransportReplicationAdapter(world.Rig.ServerTransport);
-            world.Emitter = new ServerReplicationEmitter(world.Rig.Host.Server, adapter, emitterConfig);
-            world.Rig.Host.TickCompleted += world.Emitter.OnTickCompleted;
+            // The host owns the emitter lifecycle (audit P1-5): the rig wires
+            // replication exactly like the production runtime would.
+            world.Emitter = world.Rig.Host.AttachReplication(adapter, emitterConfig);
 
             for (var index = 0; index < clientCount; index++)
             {
@@ -419,7 +420,7 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
         public int AcksSent;
         public int RequestsSent;
 
-        public event Action<ulong, byte[]> SnapshotPayloadReceived;
+        public event Action<ulong, byte[], int> SnapshotPayloadReceived;
 
         public bool TrySendFeedback(ReplicationFeedbackKind kind, byte[] payload, int length)
         {
@@ -436,6 +437,6 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
         }
 
         public void Deliver(ulong tick, byte[] payload) =>
-            SnapshotPayloadReceived?.Invoke(tick, payload);
+            SnapshotPayloadReceived?.Invoke(tick, payload, payload?.Length ?? 0);
     }
 }

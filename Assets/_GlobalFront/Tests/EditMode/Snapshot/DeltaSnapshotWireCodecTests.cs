@@ -34,7 +34,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         private const int AddCountOffset = 28;
         private const int UpdateCountOffset = 30;
         private const int RemoveCountOffset = 32;
-        private const int ReservedOffset = 34;
+        private const int KeyframeRefOffset = 34;
 
         private const int FuzzSeed = 20260903;
         private const int MaxFuzzRecords = 512;
@@ -107,7 +107,8 @@ namespace GlobalFront.Tests.EditMode.Snapshot
             byte partIndex = 0,
             byte partCount = 1,
             DeltaFlags flags = DeltaFlags.None,
-            uint stateChecksum = 0)
+            uint stateChecksum = 0,
+            ushort keyframeRef = 0)
         {
             return DeltaSnapshotHeader.CreateDeltaPart(
                 tick,
@@ -118,7 +119,8 @@ namespace GlobalFront.Tests.EditMode.Snapshot
                 stateChecksum,
                 (ushort)addCount,
                 (ushort)updateCount,
-                (ushort)removeCount);
+                (ushort)removeCount,
+                keyframeRef);
         }
 
         /// <summary>Encodes a packet and asserts success; returns the exact packet bytes.</summary>
@@ -131,11 +133,12 @@ namespace GlobalFront.Tests.EditMode.Snapshot
             byte partIndex = 0,
             byte partCount = 1,
             DeltaFlags flags = DeltaFlags.None,
-            uint stateChecksum = 0)
+            uint stateChecksum = 0,
+            ushort keyframeRef = 0)
         {
             var header = MakeHeader(
                 adds.Length, updates.Length, removes.Length,
-                tick, baseTick, partIndex, partCount, flags, stateChecksum);
+                tick, baseTick, partIndex, partCount, flags, stateChecksum, keyframeRef);
             return EncodeOk(header, adds, updates, removes);
         }
 
@@ -325,7 +328,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         }
 
         [Test]
-        public void RoundTrip_PreservesFlagsChecksumAndPartAddressing()
+        public void RoundTrip_PreservesFlagsChecksumKeyframeRefAndPartAddressing()
         {
             var adds = new[] { MakeAdd(3) };
             var packet = EncodeOk(
@@ -337,7 +340,8 @@ namespace GlobalFront.Tests.EditMode.Snapshot
                 partIndex: 1,
                 partCount: 3,
                 flags: DeltaFlags.HasChecksum | DeltaFlags.HasTombstoneEcho,
-                stateChecksum: 0xDEADBEEF);
+                stateChecksum: 0xDEADBEEF,
+                keyframeRef: 0x1234);
 
             var result = DecodeOk(packet, out var header, out var decodedAdds, out _, out _);
 
@@ -352,6 +356,8 @@ namespace GlobalFront.Tests.EditMode.Snapshot
             Assert.That(header.HasChecksum, Is.True);
             Assert.That(header.HasTombstoneEcho, Is.True);
             Assert.That(header.StateChecksum, Is.EqualTo(0xDEADBEEFu));
+            Assert.That(header.KeyframeRef, Is.EqualTo(0x1234),
+                "the keyframe generation reference must round-trip through the wire");
             Assert.That(decodedAdds, Is.EqualTo(adds));
         }
 
@@ -382,7 +388,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         }
 
         [Test]
-        public void Header_Layout_IsLittleEndianWithReservedBytesZeroed()
+        public void Header_Layout_IsLittleEndianWithKeyframeRefAtBytes34And35()
         {
             var packet = EncodeOk(
                 new[] { MakeAdd(1) },
@@ -393,7 +399,8 @@ namespace GlobalFront.Tests.EditMode.Snapshot
                 partIndex: 0,
                 partCount: 1,
                 flags: DeltaFlags.HasChecksum,
-                stateChecksum: 0xAABBCCDD);
+                stateChecksum: 0xAABBCCDD,
+                keyframeRef: 0xCAFE);
 
             Assert.That(packet.Length, Is.GreaterThanOrEqualTo(HeaderSize));
             Assert.That(packet[MessageTypeOffset], Is.EqualTo(0x03));
@@ -407,8 +414,15 @@ namespace GlobalFront.Tests.EditMode.Snapshot
             Assert.That(BitConverter.ToUInt16(packet, AddCountOffset), Is.EqualTo(1));
             Assert.That(BitConverter.ToUInt16(packet, UpdateCountOffset), Is.EqualTo(1));
             Assert.That(BitConverter.ToUInt16(packet, RemoveCountOffset), Is.EqualTo(1));
-            Assert.That(packet[ReservedOffset], Is.Zero, "reserved header bytes must be zero in v1");
-            Assert.That(packet[ReservedOffset + 1], Is.Zero, "reserved header bytes must be zero in v1");
+            Assert.That(BitConverter.ToUInt16(packet, KeyframeRefOffset), Is.EqualTo(0xCAFE),
+                "header bytes 34..35 carry the KeyframeRef as little-endian u16");
+
+            // TryDecodeHeader must surface the reference without touching the
+            // sections: it is the value the apply-guard compares against.
+            Assert.That(
+                DeltaSnapshotWireCodec.TryDecodeHeader(packet, out var headerOnly),
+                Is.EqualTo(DeltaCodecResult.Ok));
+            Assert.That(headerOnly.KeyframeRef, Is.EqualTo(0xCAFE));
         }
 
         [Test]

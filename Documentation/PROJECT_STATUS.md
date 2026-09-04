@@ -20,7 +20,7 @@ GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 
 | Snapshots | Delta Snapshot Core/Server/Client слои Шагов 2.6.1–2.6.4 завершены, rate-pacing/keyframe slicing/end-to-end integration и loss stress (1–5% loss) верифицированы |
 | Presentation | выбор, движение, атака, камера, HUD, runtime prototype world |
 | Scene | одна включённая `Assets/Scenes/SampleScene.unity` |
-| Tests | **597/597 EditMode passed** (`Artifacts/TestResults/editmode-phase26-step4.xml`, 2026-09-04); **6/6 PlayMode passed** (`Artifacts/TestResults/playmode-phase26-step4.xml`, 2026-09-04) |
+| Tests | **598/598 EditMode passed** (`Artifacts/TestResults/editmode-phase26-step4-final.xml`, 2026-09-04); **6/6 PlayMode passed** (`Artifacts/TestResults/playmode-phase26-step4.xml`, 2026-09-04) |
 
 ## Phase 2 Status
 

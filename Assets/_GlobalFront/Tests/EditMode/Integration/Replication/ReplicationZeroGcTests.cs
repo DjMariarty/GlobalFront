@@ -238,7 +238,12 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
                 0,
                 0,
                 (ushort)updates.Length,
-                0);
+                0,
+                // The KeyframeRef rides the wire now (audit P1-1): the bridge
+                // forwards what the header carries, so it must name the
+                // generation of the installed baseline (the keyframe above
+                // uses KeyframeSeq 1).
+                keyframeRef: 1);
             if (DeltaSnapshotWireCodec.TryEncode(
                     header,
                     ReadOnlySpan<DeltaAddRecord>.Empty,

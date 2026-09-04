@@ -30,6 +30,23 @@ namespace GlobalFront.Server.Replication
         /// <summary>0 disables periodic keyframes (ADR-010 leaves the interval to the owner).</summary>
         public const int DefaultPeriodicKeyframeTicks = 0;
 
+        /// <summary>
+        /// Idle keep-alive cadence (audit P1-4): when no packet was sent to a
+        /// client for this many ticks, the emitter emits a header-only
+        /// establishing delta so the client's confirmed tick — and with it the
+        /// shared delta base — never drifts out of the 120-tick history window.
+        /// 20 ticks = 1 s at the 20 Hz contract.
+        /// </summary>
+        public const int DefaultIdleKeepAliveTicks = 20;
+
+        /// <summary>
+        /// State-checksum cadence (audit P1-2): every delta sent at least this
+        /// many ticks after the previous one carries
+        /// <see cref="DeltaFlags.HasChecksum"/> with a deterministic fingerprint
+        /// of the live world. 20 ticks = 1 Hz at the 20 Hz contract.
+        /// </summary>
+        public const int DefaultChecksumIntervalTicks = 20;
+
         public ServerReplicationEmitterConfig(
             int maxClients,
             int snapshotCapacity,
@@ -190,6 +207,18 @@ namespace GlobalFront.Server.Replication
     /// needless re-baseline. A lost delta therefore surfaces as a guarded gap
     /// on the client (CATCHING_UP) and is answered by a DeltaResume request —
     /// the cumulative merge is exactly what makes skipped ticks safe;</item>
+    /// <item>a quiet world does not stall the stream: when 20 ticks passed
+    /// without a sendable packet, the emitter emits a header-only (36 bytes,
+    /// zero records) Establishing Delta. The client applies it, advances its
+    /// confirmed tick and acks, so the shared base keeps moving and never
+    /// falls out of the 120-tick history window — an idle world must never
+    /// trigger a re-baseline storm (audit P1-4). The DeltaResume answer for an
+    /// empty interval is the same header-only delta, so a repair episode also
+    /// ends with a packet the client can ack;</item>
+    /// <item>at the 1 Hz cadence a sent delta carries
+    /// <see cref="DeltaFlags.HasChecksum"/> with a deterministic FNV-1a
+    /// fingerprint over the live units (entity id, position, health),
+    /// computed from the latest capture (audit P1-2);</item>
     /// <item>a keyframe replaces the stream whenever the merge is impossible
     /// (base evicted from the 120-tick window, a change-set overflowed its
     /// buffer, or the merged delta exceeds the 8 KB payload bound). Keyframes
@@ -251,6 +280,8 @@ namespace GlobalFront.Server.Replication
         private long _sendFailureCount;
         private long _snapshotShortfallCount;
         private long _diffFailureCount;
+        private long _idleKeepAliveDeltaCount;
+        private long _stateChecksumCount;
 
         /// <summary>Per-client replication bookkeeping. See <see cref="ClientState"/>.</summary>
         private sealed class ClientState
@@ -269,6 +300,10 @@ namespace GlobalFront.Server.Replication
             public int PendingNextPart;
             public int PacingTokens;
             public ulong LastKeyframeTick;
+
+            /// <summary>Tick the client's stream last carried a state checksum.</summary>
+            public ulong LastChecksumTick;
+
             public byte[] KeyframeStaging;
         }
 
@@ -351,6 +386,12 @@ namespace GlobalFront.Server.Replication
         public long SendFailureCount => _sendFailureCount;
         public long SnapshotShortfallCount => _snapshotShortfallCount;
         public long DiffFailureCount => _diffFailureCount;
+
+        /// <summary>Header-only idle keep-alive deltas sent (audit P1-4).</summary>
+        public long IdleKeepAliveDeltaCount => _idleKeepAliveDeltaCount;
+
+        /// <summary>Deltas that carried a <see cref="DeltaFlags.HasChecksum"/> fingerprint (audit P1-2).</summary>
+        public long StateChecksumCount => _stateChecksumCount;
 
         /// <summary>
         /// Advances the replication pipeline for one completed authoritative
@@ -513,15 +554,27 @@ namespace GlobalFront.Server.Replication
             }
 
             var merged = _builder.ChangeSet;
-            if (merged.RecordCount == 0)
+            var isIdleKeepAlive = merged.RecordCount == 0;
+            if (isIdleKeepAlive &&
+                tick - client.LastSentTick <
+                (ulong)ServerReplicationEmitterConfig.DefaultIdleKeepAliveTicks)
             {
-                // Empty interval: nothing to anchor. LastSentTick must NOT
-                // advance — it is the base the client is trusted to have
-                // applied, and it may only move with a packet the client can
-                // actually apply. Advancing it over silent ticks would fabricate
-                // a dependency gap the moment real content returns.
+                // Empty interval inside the keep-alive horizon: nothing to
+                // anchor, and the client's confirmed tick is recent enough —
+                // the next content delta still covers everything since the
+                // shared base. LastSentTick must NOT advance — it is the base
+                // the client is trusted to have applied, and it may only move
+                // with a packet the client can actually apply.
                 return;
             }
+
+            // An empty interval beyond the keep-alive horizon still streams as
+            // a header-only (36 bytes, zero records) Establishing Delta: it
+            // advances the client's LastAppliedTick — and via its ack the
+            // shared base — so a quiet world never lets the base fall out of
+            // the 120-tick history ring and turn into a re-baseline storm
+            // (audit P1-4). Advancing LastSentTick is safe here because this
+            // empty delta IS a packet the client can apply.
 
             var sizeResult = DeltaSnapshotWireCodec.GetEncodedSize(
                 merged.Adds, merged.Updates, merged.Removes, out var encodedSize);
@@ -542,14 +595,26 @@ namespace GlobalFront.Server.Replication
                 return;
             }
 
+            var flags = DeltaFlags.None;
+            var stateChecksum = 0u;
+            if (tick - client.LastChecksumTick >=
+                (ulong)ServerReplicationEmitterConfig.DefaultChecksumIntervalTicks)
+            {
+                stateChecksum = ComputeStateChecksum();
+                flags |= DeltaFlags.HasChecksum;
+                client.LastChecksumTick = tick;
+                _stateChecksumCount++;
+            }
+
             var header = DeltaSnapshotHeader.CreateDelta(
                 tick,
                 baseTick,
-                DeltaFlags.None,
-                0,
+                flags,
+                stateChecksum,
                 (ushort)merged.AddCount,
                 (ushort)merged.UpdateCount,
-                (ushort)merged.RemoveCount);
+                (ushort)merged.RemoveCount,
+                client.KeyframeSeq);
             var encodeResult = DeltaSnapshotWireCodec.TryEncode(
                 header,
                 merged.Adds,
@@ -573,6 +638,51 @@ namespace GlobalFront.Server.Replication
             client.LastSentTick = tick;
             client.PacingTokens -= written;
             _emittedDeltaCount++;
+            if (isIdleKeepAlive)
+            {
+                _idleKeepAliveDeltaCount++;
+            }
+        }
+
+        /// <summary>
+        /// Deterministic 32-bit fingerprint of the live world (audit P1-2):
+        /// FNV-1a over every captured unit in the capture's deterministic
+        /// entity-id order, mixing entity id, position and health. Pure
+        /// arithmetic — no allocations, no string or object hashing, so the
+        /// value is reproducible across runs and platforms.
+        /// </summary>
+        private uint ComputeStateChecksum()
+        {
+            unchecked
+            {
+                var hash = 2166136261u;
+                var capture = _captures[_captureIndex];
+                var count = _captureCounts[_captureIndex];
+                for (var index = 0; index < count; index++)
+                {
+                    var unit = capture[index];
+                    hash = MixChecksumByte(hash, unit.Entity.Value);
+                    hash = MixChecksumByte(hash, (ulong)unit.Position.X);
+                    hash = MixChecksumByte(hash, (ulong)unit.Position.Z);
+                    hash = MixChecksumByte(hash, (ulong)unit.CurrentHealth);
+                }
+
+                return hash;
+            }
+        }
+
+        /// <summary>Folds the little-endian bytes of <paramref name="value"/> into the FNV-1a state.</summary>
+        private static uint MixChecksumByte(uint hash, ulong value)
+        {
+            unchecked
+            {
+                for (var shift = 0; shift < sizeof(ulong) * 8; shift += 8)
+                {
+                    hash = (hash ^ (uint)((value >> shift) & 0xFF)) * 16777619u;
+                }
+
+                return hash;
+            }
         }
 
         // ------------------------------------------------------------------
@@ -795,11 +905,45 @@ namespace GlobalFront.Server.Replication
             if (merged.RecordCount == 0)
             {
                 // Empty interval: the client's state already equals the target.
+                // Answer on the wire instead of advancing silently: the
+                // header-only delta is applied and acked, so the repair episode
+                // ends with a packet (a silent LastSentTick advance would
+                // strand the client in CatchingUp until it escalates).
+                var emptyHeader = DeltaSnapshotHeader.CreateDelta(
+                    target,
+                    baseTick,
+                    DeltaFlags.None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    client.KeyframeSeq);
+                var emptyEncode = DeltaSnapshotWireCodec.TryEncode(
+                    emptyHeader,
+                    ReadOnlySpan<DeltaAddRecord>.Empty,
+                    ReadOnlySpan<DeltaUpdateRecord>.Empty,
+                    ReadOnlySpan<DeltaRemoveRecord>.Empty,
+                    _deltaBuffer,
+                    out var emptyWritten);
+                if (emptyEncode != DeltaCodecResult.Ok)
+                {
+                    _keyframeFallbackCount++;
+                    QueueKeyframe(client);
+                    return;
+                }
+
+                if (!_transport.SendToSession(client.Session, target, _deltaBuffer, emptyWritten))
+                {
+                    _sendFailureCount++;
+                    return;
+                }
+
                 if (client.LastSentTick < target)
                 {
                     client.LastSentTick = target;
                 }
 
+                _deltaResumeServedCount++;
                 return;
             }
 
@@ -820,7 +964,8 @@ namespace GlobalFront.Server.Replication
                 0,
                 (ushort)merged.AddCount,
                 (ushort)merged.UpdateCount,
-                (ushort)merged.RemoveCount);
+                (ushort)merged.RemoveCount,
+                client.KeyframeSeq);
             var encodeResult = DeltaSnapshotWireCodec.TryEncode(
                 header,
                 merged.Adds,
@@ -883,6 +1028,7 @@ namespace GlobalFront.Server.Replication
             client.PendingNextPart = 0;
             client.PacingTokens = _effectiveBurstBytes;
             client.LastKeyframeTick = 0;
+            client.LastChecksumTick = 0;
         }
 
         private void OnSessionDetached(SessionId session, TransportDisconnectReason reason)
