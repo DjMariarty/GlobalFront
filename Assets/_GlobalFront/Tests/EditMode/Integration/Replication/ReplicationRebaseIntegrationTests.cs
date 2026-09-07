@@ -6,6 +6,8 @@ using GlobalFront.Core.Snapshot;
 using GlobalFront.Server.Replication;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
+using UnityEngine.TestTools.Constraints;
+using Is = NUnit.Framework.Is;
 
 namespace GlobalFront.Tests.EditMode.Integration.Replication
 {
@@ -147,6 +149,83 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
             Assert.That(client.Receiver.KeyframeCount, Is.GreaterThanOrEqualTo(2),
                 "the client must have installed the re-baseline keyframe");
             Assert.That(client.Receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+        }
+
+        [Test]
+        public void Rebase_ConsecutiveChecksumMismatches_TriggersRebasingAndEmitsSnapshotRequest()
+        {
+            var receiver = new ClientReplicationReceiver(64);
+            const ushort keyframeSeq = 1;
+            var initialUnits = new[]
+            {
+                new DeltaAddRecord(new EntityId(1), new PlayerId(1), new WorldPointMm(100, 200), 100, false, default, default, false),
+                new DeltaAddRecord(new EntityId(2), new PlayerId(2), new WorldPointMm(300, 400), 100, false, default, default, false)
+            };
+            var outcome = receiver.ReceiveKeyframe(0, keyframeSeq, 100, initialUnits);
+            Assert.That(outcome, Is.EqualTo(ClientReplicationOutcome.BaselineInstalled));
+            Assert.That(receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+
+            // Drain the baseline ack
+            Assert.That(receiver.TryTakeAck(0, out _), Is.True);
+
+            // Verify strict zero-GC allocations on ComputeStateChecksum
+            Assert.That(
+                () => { receiver.World.ComputeStateChecksum(); },
+                UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory(),
+                "ComputeStateChecksum must be strictly allocation-free");
+
+            var expectedChecksum = receiver.World.ComputeStateChecksum();
+            Assert.That(expectedChecksum, Is.Not.EqualTo(0u));
+            Assert.That(receiver.ConsecutiveChecksumMismatches, Is.EqualTo(0));
+            Assert.That(receiver.ChecksumMismatchCount, Is.EqualTo(0));
+
+            // 1. Delta with matching checksum -> matches, keeps consecutive mismatches at 0
+            var matchingHeader = DeltaSnapshotHeader.CreateDelta(
+                101, 100, DeltaFlags.HasChecksum, expectedChecksum, 0, 0, 0, keyframeRef: keyframeSeq);
+            var outcome1 = receiver.ReceiveDelta(
+                50, in matchingHeader, keyframeSeq,
+                ReadOnlySpan<DeltaAddRecord>.Empty,
+                ReadOnlySpan<DeltaUpdateRecord>.Empty,
+                ReadOnlySpan<DeltaRemoveRecord>.Empty);
+            Assert.That(outcome1, Is.EqualTo(ClientReplicationOutcome.Applied));
+            Assert.That(receiver.ConsecutiveChecksumMismatches, Is.EqualTo(0));
+            Assert.That(receiver.ChecksumMismatchCount, Is.EqualTo(0));
+            Assert.That(receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+
+            // 2. Delta with corrupted checksum (1st mismatch) -> counter becomes 1, still Streaming, no request
+            var corruptChecksum = expectedChecksum ^ 0xDEADBEEFu;
+            var corruptHeader1 = DeltaSnapshotHeader.CreateDelta(
+                102, 101, DeltaFlags.HasChecksum, corruptChecksum, 0, 0, 0, keyframeRef: keyframeSeq);
+            var outcome2 = receiver.ReceiveDelta(
+                100, in corruptHeader1, keyframeSeq,
+                ReadOnlySpan<DeltaAddRecord>.Empty,
+                ReadOnlySpan<DeltaUpdateRecord>.Empty,
+                ReadOnlySpan<DeltaRemoveRecord>.Empty);
+            Assert.That(outcome2, Is.EqualTo(ClientReplicationOutcome.Applied));
+            Assert.That(receiver.ConsecutiveChecksumMismatches, Is.EqualTo(1));
+            Assert.That(receiver.ChecksumMismatchCount, Is.EqualTo(1));
+            Assert.That(receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+            Assert.That(receiver.TryTakeRequest(out _), Is.False, "1st mismatch must not trigger repair");
+
+            // 3. Delta with corrupted checksum (2nd consecutive mismatch) -> triggers Rebasing & SnapshotRequest
+            var corruptHeader2 = DeltaSnapshotHeader.CreateDelta(
+                103, 102, DeltaFlags.HasChecksum, corruptChecksum, 0, 0, 0, keyframeRef: keyframeSeq);
+            var outcome3 = receiver.ReceiveDelta(
+                150, in corruptHeader2, keyframeSeq,
+                ReadOnlySpan<DeltaAddRecord>.Empty,
+                ReadOnlySpan<DeltaUpdateRecord>.Empty,
+                ReadOnlySpan<DeltaRemoveRecord>.Empty);
+            Assert.That(outcome3, Is.EqualTo(ClientReplicationOutcome.RebaseRequested));
+            Assert.That(receiver.ConsecutiveChecksumMismatches, Is.EqualTo(2));
+            Assert.That(receiver.ChecksumMismatchCount, Is.EqualTo(2));
+            Assert.That(receiver.State, Is.EqualTo(ReplicationReceiverState.Rebasing));
+            Assert.That(receiver.IsWorldUsable, Is.False, "desynced world must not be usable by presentation");
+            Assert.That(receiver.RebaseCount, Is.GreaterThanOrEqualTo(1));
+
+            // Must have queued a SnapshotRequest for a full baseline
+            Assert.That(receiver.TryTakeRequest(out var request), Is.True);
+            Assert.That(request.Kind, Is.EqualTo(ReplicationRequestKind.SnapshotRequest));
+            Assert.That(request.LastAppliedTick, Is.EqualTo(103UL));
         }
     }
 }

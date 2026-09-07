@@ -247,7 +247,7 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 2. **Чистые кумулятивные дельты 10–30 с (отклонено):** в активном бою дрейф от базы охватывает почти все юниты, и поток дельт разрастается до размера полного кадра.
 3. **Строгая последовательная инкрементальная цепочка (Модель B, отклонено):** потеря одной дельты рвёт всю цепочку и требует постоянных запросов базы.
 4. **Keyframe по надёжному каналу C0/C1 (отклонено):** общий reliable sequence space каналов C0 и C1 при потере пакета кейфрейма замораживает доставку команд игрока (C1) и подтверждений (CommandAck) на время RTO (в 62% случаев при 1% потерь).
-5. **Модель D: Hybrid (Выбрана):** нарезанный Keyframe по C2 с точечным NACK-ремонтом по C0 + абсолютные устанавливающие дельты (Establishing Deltas) по C2 + подтверждения 10 Hz + кольцевое окно истории (120 тиков) на сервере + StateChecksum (xxHash32).
+5. **Модель D: Hybrid (Выбрана):** нарезанный Keyframe по C2 с точечным NACK-ремонтом по C0 + абсолютные устанавливающие дельты (Establishing Deltas) по C2 + подтверждения 10 Hz + кольцевое окно истории (120 тиков) на сервере + StateChecksum (32-bit FNV-1a).
 
 ### Decision
 
@@ -257,7 +257,7 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 - **OD-13 (Бюджеты):** целевой эгресс — 50–100 КБ/с на клиента, soft cap 128 КБ/с. Суммарный эгресс на 10 игроков <= 1 МБ/с (4–8 Мбит/с). Действует Pre-emption Rule: C0 CommandAck > KeyframeSlice > Delta > Catch-up/Repair.
 - **OD-14 (Кодирование и FSM дельт):** модель **Establishing Deltas**. Поля в UPDATE несут абсолютные значения. Apply-Guard: дельта применяется, если `Tick > LastAppliedTick && BaseTick <= LastAppliedTick && KeyframeRef == CurrentKeyframeSeq`. Пропуск промежуточных тиков безопасен.
 - **Обратная связь (Feedback):** `SnapshotAck` отправляется на C0 после каждого применённого такта репликации (10 Hz, 330 Б/с) с 64-битной маской `MissingBitmap`.
-- **Wire Format:** заголовок 36 Б (с xxHash32 StateChecksum), entity ID через zigzag-varint delta от предыдущего, `dirtyMask u8` (8 полей). Бит 3 маски — сброс `MoveTarget` без передачи координат. ADD = 39 Б; REMOVE = varint id + Cause. Строгий инвариант: `EntityId` монотонно возрастает и не переиспользуется в рамках матча.
+- **Wire Format:** заголовок 36 Б (с 32-bit FNV-1a StateChecksum: базис 2166136261u, множитель 16777619u по каноническому возрастанию EntityId полей Entity, PosX, PosZ, Health для кроссплатформенного детерминизма и Zero-GC), entity ID через zigzag-varint delta от предыдущего, `dirtyMask u8` (8 полей). Бит 3 маски — сброс `MoveTarget` без передачи координат. ADD = 39 Б; REMOVE = varint id + Cause. Строгий инвариант: `EntityId` монотонно возрастает и не переиспользуется в рамках матча.
 - **Zero-GC Hot Path:** сервер держит ровно 2 полных среза мира для вычисления дельт и 120 change-set'ов в кольце. Все буферы сериализации предвыделены (Zero-GC).
 - **OD-16 (Граница Fog of War):** вводится интерфейс `IReplicationFilter` с пакетным методом `BuildView(ReplicationContext, ReplicationViewBuilder)`. Дефолтная реализация в Phase 2.6 — passthrough `AllVisibleFilter`.
 - **OD-17 (Версионирование):** вводится независимое пространство `DeltaSnapshotProtocol.Version = 1`. Полный `SnapshotProtocol.Version = 1` не изменяется.

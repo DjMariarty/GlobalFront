@@ -102,6 +102,7 @@ namespace GlobalFront.Client.Replication
         private readonly ClientReplicationWorld _world;
         private readonly ReplicationReceiverFSM _fsm;
         private readonly ReplicationFeedbackGenerator _feedback;
+        private int _consecutiveChecksumMismatches;
 
         public ClientReplicationReceiver()
             : this(ClientReplicationWorld.DefaultCapacity)
@@ -197,6 +198,12 @@ namespace GlobalFront.Client.Replication
 
         public int IncompleteMultipartCount { get; private set; }
 
+        /// <summary>Number of consecutive deltas whose state checksum mismatched.</summary>
+        public int ConsecutiveChecksumMismatches => _consecutiveChecksumMismatches;
+
+        /// <summary>Total deltas whose state checksum mismatched the authoritative fingerprint.</summary>
+        public int ChecksumMismatchCount { get; private set; }
+
         /// <summary>Convenience read of the mirror.</summary>
         public bool TryGetUnit(EntityId entity, out ClientUnitState state) => _world.TryGet(entity, out state);
 
@@ -226,6 +233,7 @@ namespace GlobalFront.Client.Replication
 
             _world.Reset();
             WorldPartiallyApplied = false;
+            _consecutiveChecksumMismatches = 0;
 
             if (!_world.HasCapacityFor(units.Length))
             {
@@ -390,6 +398,30 @@ namespace GlobalFront.Client.Replication
             _fsm.NoteApplied(header.Tick);
             _feedback.NoteApplied(header.Tick, _fsm.BaseKeyframeTick);
             AppliedDeltaCount++;
+
+            if (header.HasChecksum)
+            {
+                var clientChecksum = _world.ComputeStateChecksum();
+                if (clientChecksum == header.StateChecksum)
+                {
+                    _consecutiveChecksumMismatches = 0;
+                }
+                else
+                {
+                    _consecutiveChecksumMismatches++;
+                    ChecksumMismatchCount++;
+                    if (_consecutiveChecksumMismatches >= 2)
+                    {
+                        UnityEngine.Debug.LogWarning(
+                            $"[ClientReplication] State checksum mismatch (server={header.StateChecksum}, client={clientChecksum}, consecutive={_consecutiveChecksumMismatches}, tick={header.Tick}). Initiating re-baseline.");
+                        _fsm.ReportBaselineLoss(nowMs);
+                        _feedback.NoteBaselineStale(_fsm.LastAppliedTick, _fsm.BaseKeyframeTick);
+                        RebaseCount++;
+                        return ClientReplicationOutcome.RebaseRequested;
+                    }
+                }
+            }
+
             return ClientReplicationOutcome.Applied;
         }
 
@@ -417,6 +449,8 @@ namespace GlobalFront.Client.Replication
             _fsm.Reset();
             _feedback.Reset();
             WorldPartiallyApplied = false;
+            _consecutiveChecksumMismatches = 0;
+            ChecksumMismatchCount = 0;
 
             KeyframeCount = 0;
             KeyframeUnitCount = 0;

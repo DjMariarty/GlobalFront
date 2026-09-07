@@ -195,6 +195,7 @@ namespace GlobalFront.Client.Replication
         private readonly int[] _freeSlots;
         private readonly int[] _index;
         private readonly int _indexMask;
+        private readonly int[] _checksumSlots;
 
         private int _freeCount;
 
@@ -212,6 +213,7 @@ namespace GlobalFront.Client.Replication
 
             _slots = new ClientUnitState[capacity];
             _freeSlots = new int[capacity];
+            _checksumSlots = new int[capacity];
 
             var indexSize = 4;
             while (indexSize < capacity * 2)
@@ -427,6 +429,112 @@ namespace GlobalFront.Client.Replication
             }
 
             return written;
+        }
+
+        /// <summary>
+        /// Deterministic 32-bit fingerprint of the live replicated world (audit P1-2):
+        /// 32-bit FNV-1a over every active unit in canonical ascending entity-id
+        /// order, mixing entity id, position (X, Z) and health. Strictly matches
+        /// the server's fingerprinting logic in ServerReplicationEmitter.
+        ///
+        /// Strict zero-GC: operates on the preallocated <see cref="_checksumSlots"/>
+        /// scratch array and uses an iterative, in-place heapsort without allocating
+        /// memory, LINQ, or interface enumeration.
+        /// </summary>
+        public uint ComputeStateChecksum()
+        {
+            var count = 0;
+            for (var slot = 0; slot < _slots.Length; slot++)
+            {
+                if (_slots[slot].IsLive)
+                {
+                    _checksumSlots[count++] = slot;
+                }
+            }
+
+            if (count > 1)
+            {
+                SortChecksumSlots(count);
+            }
+
+            unchecked
+            {
+                var hash = 2166136261u;
+                for (var i = 0; i < count; i++)
+                {
+                    var unit = _slots[_checksumSlots[i]];
+                    hash = MixChecksumByte(hash, unit.Entity.Value);
+                    hash = MixChecksumByte(hash, (ulong)unit.PosX);
+                    hash = MixChecksumByte(hash, (ulong)unit.PosZ);
+                    hash = MixChecksumByte(hash, (ulong)unit.Health);
+                }
+
+                return hash;
+            }
+        }
+
+        private void SortChecksumSlots(int count)
+        {
+            for (var i = (count >> 1) - 1; i >= 0; i--)
+            {
+                HeapifyChecksumSlots(count, i);
+            }
+
+            for (var i = count - 1; i > 0; i--)
+            {
+                var temp = _checksumSlots[0];
+                _checksumSlots[0] = _checksumSlots[i];
+                _checksumSlots[i] = temp;
+
+                HeapifyChecksumSlots(i, 0);
+            }
+        }
+
+        private void HeapifyChecksumSlots(int length, int root)
+        {
+            while (true)
+            {
+                var largest = root;
+                var left = (root << 1) + 1;
+                var right = left + 1;
+
+                if (left < length &&
+                    _slots[_checksumSlots[left]].Entity.Value > _slots[_checksumSlots[largest]].Entity.Value)
+                {
+                    largest = left;
+                }
+
+                if (right < length &&
+                    _slots[_checksumSlots[right]].Entity.Value > _slots[_checksumSlots[largest]].Entity.Value)
+                {
+                    largest = right;
+                }
+
+                if (largest == root)
+                {
+                    break;
+                }
+
+                var swap = _checksumSlots[root];
+                _checksumSlots[root] = _checksumSlots[largest];
+                _checksumSlots[largest] = swap;
+
+                root = largest;
+            }
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static uint MixChecksumByte(uint hash, ulong value)
+        {
+            unchecked
+            {
+                for (var shift = 0; shift < sizeof(ulong) * 8; shift += 8)
+                {
+                    hash = (hash ^ (uint)((value >> shift) & 0xFF)) * 16777619u;
+                }
+
+                return hash;
+            }
         }
 
         public override string ToString() =>

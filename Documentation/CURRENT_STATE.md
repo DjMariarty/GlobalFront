@@ -10,7 +10,7 @@
 
 **Phase 2.6 — Snapshot Networking: COMPLETE (P1-1..P1-5 закрыты). Текущая задача — Independent Review Gate Re-check (DeepSeek).**
 
-Шаг 2.6.4 End-to-End Integration & Impairment Tests — **COMPLETE**: 598/598 EditMode тестов green (558 baseline + 39 интеграционных + 1 тест простоя мира). Замечания аудита P1-1 (KeyframeRef на проводе), P1-2 (StateChecksum 1 Hz), P1-3 (Zero-GC в ClientTransportEndpoint через кольцевой пул), P1-4 (Idle keep-alive дельта каждые 20 тиков для предотвращения ложного ребейза), P1-5 (проводка `LocalMatchHost.AttachReplication`) полностью устранены и верифицированы.
+Шаг 2.6.4 End-to-End Integration & Impairment Tests — **COMPLETE**: 599/599 EditMode тестов green (558 baseline + 41 интеграционный тест с P1-1..P1-5). Замечания аудита P1-1 (KeyframeRef на проводе), P1-2 (StateChecksum 1 Hz и Zero-GC клиентская верификация с авто-восстановлением через SnapshotRequest), P1-3 (Zero-GC в ClientTransportEndpoint через кольцевой пул), P1-4 (Idle keep-alive дельта каждые 20 тиков для предотвращения ложного ребейза), P1-5 (проводка `LocalMatchHost.AttachReplication`) полностью устранены и верифицированы.
 
 ## Last Commit
 
@@ -18,7 +18,7 @@
 
 ## Tests
 
-- EditMode: **598/598 passed** (`Artifacts/TestResults/editmode-phase26-step4-final.xml`, 2026-09-04; 558 baseline + 40 интеграционных тестов Шага 2.6.4 с P1-1..P1-5; Zero-GC hot path эмиттера, моста и транспорта валидирован)
+- EditMode: **599/599 passed** (`EditModeTestResults.xml`, 2026-09-07; 558 baseline + 41 интеграционный тест с P1-1..P1-5; Zero-GC hot path эмиттера, моста, клиента и транспорта валидирован)
 - PlayMode: **6/6 passed** (`Artifacts/TestResults/playmode-phase26-step4.xml`, 2026-09-04)
 - Unity: `6000.5.6f1`
 
