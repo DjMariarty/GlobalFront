@@ -19,6 +19,12 @@ Phase 2.5 **COMPLETE** (2026-08-29): ADR-009 реализован и прошё�
 |---|---|
 | [Phase 2.6 Delta Snapshot Protocol — R&D Report](Phase_02_06_Delta_Snapshot_Protocol_RND.md) | **R&D Report — DRAFT, Owner Decisions Required** (rev. 1); реализация требует отдельного ADR |
 
+## Phase 2.7 — Reconnect & Resync
+
+| Документ | Статус |
+|---|---|
+| [Phase 2.7 Reconnect & Resync — R&D Report](Phase_02_07_Reconnect_Resync_RND.md) | **R&D Report — Revision 2, Decisions Accepted** (OD-18…OD-22); закреплено в ADR-011 (Accepted) |
+
 ## Связанные документы
 
 - [Decisions](../DECISIONS.md)

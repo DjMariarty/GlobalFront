@@ -1,6 +1,6 @@
 # Архитектурные и проектные решения (ADR)
 
-> Живой нормативный и исторический журнал • обновлено 2026-09-02
+> Живой нормативный и исторический журнал • обновлено 2026-09-19
 
 Каждое долговременное решение содержит Context, Alternatives, Decision, Consequences и при необходимости Open Decisions. Детали, которых нет в утверждённом плане, не считаются решёнными.
 
@@ -273,9 +273,61 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 
 В рамках Snapshot Networking Phase 2.6 открытых архитектурных решений нет: OD-10…OD-17 приняты владельцем. Смежные вопросы остаются в общей очереди ниже.
 
+## ADR-011: Reconnect & Resync Architecture (Phase 2.7)
+
+**Статус:** Accepted, 2026-09-19 (OD-18…OD-22 утверждены владельцем; Generals-Style Tactical Pause 200.0s, сохранение очереди команд, resync застывшего мира с 5с отсчётом, 32-байтный SessionSecret anti-hijacking с валидацией FixedTimeEquals, закрытие дефектов baseline D1–D6). Основание: [Phase 2.7 Reconnect & Resync R&D, Rev. 2](Research/Phase_02_07_Reconnect_Resync_RND.md).
+
+### Context
+
+ADR-008 зарезервировал в `SessionManager` состояние `Disconnected`, окно `DisconnectGraceTicks` (OD-2), `ReconnectResult` и `ReconnectReceipt`, но контур восстановления не реализовал. ADR-010 загнал восстановление в терминальное состояние `ConnectionFailed / ResyncRequired` со словами «восстановление соединения и полного состояния выполняет контур Phase 2.7». Фактически сегодня при потере соединения `ServerTransportHost` немедленно вызывает `TransportSessionBinder.Release(session)`, а `SessionManager.OnTickCompleted` закрывает сессию по истечении grace — возврат игрока невозможен.
+
+Одновременно R&D Phase 2.7 зафиксировал шесть дефектов baseline, из которых два блокирующие: `ServerReplicationEmitter.OnSessionAttached` обнуляет `NextKeyframeSeq` (поколение keyframe перестаёт быть монотонным ⇒ устаревшая база может быть принята как валидная) и `DefaultMaxClients = 8` при `SimulationConstants.MaxPlayers = 10` (девятый и десятый клиент не получают репликацию в 5v5). Дополнительно `LocalMatchHost.DefaultDisconnectGraceTicks = 100` (5 с) меньше или равен `TransportProtocol.IdleTimeoutMs = 5000`, то есть окно не покрывает сценарий, ради которого оно существует (мобильный реаттач).
+
+Требуется архитектурное решение: как безопасно восстановить существующую сессию, кто владеет полномочием на восстановление, что происходит с командами на границе обрыва, как мир синхронизируется заново и как при этом не пострадать остальным игрокам.
+
+### Alternatives
+
+1. **Восстановление по `SessionId` (отклонено).** `SessionId` — публикуемый идентификатор: он летит в `ConnectAccept`, попадает в диагностические срезы и в будущий replay. Использовать его как полномочие означает долгоживущий bearer-креденшел (весь матч) без ротации, без retention и без сравнения в константном времени. В RTS цена ошибки — армия, экономика и позиция игрока.
+2. **Отдельный cookie-подобный opaque handle без криптографии (отклонено).** Даёт ротацию, но не даёт непубликуемости и не даёт константного сравнения; фактически это тот же `SessionToken` ADR-009 с той же природой, который к тому же освобождается при `Release`.
+3. **Challenge–response с HMAC и PSK (отложено, не отклонено).** Сильнее против реплея, но требует контура раздачи PSK, то есть аутентификации аккаунтов, и увеличивает handshake на round-trip. Зафиксировано как точка расширения `ProtocolCaps.SecretProofV1` вместе с OD-15 (шифрование) в Phase 2.8+.
+4. **Откат симуляции к `DisconnectedAtTick` (отклонено).** Требует инверсного журнала, которого у `ReplicationHistoryRing` нет (он хранит change-set'ы репликации, а не inverse-ops); откат «отменил» бы отрендеренное состояние у остальных игроков.
+5. **Переотправка неподтверждённых команд при тикающем мире (отклонено).** Если симуляция не останавливается, команды выходят из окна `AcceptedPastTicks = 20` и структурно отвергаются как `HeaderRejected`.
+6. **Принудительная автономия юнитов на время grace (отклонено).** Делает дисконнект тактически выгодным или непредсказуемым.
+7. **Best-effort resync без паузы и без выделенного бюджета (отклонено).** Создаёт спайки трафика и лаги у активных игроков в момент боя.
+8. **Выбранная модель (Generals-Style Tactical Pause + Keyframe Resync + 32-байтный SessionSecret).** Тактическая пауза симуляции на 200.0 секунд, сохранение очереди команд, скачивание Keyframe застывшего мира с 5-секундным предстартовым отсчётом, автоматический 32-байтный кэшируемый `SessionSecret` с `FixedTimeEquals` валидацией, и исправление дефектов D1–D6.
+
+### Decision
+
+Принимаются пять решений владельца (OD-18…OD-22); все нормативны. Дополнительно ADR фиксирует закрытие шести дефектов baseline (D1…D6) как обязательную часть фазы.
+
+- **OD-18. Generals-Style Tactical Pause (200.0 с на каждый дисконнект).** При обрыве связи серверная симуляция замирает (`TickDriver` останавливает расчёт тиков). У всех подключённых игроков отображается экран ожидания с синхронным обратным таймером на 200.0 секунд. Мир не тикает, автономия юнитов не мутирует мир, игроки не несут потерь из-за сетевого сбоя одного из участников.
+- **OD-19. Сохранение команд.** Так как симуляция во время дисконнекта находится на паузе, очередь приказов (`CommandQueue`) сохраняется в неизменном виде и возобновляется после снятия паузы. Сброс или отмена запланированных команд не производятся.
+- **OD-20. Resync застывшего мира + 5-секундный отсчёт.** Возвращающийся игрок скачивает Keyframe застывшего мира по C2/C0. После подтверждения готовности клиентом у всех игроков на экранах запускается 5-секундный отсчёт перед снятием тактической паузы и возобновлением расчёта тиков `TickDriver`.
+- **OD-21. Anti-Hijacking (32-байтный SessionSecret).** Вводится 32-байтный высокоэнтропийный `SessionSecret`, генерируемый сервером при создании сессии и автоматически кэшируемый клиентом (без ручного ввода пользователем). Доставка: C0-сообщение `SessionSecretMessage` (тип 9, 33 байта: opcode + 32 B секрет). Валидация на сервере: строго в константном времени через `FixedTimeEquals` (защита от timing-атак). Протокольные сообщения: `ReconnectRequest` (канал C0, opcode = 12, размер = 64 байта) и `ReconnectResponse` (канал C0, opcode = 13, размер = 92 байта).
+- **OD-22. Исправление дефектов бейзлайна D1–D6.**
+  - **D1:** Явный `drain-tick` в `ServerTransportHost.Pump`.
+  - **D2:** Монотонный `NextKeyframeSeq` в `ServerReplicationEmitter.Rebind` (без сброса в 0 при повторном аттаче).
+  - **D3:** `DefaultMaxClients = 10` в `ServerReplicationEmitterConfig` (соответствие `SimulationConstants.MaxPlayers = 10` для 5v5).
+  - **D4:** Депривация спящего `hasResumeSession` в `ConnectRequest`.
+  - **D5:** Синхронизация grace и transport timeout.
+  - **D6:** Предвыделенный буфер keyframe staging (117 КБ под 3000 юнитов) для предотвращения GC LOH-спайков.
+
+### Consequences
+
+- `GlobalFront.Core` получает `ReconnectWireCodec`, неизменяемые модели `ReconnectRequest` (64 B), `ReconnectResponse` (92 B), `SessionSecretMessage` (33 B), перечисление `ReconnectResult` (`Accepted`, `SessionNotFound`, `InvalidSecret`, `GraceExpired`, `MatchFinished`) и Zero-GC метод `FixedTimeEquals`.
+- `GlobalFront.Server`: `SessionManager` управляет жизненным циклом 32-байтного `SessionSecret`; `TickDriver` и `LocalMatchHost` поддерживают тактическую паузу симуляции при дисконнекте; `ServerReplicationEmitter` расширен до 10 клиентов с монотонным `NextKeyframeSeq` и предвыделенным staging 117 КБ.
+- `GlobalFront.Client`: `ClientTransportEndpoint` кэширует `SessionSecret`, отправляет `ReconnectRequest` и принимает `ReconnectResponse`; presentation отображает экран ожидания (200с) и 5-секундный обратный отсчёт после resync.
+- Симуляция и детерминизм остаются нетронутыми: контракт `MatchServer` не нарушается, так как при паузе тики просто не производятся.
+
+### Open Decisions
+
+- Шифрование и proof-of-possession (OD-15), включая `ProtocolCaps.SecretProofV1`: Phase 2.8+ вместе с аутентификацией аккаунтов.
+- Персистентность сессий между рестартами сервера (reconnect после restart) — вне scope; требует отдельного ADR о снапшот-рестор состояния.
+- Включение pinned retry для экономических команд (Build/Produce) — Phase 3+, вместе с экономикой.
+
 ## Open Decision Queue
 
-- Reconnect/resync (Phase 2.7), replay и desync diagnostics.
+- Replay-формат и desync diagnostics.
 - Faction rosters, abilities, stats и balance.
 - Economy/build/production rules, map layouts и presentation.
 - Scale benchmarks hardware profiles.

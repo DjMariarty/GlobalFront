@@ -97,6 +97,20 @@ namespace GlobalFront.Core.Model
             Value = value;
         }
 
+        public MatchId(ulong value)
+        {
+            Span<byte> bytes = stackalloc byte[16];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(bytes, value);
+            Value = new Guid(bytes);
+        }
+
+        public ulong AsUInt64()
+        {
+            Span<byte> bytes = stackalloc byte[16];
+            Value.TryWriteBytes(bytes);
+            return System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(bytes);
+        }
+
         public Guid Value { get; }
 
         public bool IsValid => Value != Guid.Empty;
