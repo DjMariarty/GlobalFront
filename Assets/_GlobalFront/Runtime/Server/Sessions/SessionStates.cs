@@ -21,7 +21,13 @@ namespace GlobalFront.Server.Sessions
         Disconnected = 2,
 
         /// <summary>Terminal: grace expired, the player left, or the match was torn down.</summary>
-        Closed = 3
+        Closed = 3,
+
+        /// <summary>Alias for Connected under ADR-011 re-attachment terminology.</summary>
+        Attached = Connected,
+
+        /// <summary>Alias for Disconnected under ADR-011 re-attachment terminology.</summary>
+        Detached = Disconnected
     }
 
     /// <summary>Lifecycle phase of one session-managed match (Phase 2.4, ADR-008).</summary>
@@ -113,5 +119,15 @@ namespace GlobalFront.Server.Sessions
         NotDisconnected = 3,
 
         GraceExpired = 4
+    }
+
+    /// <summary>Result of a session re-attachment / rebind attempt (Phase 2.7, ADR-011).</summary>
+    public enum RebindResult : byte
+    {
+        Accepted = 0,
+        SessionNotFound = 1,
+        InvalidSecret = 2,
+        GraceExpired = 3,
+        MatchFinished = 4
     }
 }

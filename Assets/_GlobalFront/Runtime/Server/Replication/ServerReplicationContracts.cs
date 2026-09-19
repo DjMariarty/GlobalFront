@@ -54,6 +54,9 @@ namespace GlobalFront.Server.Replication
         /// <summary>Raised when a session finished handshake.</summary>
         event Action<SessionId, MatchId, PlayerId> SessionAttached;
 
+        /// <summary>Raised when a session successfully re-attaches (Phase 2.7, ADR-011).</summary>
+        event Action<SessionId, MatchId, PlayerId> SessionReattached;
+
         /// <summary>Raised when a session is lost or closed.</summary>
         event Action<SessionId, TransportDisconnectReason> SessionDetached;
 
@@ -78,6 +81,7 @@ namespace GlobalFront.Server.Replication
         {
             _host = host ?? throw new ArgumentNullException(nameof(host));
             _host.SessionAttached += OnSessionAttached;
+            _host.SessionReattached += OnSessionReattached;
             _host.SessionDetached += OnSessionDetached;
             _host.ReplicationFeedbackReceived += OnFeedback;
         }
@@ -87,12 +91,23 @@ namespace GlobalFront.Server.Replication
 
         public event Action<SessionId, MatchId, PlayerId> SessionAttached;
 
+        public event Action<SessionId, MatchId, PlayerId> SessionReattached;
+
         public event Action<SessionId, TransportDisconnectReason> SessionDetached;
 
         public event Action<ReplicationFeedbackMessage> FeedbackReceived;
 
+        public Func<SessionId, ushort> KeyframeSeqProvider
+        {
+            get => _host.KeyframeSeqProvider;
+            set => _host.KeyframeSeqProvider = value;
+        }
+
         private void OnSessionAttached(SessionId session, MatchId match, PlayerId player) =>
             SessionAttached?.Invoke(session, match, player);
+
+        private void OnSessionReattached(SessionId session, MatchId match, PlayerId player) =>
+            SessionReattached?.Invoke(session, match, player);
 
         private void OnSessionDetached(SessionId session, TransportDisconnectReason reason) =>
             SessionDetached?.Invoke(session, reason);

@@ -271,6 +271,11 @@ namespace GlobalFront.Core.Reconnect
             Secret = secret;
         }
 
+        public SessionSecretMessage(in SessionSecret32 secret)
+            : this(ExpectedOpcode, secret)
+        {
+        }
+
         public SessionSecretMessage(byte opcode, ReadOnlySpan<byte> secret)
             : this(opcode, new SessionSecret32(secret))
         {

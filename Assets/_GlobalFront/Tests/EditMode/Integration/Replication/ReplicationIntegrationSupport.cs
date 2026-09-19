@@ -361,12 +361,17 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
 
         public event Action<SessionId, MatchId, PlayerId> SessionAttached;
 
+        public event Action<SessionId, MatchId, PlayerId> SessionReattached;
+
         public event Action<SessionId, TransportDisconnectReason> SessionDetached;
 
         public event Action<ReplicationFeedbackMessage> FeedbackReceived;
 
         public void AttachOneClient() =>
             SessionAttached?.Invoke(AttachedSession, default, new PlayerId(1));
+
+        public void ReattachOneClient() =>
+            SessionReattached?.Invoke(AttachedSession, default, new PlayerId(1));
 
         public void DeliverAck(byte[] buffer) =>
             FeedbackReceived?.Invoke(new ReplicationFeedbackMessage(

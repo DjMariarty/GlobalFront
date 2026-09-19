@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
+using GlobalFront.Core.Reconnect;
 using GlobalFront.Core.Simulation;
 using GlobalFront.Server.Sessions;
 using GlobalFront.Server.Snapshot;
@@ -23,6 +25,14 @@ namespace GlobalFront.Server.Transport
         private readonly TransportSessionBinder _binder = new TransportSessionBinder();
         private readonly byte[] _messageBuffer =
             new byte[TransportProtocol.MaxMessageBytes];
+        private ulong _currentDrainTick;
+        private struct PendingCommandAck
+        {
+            public int ConnectionId;
+            public byte[] Buffer;
+            public int Length;
+        }
+        private readonly List<PendingCommandAck> _pendingAcks = new List<PendingCommandAck>();
 
         /// <summary>
         /// Optional match every accepted session auto-joins during handshake
@@ -33,6 +43,12 @@ namespace GlobalFront.Server.Transport
 
         /// <summary>Raised on the host thread when a session finishes handshake.</summary>
         public event Action<SessionId, MatchId, PlayerId> SessionAttached;
+
+        /// <summary>Raised on the host thread when a session successfully re-attaches (Phase 2.7, ADR-011).</summary>
+        public event Action<SessionId, MatchId, PlayerId> SessionReattached;
+
+        /// <summary>Optional provider for active keyframe sequence generation on reconnect response.</summary>
+        public Func<SessionId, ushort> KeyframeSeqProvider { get; set; }
 
         /// <summary>Raised on the host thread when a session is lost/closed.</summary>
         public event Action<SessionId, TransportDisconnectReason> SessionDetached;
@@ -68,12 +84,32 @@ namespace GlobalFront.Server.Transport
         /// Advances carrier timers and processes queued receive events.
         /// Host/simulation thread only.
         /// </summary>
-        public void Pump(long nowMs)
+        public void Pump(long nowMs) => Pump(nowMs, _server.CurrentTick);
+
+        /// <summary>
+        /// Advances carrier timers and processes queued receive events with explicit drain-tick (D1 fix).
+        /// Host/simulation thread only.
+        /// </summary>
+        public void Pump(long nowMs, ulong drainTick)
         {
+            _currentDrainTick = drainTick;
             _carrier.Pump(nowMs);
             while (_carrier.TryDequeueEvent(out var transportEvent))
             {
                 HandleEvent(transportEvent);
+            }
+            DrainPendingAcks();
+        }
+
+        private void DrainPendingAcks()
+        {
+            for (var i = _pendingAcks.Count - 1; i >= 0; i--)
+            {
+                var ack = _pendingAcks[i];
+                if (_carrier.Send(ack.ConnectionId, TransportChannel.Control, ack.Buffer, 0, ack.Length))
+                {
+                    _pendingAcks.RemoveAt(i);
+                }
             }
         }
 
@@ -167,7 +203,8 @@ namespace GlobalFront.Server.Transport
                 // with the current authoritative tick; the binder releases only
                 // when the session is closed (grace may still allow reconnect in
                 // Phase 2.7).
-                _sessions.NotifyConnectionLost(binding.Session, _server.CurrentTick);
+                var atTick = _currentDrainTick > 0 ? _currentDrainTick : _server.CurrentTick;
+                _sessions.NotifyConnectionLost(binding.Session, atTick);
             }
 
             _binder.Release(binding.Session);
@@ -176,6 +213,15 @@ namespace GlobalFront.Server.Transport
 
         private void HandleMessage(TransportEvent transportEvent)
         {
+            // Direct C0 opcode check for ReconnectRequest (opcode 12, size 64)
+            if (transportEvent.Length >= ReconnectWireCodec.RequestSizeBytes &&
+                transportEvent.Data != null &&
+                transportEvent.Data[0] == ReconnectWireCodec.RequestOpcode)
+            {
+                HandleReconnectRequest(transportEvent, 0, transportEvent.Length);
+                return;
+            }
+
             var error = MessageCodec.TryDecodeHeader(
                 transportEvent.Data, 0, transportEvent.Length, out var header);
             switch (error)
@@ -192,6 +238,10 @@ namespace GlobalFront.Server.Transport
 
             switch (header.Type)
             {
+                case (TransportMessageType)ReconnectWireCodec.RequestOpcode:
+                    HandleReconnectRequest(transportEvent, header.PayloadOffset, header.PayloadLength);
+                    return;
+
                 case TransportMessageType.ConnectRequest:
                     HandleConnectRequest(transportEvent, header);
                     return;
@@ -227,6 +277,53 @@ namespace GlobalFront.Server.Transport
             }
         }
 
+        private void HandleReconnectRequest(TransportEvent transportEvent, int offset, int length)
+        {
+            var span = new ReadOnlySpan<byte>(transportEvent.Data, offset, length);
+            if (!ReconnectWireCodec.TryDecodeRequest(span, out var request))
+            {
+                _carrier.Metrics.DroppedMalformed++;
+                return;
+            }
+
+            var currentTick = _currentDrainTick > 0 ? _currentDrainTick : _server.CurrentTick;
+            var handle = _sessions.CreateConnectionHandle();
+            var result = _sessions.TryRebindSession(
+                request.SessionId, request.Secret, handle, currentTick, out var session);
+
+            ushort activeKeyframeSeq = 0;
+            if (result == RebindResult.Accepted)
+            {
+                _binder.Release(session.Id);
+                var token = _binder.Bind(session.Id, handle, session.Match, session.Player, transportEvent.ConnectionId);
+                _carrier.AssignSessionToken(transportEvent.ConnectionId, token);
+
+                if (KeyframeSeqProvider != null)
+                {
+                    activeKeyframeSeq = KeyframeSeqProvider(session.Id);
+                }
+            }
+
+            var reconnectResult = (GlobalFront.Core.Reconnect.ReconnectResult)result;
+            var response = new ReconnectResponse(
+                reconnectResult,
+                session?.Player ?? default,
+                session?.Match ?? default,
+                currentTick,
+                activeKeyframeSeq);
+
+            if (ReconnectWireCodec.TryEncodeResponse(response, _messageBuffer, out var written))
+            {
+                _carrier.Send(
+                    transportEvent.ConnectionId, TransportChannel.Control, _messageBuffer, 0, written);
+            }
+
+            if (result == RebindResult.Accepted)
+            {
+                SessionReattached?.Invoke(session.Id, session.Match, session.Player);
+            }
+        }
+
         private void HandleConnectRequest(TransportEvent transportEvent, TransportMessageHeader header)
         {
             if (header.SessionToken != TransportProtocol.HandshakeToken)
@@ -259,7 +356,7 @@ namespace GlobalFront.Server.Transport
             }
 
             var handle = _sessions.CreateConnectionHandle();
-            var session = _sessions.CreateSession(handle);
+            var session = _sessions.CreateSession(handle, out var secret);
 
             var match = AutoJoinMatch;
             var player = default(PlayerId);
@@ -289,6 +386,15 @@ namespace GlobalFront.Server.Transport
             offset = MessageCodec.EncodeConnectAccept(_messageBuffer, offset, accept);
             _carrier.Send(
                 transportEvent.ConnectionId, TransportChannel.Control, _messageBuffer, 0, offset);
+
+            // Transmit 33-byte SessionSecretMessage (opcode 9) on C0 with the issued secret (ADR-011)
+            var secretMessage = new SessionSecretMessage(secret);
+            if (ReconnectWireCodec.TryEncodeSecretMessage(secretMessage, _messageBuffer, out var secretWritten))
+            {
+                _carrier.Send(
+                    transportEvent.ConnectionId, TransportChannel.Control, _messageBuffer, 0, secretWritten);
+            }
+
             SessionAttached?.Invoke(session, match, player);
         }
 
@@ -443,8 +549,18 @@ namespace GlobalFront.Server.Transport
                     Session = sessionRejection,
                     Command = commandRejection
                 });
-            _carrier.Send(
-                binding.ConnectionId, TransportChannel.Control, _messageBuffer, 0, offset);
+            if (!_carrier.Send(
+                    binding.ConnectionId, TransportChannel.Control, _messageBuffer, 0, offset))
+            {
+                var copy = new byte[offset];
+                Array.Copy(_messageBuffer, 0, copy, 0, offset);
+                _pendingAcks.Add(new PendingCommandAck
+                {
+                    ConnectionId = binding.ConnectionId,
+                    Buffer = copy,
+                    Length = offset
+                });
+            }
         }
 
         private void SendDisconnect(SessionId session, TransportDisconnectReason reason)

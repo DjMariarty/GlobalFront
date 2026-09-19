@@ -1,4 +1,5 @@
 using GlobalFront.Core.Model;
+using GlobalFront.Core.Reconnect;
 
 namespace GlobalFront.Client
 {
@@ -12,10 +13,16 @@ namespace GlobalFront.Client
     public sealed class ClientSession
     {
         public ClientSession(SessionId session, MatchId match, PlayerId player)
+            : this(session, match, player, default)
+        {
+        }
+
+        public ClientSession(SessionId session, MatchId match, PlayerId player, in SessionSecret32 secret)
         {
             Session = session;
             Match = match;
             Player = player;
+            Secret = secret;
         }
 
         public SessionId Session { get; }
@@ -24,5 +31,9 @@ namespace GlobalFront.Client
 
         /// <summary>Server-assigned PlayerId; the client never chooses it.</summary>
         public PlayerId Player { get; }
+
+        /// <summary>Server-assigned 32-byte session secret for reconnection (Phase 2.7, ADR-011).</summary>
+        public SessionSecret32 Secret { get; }
     }
 }
+

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
+using GlobalFront.Core.Reconnect;
 using GlobalFront.Core.Simulation;
 
 namespace GlobalFront.Server.Sessions
@@ -35,6 +37,7 @@ namespace GlobalFront.Server.Sessions
             public PlayerId Player;
             public ConnectionHandle Connection;
             public ulong DisconnectedAtTick;
+            public SessionSecret32 Secret;
         }
 
         private sealed class PlayerSlot
@@ -74,6 +77,7 @@ namespace GlobalFront.Server.Sessions
             new Dictionary<MatchId, MatchRecordInternal>();
 
         private readonly int _disconnectGraceTicks;
+        private readonly RandomNumberGenerator _cryptoRandom = RandomNumberGenerator.Create();
 
         private ulong _nextConnectionValue = 1;
 
@@ -127,17 +131,29 @@ namespace GlobalFront.Server.Sessions
         /// <exception cref="ArgumentException">
         /// Thrown when <paramref name="connection"/> is invalid.
         /// </exception>
-        public SessionId CreateSession(ConnectionHandle connection)
+        public SessionId CreateSession(ConnectionHandle connection) =>
+            CreateSession(connection, out _);
+
+        /// <summary>
+        /// Registers a new session attached through the given transport-
+        /// agnostic connection handle and outputs the cryptographically secure 32-byte secret (ADR-011).
+        /// </summary>
+        public SessionId CreateSession(ConnectionHandle connection, out SessionSecret32 secret)
         {
             if (!connection.IsValid)
             {
                 throw new ArgumentException("Connection handle must be valid.", nameof(connection));
             }
 
+            Span<byte> secretBytes = stackalloc byte[SessionSecret32.SizeBytes];
+            _cryptoRandom.GetBytes(secretBytes);
+            secret = new SessionSecret32(secretBytes);
+
             var session = new SessionRecordInternal
             {
                 Id = CreateUniqueSessionId(),
-                Connection = connection
+                Connection = connection,
+                Secret = secret
             };
             _sessions.Add(session.Id, session);
             return session.Id;
@@ -449,6 +465,101 @@ namespace GlobalFront.Server.Sessions
         }
 
         /// <summary>
+        /// Validates a reconnecting client's secret and rebinds the detached session
+        /// to a new connection handle within the grace window (Phase 2.7, ADR-011).
+        /// </summary>
+        public RebindResult TryRebindSession(
+            SessionId sessionId,
+            in SessionSecret32 secret,
+            ConnectionHandle newHandle,
+            ulong currentTick,
+            out ClientSession session)
+        {
+            session = null;
+
+            if (!newHandle.IsValid)
+            {
+                throw new ArgumentException("Connection handle must be valid.", nameof(newHandle));
+            }
+
+            if (!_sessions.TryGetValue(sessionId, out var record))
+            {
+                return RebindResult.SessionNotFound;
+            }
+
+            if (record.State == SessionState.Closed)
+            {
+                return RebindResult.SessionNotFound;
+            }
+
+            // Fixed-time secret comparison to prevent timing side-channel attacks
+            Span<byte> expectedBytes = stackalloc byte[SessionSecret32.SizeBytes];
+            Span<byte> actualBytes = stackalloc byte[SessionSecret32.SizeBytes];
+            record.Secret.CopyTo(expectedBytes);
+            secret.CopyTo(actualBytes);
+
+            if (!ReconnectWireCodec.FixedTimeEquals(expectedBytes, actualBytes))
+            {
+                return RebindResult.InvalidSecret;
+            }
+
+            if (record.State == SessionState.Disconnected)
+            {
+                var elapsedTicks = currentTick >= record.DisconnectedAtTick
+                    ? currentTick - record.DisconnectedAtTick
+                    : 0ul;
+
+                if (elapsedTicks > (ulong)_disconnectGraceTicks)
+                {
+                    record.State = SessionState.Closed;
+                    if (record.Match.IsValid &&
+                        _matches.TryGetValue(record.Match, out var matchRec) &&
+                        matchRec.Slots.TryGetValue(record.Player, out var slotRec))
+                    {
+                        slotRec.State = PlayerConnectionState.Abandoned;
+                    }
+
+                    return RebindResult.GraceExpired;
+                }
+            }
+
+            if (record.Match.IsValid &&
+                _matches.TryGetValue(record.Match, out var matchRecord))
+            {
+                if (matchRecord.Phase == MatchPhase.Finished || matchRecord.Phase == MatchPhase.Closed)
+                {
+                    return RebindResult.MatchFinished;
+                }
+            }
+
+            record.State = SessionState.Connected;
+            record.Connection = newHandle;
+            record.DisconnectedAtTick = 0;
+
+            if (record.Match.IsValid &&
+                _matches.TryGetValue(record.Match, out var activeMatch) &&
+                activeMatch.Slots.TryGetValue(record.Player, out var slot))
+            {
+                if (activeMatch.Phase == MatchPhase.Running)
+                {
+                    slot.State = PlayerConnectionState.Connected;
+                    slot.DisconnectedAtTick = 0;
+                }
+            }
+
+            session = new ClientSession(
+                record.Id,
+                record.State,
+                record.Match,
+                record.Player,
+                record.Connection,
+                record.Secret,
+                record.DisconnectedAtTick);
+
+            return RebindResult.Accepted;
+        }
+
+        /// <summary>
         /// Terminates a session. When bound to a running match the slot is
         /// abandoned; its PlayerId is retired and never reused (OD-3).
         /// </summary>
@@ -556,11 +667,32 @@ namespace GlobalFront.Server.Sessions
                     internalRecord.Match,
                     internalRecord.Player,
                     internalRecord.Connection,
-                    internalRecord.DisconnectedAtTick);
+                    internalRecord.DisconnectedAtTick,
+                    internalRecord.Secret);
                 return true;
             }
 
             record = default;
+            return false;
+        }
+
+        /// <summary>Read-only view of one client session including secret, for tests and diagnostics.</summary>
+        public bool TryGetClientSession(SessionId session, out ClientSession clientSession)
+        {
+            if (_sessions.TryGetValue(session, out var record))
+            {
+                clientSession = new ClientSession(
+                    record.Id,
+                    record.State,
+                    record.Match,
+                    record.Player,
+                    record.Connection,
+                    record.Secret,
+                    record.DisconnectedAtTick);
+                return true;
+            }
+
+            clientSession = null;
             return false;
         }
 

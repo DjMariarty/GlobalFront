@@ -12,7 +12,7 @@ namespace GlobalFront.Server.Replication
     /// </summary>
     public readonly struct ServerReplicationEmitterConfig : IEquatable<ServerReplicationEmitterConfig>
     {
-        public const int DefaultMaxClients = 8;
+        public const int DefaultMaxClients = 10;
         public const int DefaultSnapshotCapacity = 4096;
         public const int DefaultAddCapacity = 512;
         public const int DefaultUpdateCapacity = 4096;
@@ -157,7 +157,8 @@ namespace GlobalFront.Server.Replication
             int pendingPartCount,
             int pendingNextPart,
             int pacingTokens,
-            int stagedUnitCount)
+            int stagedUnitCount,
+            ushort nextKeyframeSeq = 0)
         {
             Session = session;
             Active = active;
@@ -171,6 +172,7 @@ namespace GlobalFront.Server.Replication
             PendingNextPart = pendingNextPart;
             PacingTokens = pacingTokens;
             StagedUnitCount = stagedUnitCount;
+            NextKeyframeSeq = nextKeyframeSeq;
         }
 
         public SessionId Session { get; }
@@ -185,6 +187,7 @@ namespace GlobalFront.Server.Replication
         public int PendingNextPart { get; }
         public int PacingTokens { get; }
         public int StagedUnitCount { get; }
+        public ushort NextKeyframeSeq { get; }
     }
 
     /// <summary>
@@ -304,7 +307,8 @@ namespace GlobalFront.Server.Replication
             /// <summary>Tick the client's stream last carried a state checksum.</summary>
             public ulong LastChecksumTick;
 
-            public byte[] KeyframeStaging;
+            /// <summary>Preallocated 117 KB staging buffer (3000 units * 39 bytes) for zero-GC keyframe re-attachment (D6 fix).</summary>
+            public byte[] KeyframeStaging = new byte[Math.Max(3000 * DeltaSnapshotProtocol.AddRecordSizeBytes, 117 * 1024)];
         }
 
         public ServerReplicationEmitter(MatchServer server, IReplicationTransport transport)
@@ -348,10 +352,20 @@ namespace GlobalFront.Server.Replication
             _effectiveBurstBytes = Math.Max(
                 config.PacingBurstCapBytes, _sliceBuffer.Length);
             _clients = new ClientState[config.MaxClients];
+            for (var index = 0; index < _clients.Length; index++)
+            {
+                _clients[index] = new ClientState();
+            }
 
             _transport.SessionAttached += OnSessionAttached;
+            _transport.SessionReattached += OnSessionReattached;
             _transport.SessionDetached += OnSessionDetached;
             _transport.FeedbackReceived += OnFeedback;
+
+            if (_transport is TransportReplicationAdapter adapter)
+            {
+                adapter.KeyframeSeqProvider = GetKeyframeSeq;
+            }
         }
 
         public ServerReplicationEmitterConfig Config => _config;
@@ -455,7 +469,8 @@ namespace GlobalFront.Server.Replication
                 client.PendingPartCount,
                 client.PendingNextPart,
                 client.PacingTokens,
-                client.StagedUnitCount);
+                client.StagedUnitCount,
+                client.NextKeyframeSeq);
             return true;
         }
 
@@ -1042,7 +1057,28 @@ namespace GlobalFront.Server.Replication
             client.Active = false;
             client.NeedsKeyframe = false;
             client.KeyframeInFlight = false;
-            client.KeyframeStaging = null;
+            // D6 fix: retain preallocated client.KeyframeStaging buffer across detachments to eliminate GC allocations
+        }
+
+        private void OnSessionReattached(SessionId session, MatchId match, PlayerId player)
+        {
+            var client = FindClientIncludingInactive(session);
+            if (client == null)
+            {
+                client = FindFreeSlot();
+                if (client == null)
+                {
+                    return;
+                }
+
+                client.Session = session;
+            }
+
+            client.Active = true;
+            client.NeedsKeyframe = false;
+            client.KeyframeInFlight = false;
+            // D2 fix: NextKeyframeSeq monotonically increases (never resets to 0) and fresh Keyframe is forced
+            QueueKeyframe(client);
         }
 
         private ClientState FindClient(SessionId session)
@@ -1057,6 +1093,26 @@ namespace GlobalFront.Server.Replication
             }
 
             return null;
+        }
+
+        private ClientState FindClientIncludingInactive(SessionId session)
+        {
+            for (var index = 0; index < _clients.Length; index++)
+            {
+                var client = _clients[index];
+                if (client != null && client.Session == session)
+                {
+                    return client;
+                }
+            }
+
+            return null;
+        }
+
+        public ushort GetKeyframeSeq(SessionId session)
+        {
+            var client = FindClient(session) ?? FindClientIncludingInactive(session);
+            return client != null ? client.KeyframeSeq : (ushort)0;
         }
 
         private ClientState FindFreeSlot()

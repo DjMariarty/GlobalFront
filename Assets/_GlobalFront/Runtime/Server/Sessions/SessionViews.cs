@@ -1,4 +1,5 @@
 using GlobalFront.Core.Model;
+using GlobalFront.Core.Reconnect;
 
 namespace GlobalFront.Server.Sessions
 {
@@ -16,6 +17,18 @@ namespace GlobalFront.Server.Sessions
             PlayerId player,
             ConnectionHandle connection,
             ulong disconnectedAtTick)
+            : this(session, state, match, player, connection, disconnectedAtTick, default)
+        {
+        }
+
+        public SessionRecord(
+            SessionId session,
+            SessionState state,
+            MatchId match,
+            PlayerId player,
+            ConnectionHandle connection,
+            ulong disconnectedAtTick,
+            in SessionSecret32 secret)
         {
             Session = session;
             State = state;
@@ -23,6 +36,7 @@ namespace GlobalFront.Server.Sessions
             Player = player;
             Connection = connection;
             DisconnectedAtTick = disconnectedAtTick;
+            Secret = secret;
         }
 
         public SessionId Session { get; }
@@ -39,6 +53,9 @@ namespace GlobalFront.Server.Sessions
 
         /// <summary>Server tick at which the session entered the Disconnected state.</summary>
         public ulong DisconnectedAtTick { get; }
+
+        /// <summary>Cryptographic 32-byte secret issued to this session (Phase 2.7, ADR-011).</summary>
+        public SessionSecret32 Secret { get; }
     }
 
     /// <summary>

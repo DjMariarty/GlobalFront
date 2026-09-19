@@ -1,5 +1,6 @@
 using System;
 using GlobalFront.Core.Model;
+using GlobalFront.Core.Reconnect;
 using GlobalFront.Server.Snapshot;
 
 namespace GlobalFront.Server.Transport
@@ -68,6 +69,7 @@ namespace GlobalFront.Server.Transport
         public PlayerId Player { get; private set; }
 
         public ulong Token { get; private set; }
+        public SessionSecret32 Secret { get; private set; }
 
         /// <summary>Raised when the handshake completes and identity is assigned.</summary>
         public event Action Attached;
@@ -178,6 +180,21 @@ namespace GlobalFront.Server.Transport
             State = ClientTransportState.Disconnected;
         }
 
+        /// <summary>
+        /// Drops connection without sending graceful disconnect (Phase 2.7, ADR-011 test support).
+        /// Triggers grace window on server instead of closing session.
+        /// </summary>
+        public void DropConnection(TransportDisconnectReason reason = TransportDisconnectReason.TransportLost)
+        {
+            if (State == ClientTransportState.Disconnected || State == ClientTransportState.Idle)
+            {
+                return;
+            }
+
+            _carrier.CloseConnection(_connectionId, reason);
+            State = ClientTransportState.Disconnected;
+        }
+
         private void HandleEvent(TransportEvent transportEvent)
         {
             switch (transportEvent.Type)
@@ -223,6 +240,18 @@ namespace GlobalFront.Server.Transport
 
         private void HandleMessage(TransportEvent transportEvent)
         {
+            if (transportEvent.Length == ReconnectWireCodec.SecretMessageSizeBytes &&
+                transportEvent.Data != null &&
+                transportEvent.Data[0] == ReconnectWireCodec.SecretOpcode)
+            {
+                if (ReconnectWireCodec.TryDecodeSecretMessage(
+                        transportEvent.Data.AsSpan(0, transportEvent.Length), out var secretMsg))
+                {
+                    Secret = secretMsg.Secret;
+                }
+                return;
+            }
+
             var error = MessageCodec.TryDecodeHeader(
                 transportEvent.Data, 0, transportEvent.Length, out var header);
             if (error != MessageError.None)
