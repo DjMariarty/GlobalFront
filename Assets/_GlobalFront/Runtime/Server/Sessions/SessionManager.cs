@@ -487,11 +487,6 @@ namespace GlobalFront.Server.Sessions
                 return RebindResult.SessionNotFound;
             }
 
-            if (record.State == SessionState.Closed)
-            {
-                return RebindResult.SessionNotFound;
-            }
-
             // Fixed-time secret comparison to prevent timing side-channel attacks
             Span<byte> expectedBytes = stackalloc byte[SessionSecret32.SizeBytes];
             Span<byte> actualBytes = stackalloc byte[SessionSecret32.SizeBytes];
@@ -501,6 +496,11 @@ namespace GlobalFront.Server.Sessions
             if (!ReconnectWireCodec.FixedTimeEquals(expectedBytes, actualBytes))
             {
                 return RebindResult.InvalidSecret;
+            }
+
+            if (record.State == SessionState.Closed)
+            {
+                return RebindResult.GraceExpired;
             }
 
             if (record.State == SessionState.Disconnected)

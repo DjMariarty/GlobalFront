@@ -1077,6 +1077,7 @@ namespace GlobalFront.Server.Replication
             client.Active = true;
             client.NeedsKeyframe = false;
             client.KeyframeInFlight = false;
+            client.PacingTokens = _effectiveBurstBytes;
             // D2 fix: NextKeyframeSeq monotonically increases (never resets to 0) and fresh Keyframe is forced
             QueueKeyframe(client);
         }

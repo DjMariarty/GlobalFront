@@ -476,6 +476,11 @@ namespace GlobalFront.Client.Replication
         /// </summary>
         public void PrepareForResync(ushort activeKeyframeSeq)
         {
+            if (CurrentKeyframeSeq == activeKeyframeSeq && IsWorldUsable)
+            {
+                return;
+            }
+
             Reset();
             _fsm.PrepareForResync(activeKeyframeSeq);
         }

@@ -298,6 +298,8 @@ namespace GlobalFront.Server.Transport
                 var token = _binder.Bind(session.Id, handle, session.Match, session.Player, transportEvent.ConnectionId);
                 _carrier.AssignSessionToken(transportEvent.ConnectionId, token);
 
+                SessionReattached?.Invoke(session.Id, session.Match, session.Player);
+
                 if (KeyframeSeqProvider != null)
                 {
                     activeKeyframeSeq = KeyframeSeqProvider(session.Id);
@@ -316,11 +318,6 @@ namespace GlobalFront.Server.Transport
             {
                 _carrier.Send(
                     transportEvent.ConnectionId, TransportChannel.Control, _messageBuffer, 0, written);
-            }
-
-            if (result == RebindResult.Accepted)
-            {
-                SessionReattached?.Invoke(session.Id, session.Match, session.Player);
             }
         }
 

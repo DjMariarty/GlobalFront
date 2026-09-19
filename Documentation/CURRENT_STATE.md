@@ -8,18 +8,18 @@
 
 ## Current Task
 
-**Phase 2.7 — Reconnect / Resync**
+**Phase 2.8 — Network Prototype Playtest (2v2)**
 
-Phase 2.6 Snapshot Networking — **APPROVED** (Independent adversarial audit passed with zero P0/P1 blockers). 599/599 EditMode тестов green (558 baseline + 41 интеграционный тест с P1-1..P1-5), 6/6 PlayMode тестов green. Замечания аудита P1-1 (KeyframeRef на проводе), P1-2 (StateChecksum 1 Hz и Zero-GC клиентская верификация с авто-восстановлением через SnapshotRequest), P1-3 (Zero-GC в ClientTransportEndpoint через кольцевой пул), P1-4 (Idle keep-alive дельта каждые 20 тиков для предотвращения ложного ребейза), P1-5 (проводка `LocalMatchHost.AttachReplication`) полностью устранены и верифицированы.
+Phase 2.7 Reconnect & Resync — **COMPLETE** (Steps 2.7.1–2.7.4: Core Wire Codecs, Server Session Re-attachment, Client Reconnect Coordinator & FSM, End-to-End Integration with Tactical Pause and 5% Packet Loss Stress Tests). 641/641 EditMode тестов green, 6/6 PlayMode тестов green. Zero-GC на путях переподключения, тактическая пауза (OD-18..OD-22) и 5-секундный countdown таймер (OD-20) полностью верифицированы.
 
 ## Last Commit
 
-`dce769a` — `fix(replication): implement client StateChecksum verification and desync recovery (P1-2)`
+`feat(reconnect): implement client reconnect coordinator, FSM, and replication resync (step 2.7.3)`
 
 ## Tests
 
-- EditMode: **599/599 passed** (`EditModeTestResults.xml`, 2026-09-07; 558 baseline + 41 интеграционный тест с P1-1..P1-5; Zero-GC hot path эмиттера, моста, клиента и транспорта валидирован)
-- PlayMode: **6/6 passed** (`Artifacts/TestResults/playmode-phase26-step4.xml`, 2026-09-04)
+- EditMode: **641/641 passed** (`Artifacts/TestResults/EditMode-step274.xml`, 2026-09-20; 599 baseline + 42 новых теста Phase 2.7; Zero-GC hot path реконнекта и репликации валидирован)
+- PlayMode: **6/6 passed** (`Artifacts/TestResults/PlayMode-step274.xml`, 2026-09-20)
 - Unity: `6000.5.6f1`
 
 ## Completed Milestones
@@ -36,10 +36,15 @@ Phase 2.6 Snapshot Networking — **APPROVED** (Independent adversarial audit pa
   - Step 2.6.2 Server Replication Engine & History Ring — COMPLETE (429/429 EditMode passed; 74 новых теста репликации; Zero-GC hot path валидирован)
   - Step 2.6.3 Client Replication Receiver & FSM — COMPLETE (`c49eeda`; 558/558 EditMode passed; 129 новых тестов; Zero-GC hot path клиента валидирован)
   - Step 2.6.4 Full Integration & Impairment Tests — COMPLETE (599/599 EditMode passed; 41 интеграционный тест; Zero-GC hot path эмиттера и моста валидирован)
+- Phase 2.7 Reconnect & Resync — COMPLETE (ADR-008..ADR-010; 641/641 EditMode passed, 6/6 PlayMode passed)
+  - Step 2.7.1 Core Wire Codecs & Model — COMPLETE (605/605 EditMode passed)
+  - Step 2.7.2 Server Session Re-attachment & Defect Fixes D1-D6 — COMPLETE (621/621 EditMode passed)
+  - Step 2.7.3 Client Reconnect Coordinator & FSM — COMPLETE (637/637 EditMode passed)
+  - Step 2.7.4 End-to-End Integration, Tactical Pause & Stress Tests — COMPLETE (641/641 EditMode passed, 6/6 PlayMode passed)
 
 ## Next Step
 
-Переход к Phase 2.7 (Reconnect / Resync) — R&D и реализация архитектуры восстановления сессии/состояния после разрыва соединения и Phase 2.8 (Network Prototype Playtest 2v2).
+Переход к Phase 2.8 (Network Prototype Playtest 2v2) — сквозное тестирование сетевого мультиплеера 2v2 в игровом окружении с реальным сетевым транспортом.
 
 ## Backlog
 

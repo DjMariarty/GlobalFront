@@ -496,6 +496,11 @@ namespace GlobalFront.Client.Replication
         /// </summary>
         public void PrepareForResync(ushort activeKeyframeSeq)
         {
+            if (_assembledKeyframeSeq == activeKeyframeSeq && _receiver.IsWorldUsable)
+            {
+                return;
+            }
+
             ResetAssembly();
             _assembledKeyframeSeq = (ushort)(activeKeyframeSeq == 0 ? 0 : activeKeyframeSeq - 1);
             _receiver.PrepareForResync(activeKeyframeSeq);

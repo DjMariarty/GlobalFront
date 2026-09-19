@@ -47,6 +47,7 @@ namespace GlobalFront.Server
 
         private ulong _tick;
         private TickDriverMode _mode = TickDriverMode.Manual;
+        private bool _isPaused;
 
         /// <summary>
         /// Creates a driver for the given tick rate and catch-up limit.
@@ -72,6 +73,39 @@ namespace GlobalFront.Server
                 {
                     return _mode;
                 }
+            }
+        }
+
+        /// <summary>
+        /// True when tick calculation is suspended for tactical pause (Phase 2.7, OD-18).
+        /// Neither real-time nor manual ticks will execute while paused.
+        /// </summary>
+        public bool IsPaused
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _isPaused;
+                }
+            }
+        }
+
+        /// <summary>Halts tick calculation for tactical pause (OD-18).</summary>
+        public void Pause()
+        {
+            lock (_gate)
+            {
+                _isPaused = true;
+            }
+        }
+
+        /// <summary>Resumes tick calculation after tactical pause (OD-18/OD-20).</summary>
+        public void Resume()
+        {
+            lock (_gate)
+            {
+                _isPaused = false;
             }
         }
 
@@ -108,6 +142,7 @@ namespace GlobalFront.Server
             {
                 _mode = TickDriverMode.Manual;
                 _tick = tick;
+                _isPaused = false;
                 _clock.Reset(tick);
             }
         }
@@ -150,7 +185,7 @@ namespace GlobalFront.Server
             int scheduled;
             lock (_gate)
             {
-                if (_mode != TickDriverMode.RealTime)
+                if (_mode != TickDriverMode.RealTime || _isPaused)
                 {
                     return 0;
                 }
@@ -178,7 +213,7 @@ namespace GlobalFront.Server
             ulong scheduledTick;
             lock (_gate)
             {
-                if (_mode == TickDriverMode.RealTime)
+                if (_mode == TickDriverMode.RealTime || _isPaused)
                 {
                     return false;
                 }

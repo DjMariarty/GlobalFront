@@ -193,6 +193,7 @@ namespace GlobalFront.Server.Transport
 
             _carrier.CloseConnection(_connectionId, reason);
             State = ClientTransportState.Disconnected;
+            Lost?.Invoke(reason);
         }
 
         private void HandleEvent(TransportEvent transportEvent)

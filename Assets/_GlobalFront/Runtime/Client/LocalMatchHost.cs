@@ -170,6 +170,23 @@ namespace GlobalFront.Client
             _tickDriver.AdvanceRealTime(elapsedSeconds);
 
         /// <summary>
+        /// True when tick calculation is suspended for tactical pause (Phase 2.7, OD-18).
+        /// </summary>
+        public bool IsPaused => _tickDriver.IsPaused;
+
+        /// <summary>Halts tick calculation for tactical pause (OD-18).</summary>
+        public void Pause() => _tickDriver.Pause();
+
+        /// <summary>Resumes tick calculation after tactical pause (OD-18/OD-20).</summary>
+        public void Resume() => _tickDriver.Resume();
+
+        /// <summary>
+        /// When true, the host automatically halts tick scheduling via <see cref="Pause"/>
+        /// whenever an active session disconnects.
+        /// </summary>
+        public bool AutoPauseOnDisconnect { get; set; } = false;
+
+        /// <summary>
         /// Initializes the match from a <see cref="MatchConfig"/>, delegating
         /// to <see cref="MatchServer.InitializeMatch"/>. The server creates
         /// all units and assigns EntityIds authoritatively. Returns the
