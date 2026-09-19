@@ -469,6 +469,17 @@ namespace GlobalFront.Client.Replication
             IncompleteMultipartCount = 0;
         }
 
+        /// <summary>
+        /// Prepares the receiver for a Phase 2.7 resync: clears the mirror and
+        /// informs the FSM of the upcoming keyframe generation so that old
+        /// deltas are discarded until the new baseline arrives.
+        /// </summary>
+        public void PrepareForResync(ushort activeKeyframeSeq)
+        {
+            Reset();
+            _fsm.PrepareForResync(activeKeyframeSeq);
+        }
+
         public override string ToString() =>
             $"ClientReplicationReceiver(state={State}, last={LastAppliedTick}, base={BaseKeyframeTick}, " +
             $"keyframeSeq={CurrentKeyframeSeq}, usable={IsWorldUsable}, world={_world.LiveCount}/{_world.Capacity}, " +

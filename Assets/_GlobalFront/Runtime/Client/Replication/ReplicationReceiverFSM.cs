@@ -743,6 +743,18 @@ namespace GlobalFront.Client.Replication
             AnomalyCount = 0;
         }
 
+        /// <summary>
+        /// Prepares the receiver for a Phase 2.7 resync: resets the baseline,
+        /// clears queued requests, and sets the active keyframe generation to
+        /// <paramref name="activeKeyframeSeq"/> (or its predecessor) so any
+        /// stale deltas from prior generations are rejected.
+        /// </summary>
+        public void PrepareForResync(ushort activeKeyframeSeq)
+        {
+            Reset();
+            CurrentKeyframeSeq = (ushort)(activeKeyframeSeq == 0 ? 0 : activeKeyframeSeq - 1);
+        }
+
         public override string ToString() =>
             $"ReceiverFSM(state={State}, last={LastAppliedTick}, base={BaseKeyframeTick}, " +
             $"keyframeSeq={CurrentKeyframeSeq}, attempts={_attemptsMade}/{ReplicationReceiverConfig.AttemptLimit}, " +

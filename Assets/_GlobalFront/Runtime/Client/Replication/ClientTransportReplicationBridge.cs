@@ -489,6 +489,18 @@ namespace GlobalFront.Client.Replication
             _assemblyUnitCount = 0;
         }
 
+        /// <summary>
+        /// Prepares the bridge for a Phase 2.7 resync: discards any active
+        /// slice assembly, sets the assembled keyframe sequence below the incoming
+        /// generation, and primes the replication receiver.
+        /// </summary>
+        public void PrepareForResync(ushort activeKeyframeSeq)
+        {
+            ResetAssembly();
+            _assembledKeyframeSeq = (ushort)(activeKeyframeSeq == 0 ? 0 : activeKeyframeSeq - 1);
+            _receiver.PrepareForResync(activeKeyframeSeq);
+        }
+
         /// <summary>Serial-number comparison with wrap-around at 0x8000.</summary>
         private static bool IsNewerSeq(ushort candidate, ushort current) =>
             candidate != current && (ushort)(candidate - current) < 0x8000;

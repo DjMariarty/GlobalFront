@@ -138,6 +138,14 @@ namespace GlobalFront.Core.Reconnect
 
         public ReconnectRequest(
             SessionId sessionId,
+            in SessionSecret32 secret,
+            ulong lastAppliedTick)
+            : this(ExpectedOpcode, ExpectedProtocolVersion, sessionId, secret, lastAppliedTick)
+        {
+        }
+
+        public ReconnectRequest(
+            SessionId sessionId,
             ReadOnlySpan<byte> secret,
             ulong lastAppliedTick)
             : this(ExpectedOpcode, ExpectedProtocolVersion, sessionId, new SessionSecret32(secret), lastAppliedTick)
