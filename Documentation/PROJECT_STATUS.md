@@ -24,6 +24,8 @@ GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Advers
 
 ## Phase 1.0 – 2.8 Status — [100% COMPLETED / AUDITED]
 
+Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
+
 - Phase 1.x (RTS Foundation / Prototype) — **[100% COMPLETED / AUDITED]** (включена в Grand Audit `a37f53d`, [APPROVED: ZERO DEFECTS]).
 
 ## Phase 2 Status — [100% COMPLETED / AUDITED]
@@ -43,7 +45,7 @@ GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Advers
 
 Утверждённый Product 1.0 включает пять основных фракций, полный Generals-style RTS foundation, multiplayer до 10 игроков, AI, reconnect/resync, replay, desync detection, большие армии и production-quality presentation. Эти требования являются roadmap, а не текущими возможностями прототипа.
 
-Сейчас нет production economy/build/production systems, пяти реализованных фракций, полного AI, карт 1v1–5v5, dedicated server, reconnect, replay или scale proof 3000+. Core/Server/Client слои delta snapshots реализованы и верифицированы в Шагах 2.6.1–2.6.4 (599/599 EditMode, 6/6 PlayMode); независимый аудит Phase 2.6 утверждён (zero P0/P1 blockers); scale proof 3000+ запланирован на последующие фазы.
+Сейчас нет production economy/build/production systems, пяти реализованных фракций, полного AI, карт 1v1–5v5, dedicated server, replay или scale proof 3000+. Reconnect/resync реализованы и приняты (Phase 2.7, OD-18…OD-22). Core/Server/Client слои delta snapshots реализованы и верифицированы в Шагах 2.6.1–2.6.4 (599/599 EditMode, 6/6 PlayMode); независимый аудит Phase 2.6 утверждён (zero P0/P1 blockers); scale proof 3000+ запланирован на последующие фазы.
 
 ## Backlog
 

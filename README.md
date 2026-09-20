@@ -4,7 +4,7 @@ GlobalFront — современная реализация фундамента
 
 Техническая цель — перенести эту формулу на современную архитектуру: authoritative server, deterministic simulation, улучшенные pathfinding, multiplayer, производительность, стабильность, UX, reconnect/resync, replay и диагностика desync.
 
-> Unity: `6000.5.6f1` • рендер: URP • текущая стадия: Phase 2 — Multiplayer Foundation
+> Unity: `6000.5.6f1` • рендер: URP • текущий статус: Фазы 1.0–2.8 полностью завершены и приняты (Grand Audit [APPROVED: ZERO DEFECTS]); в разработке Фаза 3 (RTS Camera, Controls, Visuals)
 
 ## Product 1.0
 
@@ -24,9 +24,7 @@ GlobalFront — современная реализация фундамента
 
 ## Текущее состояние
 
-Сейчас подтверждены детерминированный Core 20 Hz, `MatchServer`, `LocalMatchHost`, server-owned `MatchConfig`, Snapshot Protocol v1 и Command Channel. Phase 1 завершена; в Phase 2 завершены 2.1 и 2.2. Следующая задача — **Phase 2.3 Server Tick Driver**.
-
-Сохранённые результаты проверки от 2026-08-12: **161/161 EditMode** и **5/5 PlayMode** тестов пройдены. Транспорт, сессии, snapshot networking, reconnect/resync и отдельный dedicated server ещё не реализованы.
+Фазы 1.0–2.8 полностью завершены и приняты: **661/661 EditMode** и **6/6 PlayMode** тестов пройдены (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`, отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. В разработке — **Фаза 3 (RTS Camera, Controls, Visuals)**.
 
 Краткая сводка для человека или AI-агента: [CURRENT_STATE.md](Documentation/CURRENT_STATE.md).
 

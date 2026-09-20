@@ -1,24 +1,24 @@
 # GlobalFront Current State
 
-> Быстрый handoff для AI-агента • обновлено 2026-09-07
+> Быстрый handoff для AI-агента • обновлено 2026-09-20
 
 ## Current Phase
 
-**Phase 2 — Multiplayer Foundation**
+**Phase 3.0 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]**
 
 ## Current Task
 
-**Phase 2.8 — Network Prototype Playtest (2v2)**
+**Phase 2.8 — Network Prototype Playtest (2v2) — COMPLETE & AUDITED**
 
-Phase 2.7 Reconnect & Resync — **COMPLETE & REVIEW GATE PASSED** (Steps 2.7.1–2.7.4 + Review Gate defects P0-1..P0-3, P1-1, D4, D6 resolved: Core Wire Codecs, Server Session Re-attachment, Client Reconnect Coordinator & FSM, End-to-End Integration with Tactical Pause and 5% Packet Loss Stress Tests). 641/641 EditMode тестов green, 6/6 PlayMode тестов green. Zero-GC на путях переподключения, тактическая пауза (OD-18..OD-22), окно 200с / 4000 тиков (OD-18) и 5-секундный countdown таймер (OD-20) полностью верифицированы.
+Phase 2.8 завершена (Steps 2.8.1–2.8.3: 2v2 topology, command ownership, HUD + tactical pause overlay, abandonment unpause P2-1/P2-2). Grand Adversarial Audit (Phases 1.0 — 2.8) — **[APPROVED: ZERO DEFECTS]** на `a37f53d` (отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). 661/661 EditMode тестов green, 6/6 PlayMode тестов green. Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
 
 ## Last Commit
 
-`feat(reconnect): implement client reconnect coordinator, FSM, and replication resync (step 2.7.3)`
+`872d0b2` (`docs: certify Grand Audit (Phases 1.0 - 2.8) APPROVED [ZERO DEFECTS] on a37f53d`)
 
 ## Tests
 
-- EditMode: **641/641 passed** (`Artifacts/TestResults/EditMode-reviewgate.xml`, 2026-09-20; 599 baseline + 42 новых теста Phase 2.7; Zero-GC hot path реконнекта и репликации валидирован)
+- EditMode: **661/661 passed** (Grand Audit baseline `a37f53d`; артефакт: `Artifacts/TestResults/EditMode-661-passed.xml`)
 - PlayMode: **6/6 passed** (`Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20)
 - Unity: `6000.5.6f1`
 
@@ -41,10 +41,13 @@ Phase 2.7 Reconnect & Resync — **COMPLETE & REVIEW GATE PASSED** (Steps 2.7.1�
   - Step 2.7.2 Server Session Re-attachment & Defect Fixes D1-D6 — COMPLETE (621/621 EditMode passed)
   - Step 2.7.3 Client Reconnect Coordinator & FSM — COMPLETE (637/637 EditMode passed)
   - Step 2.7.4 End-to-End Integration, Tactical Pause & Stress Tests — COMPLETE (641/641 EditMode passed, 6/6 PlayMode passed)
+- Phase 2.8 Network Prototype Playtest (2v2) — COMPLETE (Steps 2.8.1–2.8.3; 2v2 topology, command ownership, HUD + tactical pause overlay, abandonment unpause P2-1/P2-2)
+- Grand Adversarial Audit Remediation — COMPLETE (`c3cce4d`: P0 pause deadlock, Zero-GC tick 11.5 МБ/с, RateLimiter, anti-hijack, D8 full checksum; `a37f53d`: F-01 zero-gc snapshot targets, F-02 reentrancy safety)
+- Grand Adversarial Audit (Phases 1.0 — 2.8) — [APPROVED: ZERO DEFECTS] (`872d0b2`; 661/661 EditMode, 6/6 PlayMode; `Artifacts/GrandAudit-Certification-a37f53d.md`)
 
 ## Next Step
 
-Переход к Phase 2.8 (Network Prototype Playtest 2v2) — сквозное тестирование сетевого мультиплеера 2v2 в игровом окружении с реальным сетевым транспортом.
+Phase 3.0 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]: RTS Camera, Controls, Visuals поверх принятого фундамента Фаз 1.0–2.8.
 
 ## Backlog
 
@@ -53,7 +56,7 @@ Phase 2.7 Reconnect & Resync — **COMPLETE & REVIEW GATE PASSED** (Steps 2.7.1�
 ## Important Constraints
 
 - Current runtime — local prototype; `LocalMatchHost` (ServerHost) работает в клиентском процессе и владеет `MatchServer`, `TickDriver` (engine-independent, в `GlobalFront.Server`) и `SessionManager` (Phase 2.4, ADR-008).
-- Server tick lifecycle отделён от Unity client lifecycle (ADR-007). Session/player identity реализованы как server-authoritative layer (ADR-008): PlayerId назначается только сервером, command ingress проходит session gate; конкретная grace duration — TBD. Транспортная архитектура определена ADR-009 (OD-1 = LiteNetLib за контрактом `INetworkCarrier`); транспорт реализован и проверен (детерминированный `VirtualNetworkPipe` + real-UDP LiteNetLib loopback) и не владеет simulation: `MatchServer`/`TickDriver`/`SessionManager`/`CommandHeader`/Snapshot Protocol v1 не изменены. Отдельного dedicated server process и reconnect/resync пока нет; тот же driver и simulation core будут использованы future dedicated host.
+- Server tick lifecycle отделён от Unity client lifecycle (ADR-007). Session/player identity реализованы как server-authoritative layer (ADR-008): PlayerId назначается только сервером, command ingress проходит session gate; конкретная grace duration — TBD. Транспортная архитектура определена ADR-009 (OD-1 = LiteNetLib за контрактом `INetworkCarrier`); транспорт реализован и проверен (детерминированный `VirtualNetworkPipe` + real-UDP LiteNetLib loopback) и не владеет simulation: `MatchServer`/`TickDriver`/`SessionManager`/`CommandHeader`/Snapshot Protocol v1 не изменены. Отдельного dedicated server process пока нет; тот же driver и simulation core будут использованы future dedicated host. Reconnect/resync реализованы и приняты (Phase 2.7, OD-18…OD-22).
 - Snapshot Protocol v1 реализован и передаётся по сети как opaque payload (C2, unreliable sequenced, latest-wins по `SnapshotTick`). Шаги 2.6.1–2.6.4 реализовали и верифицировали Core `DeltaSnapshotWireCodec`, Server Replication Engine, History Ring, клиентский приёмник (`ClientReplicationReceiver`, `ClientReplicationWorld`, `ReplicationReceiverFSM`, `ReplicationFeedbackGenerator` в `GlobalFront.Client.Replication`) и сквозную связку с транспортом в `LocalMatchHost` / `ClientTransportReplicationBridge`.
 - Зафиксированные отклонения/уточнения Шага 2.6.3/2.6.4 (архитектуру не меняют):
   - `SnapshotAck` = **34 байта**: offsets 0/1/2/10/18/26 в сумме дают 34; uplink-бюджет — 340 Б/с при 10 Hz. Арифметическая опечатка исправлена в R&D §4.2–4.3.
