@@ -1,4 +1,7 @@
+using System;
 using GlobalFront.Client;
+using GlobalFront.Core.Model;
+using GlobalFront.Server.Sessions;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
 
@@ -158,6 +161,33 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(rig.ServerCarrier.ConnectionCount, Is.EqualTo(0));
             Assert.That(rig.ServerCarrier.PreHandshakeTrackedCount, Is.EqualTo(0));
             Assert.That(rig.ServerTransport.AttachedCount, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void TransportSessionBinder_SnapshotTargets_ReturnsCachedListWithoutAllocations()
+        {
+            var binder = new TransportSessionBinder();
+            var s1 = new SessionId(Guid.NewGuid());
+            var s2 = new SessionId(Guid.NewGuid());
+
+            Assert.That(binder.SnapshotTargets.Count, Is.EqualTo(0));
+
+            binder.Bind(s1, new ConnectionHandle(10), new MatchId(1ul), new PlayerId(1), 100);
+            Assert.That(binder.SnapshotTargets.Count, Is.EqualTo(1));
+            Assert.That(binder.SnapshotTargets[0], Is.EqualTo(s1));
+
+            var firstReference = binder.SnapshotTargets;
+
+            binder.Bind(s2, new ConnectionHandle(20), new MatchId(1ul), new PlayerId(2), 200);
+            Assert.That(binder.SnapshotTargets.Count, Is.EqualTo(2));
+            Assert.That(ReferenceEquals(firstReference, binder.SnapshotTargets), Is.True, "Must return the same cached instance (Zero-GC)");
+
+            binder.Release(s1);
+            Assert.That(binder.SnapshotTargets.Count, Is.EqualTo(1));
+            Assert.That(binder.SnapshotTargets[0], Is.EqualTo(s2));
+
+            binder.ReleaseAll();
+            Assert.That(binder.SnapshotTargets.Count, Is.EqualTo(0));
         }
     }
 }

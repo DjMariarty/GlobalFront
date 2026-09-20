@@ -76,6 +76,8 @@ namespace GlobalFront.Server.Sessions
         private readonly Dictionary<MatchId, MatchRecordInternal> _matches =
             new Dictionary<MatchId, MatchRecordInternal>();
 
+        private readonly List<SessionId> _expiredSessionBuffer = new();
+
         private readonly int _disconnectGraceTicks;
         private readonly RandomNumberGenerator _cryptoRandom = RandomNumberGenerator.Create();
 
@@ -667,6 +669,8 @@ namespace GlobalFront.Server.Sessions
         /// </summary>
         public void OnTickCompleted(ulong tick)
         {
+            _expiredSessionBuffer.Clear();
+
             foreach (var pair in _sessions)
             {
                 var record = pair.Value;
@@ -685,7 +689,12 @@ namespace GlobalFront.Server.Sessions
                     slot.State = PlayerConnectionState.Abandoned;
                 }
 
-                SessionGraceExpired?.Invoke(record.Id);
+                _expiredSessionBuffer.Add(record.Id);
+            }
+
+            for (var i = 0; i < _expiredSessionBuffer.Count; i++)
+            {
+                SessionGraceExpired?.Invoke(_expiredSessionBuffer[i]);
             }
         }
 

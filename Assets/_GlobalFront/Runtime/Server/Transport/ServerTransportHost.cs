@@ -151,18 +151,20 @@ namespace GlobalFront.Server.Transport
         /// <summary>Broadcasts a snapshot to every attached session.</summary>
         public void BroadcastSnapshot(ulong snapshotTick, byte[] snapshotBytes, int length)
         {
-            foreach (var pair in _binder.SnapshotTargets)
+            var targets = _binder.SnapshotTargets;
+            for (var i = 0; i < targets.Count; i++)
             {
-                SendSnapshot(pair, snapshotTick, snapshotBytes, length);
+                SendSnapshot(targets[i], snapshotTick, snapshotBytes, length);
             }
         }
 
         /// <summary>Graceful server shutdown: best-effort notice, then close.</summary>
         public void Shutdown()
         {
-            foreach (var session in _binder.SnapshotTargets)
+            var targets = _binder.SnapshotTargets;
+            for (var i = 0; i < targets.Count; i++)
             {
-                SendDisconnect(session, TransportDisconnectReason.ServerShutdown);
+                SendDisconnect(targets[i], TransportDisconnectReason.ServerShutdown);
             }
 
             _carrier.Shutdown(TransportDisconnectReason.ServerShutdown);

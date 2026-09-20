@@ -262,6 +262,24 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(slotState, Is.EqualTo(PlayerConnectionState.Abandoned));
         }
 
+        [Test]
+        public void OnTickCompleted_ReentrancySafe_WhenListenerModifiesSessions()
+        {
+            var match = StartRunningMatch(out var session1, out var session2, 2);
+            _manager.NotifyConnectionLost(session1, 1ul);
+            _manager.NotifyConnectionLost(session2, 1ul);
+
+            var listenerInvoked = false;
+            _manager.SessionGraceExpired += expiredSession =>
+            {
+                listenerInvoked = true;
+                _manager.CreateSession(new ConnectionHandle(999));
+            };
+
+            Assert.DoesNotThrow(() => _manager.OnTickCompleted(1ul + (ulong)GraceTicks + 1ul));
+            Assert.That(listenerInvoked, Is.True);
+        }
+
         // ------------------------------------------------------------------
         // Deterministic MatchConfig owner mapping (OD-6)
         // ------------------------------------------------------------------

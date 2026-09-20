@@ -31,25 +31,13 @@ namespace GlobalFront.Server.Transport
             new Dictionary<SessionId, ulong>();
         private readonly Dictionary<int, ulong> _tokenByConnection =
             new Dictionary<int, ulong>();
+        private readonly List<SessionId> _cachedSnapshotTargets = new();
         private readonly RandomNumberGenerator _random = RandomNumberGenerator.Create();
 
         public int BoundCount => _byToken.Count;
 
-        /// <summary>Copy of the currently bound sessions (broadcast targets).</summary>
-        public SessionId[] SnapshotTargets
-        {
-            get
-            {
-                var sessions = new SessionId[_tokenBySession.Count];
-                var index = 0;
-                foreach (var pair in _tokenBySession)
-                {
-                    sessions[index++] = pair.Key;
-                }
-
-                return sessions;
-            }
-        }
+        /// <summary>Cached list of the currently bound sessions (broadcast targets). Zero GC.</summary>
+        public IReadOnlyList<SessionId> SnapshotTargets => _cachedSnapshotTargets;
 
         /// <summary>Issues a crypto-random token and records the binding.</summary>
         public ulong Bind(
@@ -88,6 +76,10 @@ namespace GlobalFront.Server.Transport
             _byToken[token] = binding;
             _tokenBySession[session] = token;
             _tokenByConnection[connectionId] = token;
+            if (!_cachedSnapshotTargets.Contains(session))
+            {
+                _cachedSnapshotTargets.Add(session);
+            }
             return token;
         }
 
@@ -119,14 +111,19 @@ namespace GlobalFront.Server.Transport
                 _tokenByConnection.Remove(binding.ConnectionId);
             }
 
+            _cachedSnapshotTargets.Remove(session);
             return true;
         }
+
+        /// <summary>Alias for <see cref="Release"/>.</summary>
+        public bool Unbind(SessionId session) => Release(session);
 
         public void ReleaseAll()
         {
             _byToken.Clear();
             _tokenBySession.Clear();
             _tokenByConnection.Clear();
+            _cachedSnapshotTargets.Clear();
         }
     }
 }
