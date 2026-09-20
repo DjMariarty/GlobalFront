@@ -171,9 +171,9 @@ namespace GlobalFront.Tests.EditMode
             badOpcode[0] = 0;
             Assert.That(ReconnectWireCodec.TryDecodeResponse(badOpcode, out _), Is.False);
 
-            // Invalid ReconnectResult enum (> 4)
+            // Invalid ReconnectResult enum (> 5)
             var badResult = (byte[])buffer.Clone();
-            badResult[1] = 5;
+            badResult[1] = 6;
             Assert.That(ReconnectWireCodec.TryDecodeResponse(badResult, out _), Is.False);
         }
 

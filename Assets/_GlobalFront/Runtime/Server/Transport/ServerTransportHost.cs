@@ -33,6 +33,7 @@ namespace GlobalFront.Server.Transport
             public int Length;
         }
         private readonly List<PendingCommandAck> _pendingAcks = new List<PendingCommandAck>();
+        private readonly Dictionary<int, RateLimiter> _rateLimiters = new Dictionary<int, RateLimiter>();
 
         /// <summary>
         /// Optional match every accepted session auto-joins during handshake
@@ -78,6 +79,9 @@ namespace GlobalFront.Server.Transport
         public TransportSessionBinder Binder => _binder;
 
         public TransportMetrics Metrics => _carrier.Metrics;
+
+        private int _droppedPackets;
+        public int DroppedPackets => _droppedPackets;
 
         public int AttachedCount => _binder.BoundCount;
 
@@ -214,8 +218,21 @@ namespace GlobalFront.Server.Transport
             SessionDetached?.Invoke(binding.Session, transportEvent.Reason);
         }
 
-        private void HandleMessage(TransportEvent transportEvent)
+        public void HandleMessage(TransportEvent transportEvent)
         {
+            if (!_rateLimiters.TryGetValue(transportEvent.ConnectionId, out var limiter))
+            {
+                limiter = new RateLimiter();
+                _rateLimiters[transportEvent.ConnectionId] = limiter;
+            }
+
+            if (!limiter.TryConsume(transportEvent.Length, _carrier.Clock.NowMs))
+            {
+                _droppedPackets++;
+                _carrier.Metrics.DroppedRateLimited++;
+                return;
+            }
+
             // Direct C0 opcode check for ReconnectRequest (opcode 12, size 64)
             if (transportEvent.Length >= ReconnectWireCodec.RequestSizeBytes &&
                 transportEvent.Data != null &&

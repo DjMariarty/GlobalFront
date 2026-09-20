@@ -680,6 +680,10 @@ namespace GlobalFront.Server.Replication
                     hash = MixChecksumByte(hash, (ulong)unit.Position.X);
                     hash = MixChecksumByte(hash, (ulong)unit.Position.Z);
                     hash = MixChecksumByte(hash, (ulong)unit.CurrentHealth);
+                    hash = MixChecksumByte(hash, unit.HasMoveTarget ? 1UL : 0UL);
+                    hash = MixChecksumByte(hash, (ulong)unit.MoveTarget.X);
+                    hash = MixChecksumByte(hash, (ulong)unit.MoveTarget.Z);
+                    hash = MixChecksumByte(hash, unit.AttackTarget.Value);
                 }
 
                 return hash;

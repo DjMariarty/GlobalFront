@@ -294,6 +294,48 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void ServerTransportHost_HandleMessage_RateLimitExceeded_DropsIncomingPackets()
+        {
+            var flow = Flow.Establish();
+            var host = flow.Rig.ServerTransport;
+            var initialDropped = host.DroppedPackets;
+
+            var message = new byte[TransportProtocol.MessageHeaderSize + 8];
+            MessageCodec.WriteHeader(message, 0, TransportMessageType.Ping, flow.Client.Token, 0);
+            var buffer = new byte[TransportProtocol.MaxDatagramBytes];
+            var size = EnvelopeCodec.Encode(
+                buffer,
+                TransportChannel.Control,
+                flow.Client.Token,
+                sequence: 1,
+                ackNumber: 0,
+                ackBitmap: 0,
+                messageId: 0,
+                fragmentIndex: 0,
+                fragmentCount: 0,
+                payload: message,
+                payloadOffset: 0,
+                payloadLength: message.Length);
+
+            var transportEvent = new TransportEvent
+            {
+                Type = TransportEventType.Message,
+                ConnectionId = 1,
+                Data = buffer,
+                Length = size
+            };
+
+            for (var index = 0; index < TransportProtocol.RateLimitPacketsPerSecond + 50; index++)
+            {
+                host.HandleMessage(transportEvent);
+            }
+
+            Assert.That(host.DroppedPackets - initialDropped, Is.GreaterThan(0),
+                "ServerTransportHost must drop packets exceeding rate limit");
+            Assert.That(flow.Rig.ServerCarrier.Metrics.DroppedRateLimited, Is.GreaterThan(0));
+        }
+
+        [Test]
         public void ServerFull_DeniesAdditionalConnections()
         {
             var rig = TransportTestSupport.CreateRig(new ImpairmentProfile(), capacity: 1);

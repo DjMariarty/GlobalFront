@@ -131,6 +131,8 @@ namespace GlobalFront.Server.Sessions
         SessionNotFound = 1,
         InvalidSecret = 2,
         GraceExpired = 3,
-        MatchFinished = 4
+        MatchFinished = 4,
+        InvalidState = 5,
+        Denied = 5
     }
 }

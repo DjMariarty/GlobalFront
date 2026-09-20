@@ -198,7 +198,7 @@ namespace GlobalFront.Core.Combat
         }
     }
 
-    public readonly struct CombatantTickInput
+    public readonly struct CombatantTickInput : IComparable<CombatantTickInput>
     {
         public CombatantTickInput(CombatantState state, WorldPointMm position)
         {
@@ -209,6 +209,9 @@ namespace GlobalFront.Core.Combat
         public CombatantState State { get; }
 
         public WorldPointMm Position { get; }
+
+        public int CompareTo(CombatantTickInput other) =>
+            State.Entity.Value.CompareTo(other.State.Entity.Value);
     }
 
     public readonly struct DamageEvent : IEquatable<DamageEvent>
@@ -284,21 +287,35 @@ namespace GlobalFront.Core.Combat
         public override int GetHashCode() => HashCode.Combine((byte)Kind, Winner);
     }
 
-    public sealed class CombatTickResult
+    public readonly struct CombatTickResult
     {
         private readonly DamageEvent[] _events;
+        private readonly int _eventCount;
 
-        internal CombatTickResult(DamageEvent[] events, BattleOutcome outcome)
+        internal CombatTickResult(DamageEvent[] events, int eventCount, BattleOutcome outcome)
         {
-            _events = events;
+            _events = events ?? Array.Empty<DamageEvent>();
+            _eventCount = eventCount;
             Outcome = outcome;
         }
 
-        public int EventCount => _events.Length;
+        internal CombatTickResult(DamageEvent[] events, BattleOutcome outcome)
+            : this(events, events?.Length ?? 0, outcome)
+        {
+        }
+
+        public int EventCount => _eventCount;
 
         public BattleOutcome Outcome { get; }
 
-        public DamageEvent GetEvent(int index) => _events[index];
+        public DamageEvent GetEvent(int index)
+        {
+            if (index < 0 || index >= _eventCount)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index));
+            }
+            return _events[index];
+        }
     }
 
     public static class CombatMath
@@ -335,8 +352,37 @@ namespace GlobalFront.Core.Combat
 
     public static class CombatTickResolver
     {
+        private sealed class CombatantComparer : IComparer<CombatantTickInput>
+        {
+            public static readonly CombatantComparer Instance = new CombatantComparer();
+            public int Compare(CombatantTickInput left, CombatantTickInput right) =>
+                left.State.Entity.Value.CompareTo(right.State.Entity.Value);
+        }
+
+        private static CombatantTickInput[] s_canonical = new CombatantTickInput[1024];
+        private static readonly Dictionary<EntityId, CombatantTickInput> s_byEntity =
+            new Dictionary<EntityId, CombatantTickInput>(1024);
+        private static readonly List<DamageEvent> s_events = new List<DamageEvent>(1024);
+        private static readonly Dictionary<EntityId, long> s_accumulatedDamage =
+            new Dictionary<EntityId, long>(1024);
+
+        private static readonly DamageEvent[][] s_eventBuffers = new DamageEvent[][]
+        {
+            new DamageEvent[1024],
+            new DamageEvent[1024],
+            new DamageEvent[1024],
+            new DamageEvent[1024]
+        };
+        private static int s_bufferIndex;
+
         public static CombatTickResult Resolve(
             CombatantTickInput[] combatants,
+            ulong tick) =>
+            Resolve(combatants, combatants?.Length ?? 0, tick);
+
+        public static CombatTickResult Resolve(
+            CombatantTickInput[] combatants,
+            int count,
             ulong tick)
         {
             if (combatants == null)
@@ -344,37 +390,47 @@ namespace GlobalFront.Core.Combat
                 throw new ArgumentNullException(nameof(combatants));
             }
 
-            var canonical = new CombatantTickInput[combatants.Length];
-            Array.Copy(combatants, canonical, combatants.Length);
-            Array.Sort(canonical, CompareCombatants);
-
-            var byEntity = new Dictionary<EntityId, CombatantTickInput>(canonical.Length);
-            for (var index = 0; index < canonical.Length; index++)
+            if (count < 0 || count > combatants.Length)
             {
-                var input = canonical[index];
-                if (byEntity.ContainsKey(input.State.Entity))
+                throw new ArgumentOutOfRangeException(nameof(count));
+            }
+
+            s_byEntity.Clear();
+            s_events.Clear();
+            s_accumulatedDamage.Clear();
+
+            if (s_canonical.Length < count)
+            {
+                var newCapacity = Math.Max(count, Math.Max(s_canonical.Length * 2, 64));
+                s_canonical = new CombatantTickInput[newCapacity];
+            }
+
+            Array.Copy(combatants, 0, s_canonical, 0, count);
+            SortCanonical(s_canonical, count);
+
+            for (var index = 0; index < count; index++)
+            {
+                var input = s_canonical[index];
+                if (s_byEntity.ContainsKey(input.State.Entity))
                 {
                     throw new ArgumentException(
                         "Combatant entities must be unique.",
                         nameof(combatants));
                 }
 
-                byEntity.Add(input.State.Entity, input);
+                s_byEntity.Add(input.State.Entity, input);
             }
 
-            ClearInvalidTargets(canonical, byEntity);
+            ClearInvalidTargets(s_canonical, count, s_byEntity);
 
-            var events = new List<DamageEvent>();
-            var accumulatedDamage = new Dictionary<EntityId, long>();
-
-            for (var index = 0; index < canonical.Length; index++)
+            for (var index = 0; index < count; index++)
             {
-                var attackerInput = canonical[index];
+                var attackerInput = s_canonical[index];
                 var attacker = attackerInput.State;
                 if (!attacker.IsAlive ||
                     !attacker.HasAttackTarget ||
                     !attacker.CanFire(tick) ||
-                    !byEntity.TryGetValue(attacker.AttackTarget, out var targetInput) ||
+                    !s_byEntity.TryGetValue(attacker.AttackTarget, out var targetInput) ||
                     !CombatMath.IsWithinRange(
                         attackerInput.Position,
                         targetInput.Position,
@@ -388,38 +444,52 @@ namespace GlobalFront.Core.Combat
                     attacker.Entity,
                     targetInput.State.Entity,
                     attacker.Stats.Damage);
-                events.Add(damageEvent);
+                s_events.Add(damageEvent);
 
-                accumulatedDamage.TryGetValue(
+                s_accumulatedDamage.TryGetValue(
                     damageEvent.Target,
                     out var currentDamage);
-                accumulatedDamage[damageEvent.Target] =
+                s_accumulatedDamage[damageEvent.Target] =
                     currentDamage > long.MaxValue - damageEvent.Damage
                         ? long.MaxValue
                         : currentDamage + damageEvent.Damage;
             }
 
-            for (var index = 0; index < canonical.Length; index++)
+            for (var index = 0; index < count; index++)
             {
-                var target = canonical[index].State;
-                if (accumulatedDamage.TryGetValue(target.Entity, out var damage))
+                var target = s_canonical[index].State;
+                if (s_accumulatedDamage.TryGetValue(target.Entity, out var damage))
                 {
                     target.ApplyDamage(damage);
                 }
             }
 
-            ClearInvalidTargets(canonical, byEntity);
+            ClearInvalidTargets(s_canonical, count, s_byEntity);
 
-            return new CombatTickResult(
-                events.ToArray(),
-                DetermineOutcome(canonical));
+            var outcome = DetermineOutcome(s_canonical, count);
+            if (s_events.Count == 0)
+            {
+                return new CombatTickResult(Array.Empty<DamageEvent>(), 0, outcome);
+            }
+
+            s_bufferIndex = (s_bufferIndex + 1) % s_eventBuffers.Length;
+            var buffer = s_eventBuffers[s_bufferIndex];
+            if (buffer.Length < s_events.Count)
+            {
+                buffer = new DamageEvent[Math.Max(s_events.Count, buffer.Length * 2)];
+                s_eventBuffers[s_bufferIndex] = buffer;
+            }
+
+            s_events.CopyTo(buffer, 0);
+            return new CombatTickResult(buffer, s_events.Count, outcome);
         }
 
         private static void ClearInvalidTargets(
             CombatantTickInput[] canonical,
+            int count,
             Dictionary<EntityId, CombatantTickInput> byEntity)
         {
-            for (var index = 0; index < canonical.Length; index++)
+            for (var index = 0; index < count; index++)
             {
                 var attacker = canonical[index].State;
                 if (!attacker.IsAlive)
@@ -442,12 +512,53 @@ namespace GlobalFront.Core.Combat
             }
         }
 
-        private static BattleOutcome DetermineOutcome(CombatantTickInput[] canonical)
+        private static void SortCanonical(CombatantTickInput[] array, int count)
+        {
+            if (count <= 1) return;
+            var isSorted = true;
+            for (var i = 1; i < count; i++)
+            {
+                if (array[i].State.Entity.Value < array[i - 1].State.Entity.Value)
+                {
+                    isSorted = false;
+                    break;
+                }
+            }
+            if (isSorted) return;
+
+            QuickSort(array, 0, count - 1);
+        }
+
+        private static void QuickSort(CombatantTickInput[] array, int left, int right)
+        {
+            var i = left;
+            var j = right;
+            var pivot = array[(left + right) / 2].State.Entity.Value;
+
+            while (i <= j)
+            {
+                while (array[i].State.Entity.Value < pivot) i++;
+                while (array[j].State.Entity.Value > pivot) j--;
+                if (i <= j)
+                {
+                    var temp = array[i];
+                    array[i] = array[j];
+                    array[j] = temp;
+                    i++;
+                    j--;
+                }
+            }
+
+            if (left < j) QuickSort(array, left, j);
+            if (i < right) QuickSort(array, i, right);
+        }
+
+        private static BattleOutcome DetermineOutcome(CombatantTickInput[] canonical, int count)
         {
             var hasLivingOwner = false;
             var soleOwner = default(PlayerId);
 
-            for (var index = 0; index < canonical.Length; index++)
+            for (var index = 0; index < count; index++)
             {
                 var state = canonical[index].State;
                 if (!state.IsAlive)
@@ -472,10 +583,5 @@ namespace GlobalFront.Core.Combat
                 ? BattleOutcome.Victory(soleOwner)
                 : BattleOutcome.Draw;
         }
-
-        private static int CompareCombatants(
-            CombatantTickInput left,
-            CombatantTickInput right) =>
-            left.State.Entity.Value.CompareTo(right.State.Entity.Value);
     }
 }

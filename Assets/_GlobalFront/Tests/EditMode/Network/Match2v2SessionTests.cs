@@ -232,6 +232,35 @@ namespace GlobalFront.Tests.EditMode.Network
             Assert.That(host.IsPaused, Is.False, "Real-time advance during tactical pause must elapse grace window and auto-resume");
         }
 
+        [Test]
+        public void AllPlayersGracefulExit_DoesNotLeaveWorldFrozen()
+        {
+            var host = new LocalMatchHost(disconnectGraceTicks: 10);
+            var match = host.CreateSessionMatch(4);
+            var s0 = host.CreateSession(host.CreateConnectionHandle());
+            var s1 = host.CreateSession(host.CreateConnectionHandle());
+            var s2 = host.CreateSession(host.CreateConnectionHandle());
+            var s3 = host.CreateSession(host.CreateConnectionHandle());
+
+            Assert.That(host.TryJoinMatch(s0, match, out var p0), Is.EqualTo(JoinResult.Assigned));
+            Assert.That(host.TryJoinMatch(s1, match, out var p1), Is.EqualTo(JoinResult.Assigned));
+            Assert.That(host.TryJoinMatch(s2, match, out var p2), Is.EqualTo(JoinResult.Assigned));
+            Assert.That(host.TryJoinMatch(s3, match, out var p3), Is.EqualTo(JoinResult.Assigned));
+
+            var template = BuildFourPlayerTemplate(p0, p1, p2, p3);
+            Assert.That(host.TryStartSessionMatch(match, template, out _), Is.True);
+            Assert.That(host.IsPaused, Is.False);
+
+            Assert.That(host.TickOnce(), Is.True);
+
+            Assert.That(host.CloseSession(s0), Is.True);
+            Assert.That(host.CloseSession(s1), Is.True);
+            Assert.That(host.CloseSession(s2), Is.True);
+            Assert.That(host.CloseSession(s3), Is.True);
+
+            Assert.IsFalse(host.IsPaused, "Host must not be paused after all players have gracefully exited");
+        }
+
         private static MatchConfig BuildTwoPlayerTemplate(PlayerId pA, PlayerId pB)
         {
             var specs = new[]

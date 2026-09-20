@@ -109,6 +109,7 @@ namespace GlobalFront.Client
                 }
             };
             _sessions.SessionGraceExpired += OnSessionGraceExpired;
+            _sessions.SessionClosed += OnSessionClosed;
         }
 
         /// <summary>
@@ -312,7 +313,17 @@ namespace GlobalFront.Client
 
         private void OnSessionGraceExpired(SessionId session)
         {
-            if (!_sessions.HasDisconnectedSessionsInGrace(_activeSessionMatch))
+            CheckAutoResumeAfterSessionChange();
+        }
+
+        private void OnSessionClosed(SessionId session)
+        {
+            CheckAutoResumeAfterSessionChange();
+        }
+
+        private void CheckAutoResumeAfterSessionChange()
+        {
+            if (IsPaused && !_sessions.HasDisconnectedSessionsInGrace(_activeSessionMatch))
             {
                 Resume();
             }
@@ -380,10 +391,12 @@ namespace GlobalFront.Client
             TickCompleted += emitter.OnTickCompleted;
             transport.SessionDetached += (session, reason) =>
             {
-                if (AutoPauseOnDisconnect)
+                if (reason != GlobalFront.Server.Transport.TransportDisconnectReason.ClientRequested && AutoPauseOnDisconnect)
                 {
                     Pause();
                 }
+
+                CheckAutoResumeAfterSessionChange();
             };
             return emitter;
         }
@@ -531,7 +544,9 @@ namespace GlobalFront.Client
         /// to synchronize <see cref="PrototypeUnit"/> instances from
         /// authoritative state.
         /// </summary>
+#pragma warning disable CS0618
         public ServerUnitSnapshot[] GetAllSnapshots() => _server.GetAllSnapshots();
+#pragma warning restore CS0618
 
         public bool TryGetUnit(EntityId entity, out ServerUnitSnapshot snapshot) =>
             _server.TryGetUnit(entity, out snapshot);

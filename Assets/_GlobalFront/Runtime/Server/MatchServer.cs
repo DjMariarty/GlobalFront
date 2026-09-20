@@ -123,6 +123,11 @@ namespace GlobalFront.Server
 
         private ulong _nextEntityValue = 1;
 
+        private readonly Dictionary<EntityId, WorldPointMm> _startPositionsCache =
+            new Dictionary<EntityId, WorldPointMm>(1024);
+
+        private CombatantTickInput[] _combatantInputsCache = new CombatantTickInput[1024];
+
         private sealed class UnitRecord
         {
             public CombatantState Combat;
@@ -520,6 +525,7 @@ namespace GlobalFront.Server
         /// Used by the hosting layer to synchronize client presentation after
         /// each server tick.
         /// </summary>
+        [Obsolete("Use CopySnapshots(Span<>) for zero-allocation access")]
         public ServerUnitSnapshot[] GetAllSnapshots()
         {
             var snapshots = new ServerUnitSnapshot[_orderedUnits.Count];
@@ -728,12 +734,11 @@ namespace GlobalFront.Server
         /// </summary>
         private void MoveUnits()
         {
-            var startPositions =
-                new Dictionary<EntityId, WorldPointMm>(_orderedUnits.Count);
+            _startPositionsCache.Clear();
             for (var index = 0; index < _orderedUnits.Count; index++)
             {
                 var unit = _orderedUnits[index];
-                startPositions[unit.Combat.Entity] = unit.Position;
+                _startPositionsCache[unit.Combat.Entity] = unit.Position;
             }
 
             for (var index = 0; index < _orderedUnits.Count; index++)
@@ -747,7 +752,7 @@ namespace GlobalFront.Server
                 if (unit.Combat.HasAttackTarget &&
                     _units.TryGetValue(unit.Combat.AttackTarget, out var targetRecord) &&
                     targetRecord.Combat.IsAlive &&
-                    startPositions.TryGetValue(
+                    _startPositionsCache.TryGetValue(
                         targetRecord.Combat.Entity,
                         out var targetStart))
                 {
@@ -864,14 +869,20 @@ namespace GlobalFront.Server
 
         private void ResolveCombat(ulong tick)
         {
-            var inputs = new CombatantTickInput[_orderedUnits.Count];
-            for (var index = 0; index < _orderedUnits.Count; index++)
+            var count = _orderedUnits.Count;
+            if (_combatantInputsCache.Length < count)
             {
-                var unit = _orderedUnits[index];
-                inputs[index] = new CombatantTickInput(unit.Combat, unit.Position);
+                var newCapacity = Math.Max(count, Math.Max(_combatantInputsCache.Length * 2, 64));
+                _combatantInputsCache = new CombatantTickInput[newCapacity];
             }
 
-            var result = CombatTickResolver.Resolve(inputs, tick);
+            for (var index = 0; index < count; index++)
+            {
+                var unit = _orderedUnits[index];
+                _combatantInputsCache[index] = new CombatantTickInput(unit.Combat, unit.Position);
+            }
+
+            var result = CombatTickResolver.Resolve(_combatantInputsCache, count, tick);
 
             if (result.Outcome.IsTerminal)
             {

@@ -1,3 +1,4 @@
+#pragma warning disable CS0618
 using System;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;

@@ -1,9 +1,12 @@
+using System;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Server;
 using NUnit.Framework;
+using UnityEngine.TestTools.Constraints;
+using Is = NUnit.Framework.Is;
 
 namespace GlobalFront.Tests.EditMode
 {
@@ -472,6 +475,38 @@ namespace GlobalFront.Tests.EditMode
             }
 
             return entities;
+        }
+
+        [Test]
+        public void TickOnce_UnderLoad_IsAllocationFree()
+        {
+            var server = new MatchServer();
+            var p1 = new PlayerId(1);
+            var p2 = new PlayerId(2);
+
+            var stats = new CombatStats(
+                maximumHealth: 10000,
+                damage: 10,
+                rangeMm: 5000,
+                cooldownTicks: 2);
+
+            for (var i = 0; i < 100; i++)
+            {
+                var u1 = server.SpawnUnit(p1, stats, new WorldPointMm(1000 * i, 0), 500, autoAcquire: true);
+                server.SpawnUnit(p2, stats, new WorldPointMm(1000 * i, 2000), 500, autoAcquire: true);
+                server.TryEnqueueMove(
+                    new CommandHeader(p1, (uint)(i + 1), 1, GameCommandType.Move),
+                    new[] { u1 },
+                    new WorldPointMm(1000 * i, 10000),
+                    new FormationSpec(0, 1000, CardinalFacing.North));
+            }
+
+            for (var tick = 0; tick < 10; tick++)
+            {
+                server.TickOnce();
+            }
+
+            Assert.That(() => server.TickOnce(), UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory());
         }
     }
 }

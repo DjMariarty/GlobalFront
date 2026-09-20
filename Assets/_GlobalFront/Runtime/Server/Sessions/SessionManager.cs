@@ -98,6 +98,11 @@ namespace GlobalFront.Server.Sessions
         public event Action<SessionId> SessionGraceExpired;
 
         /// <summary>
+        /// Raised when a session is closed.
+        /// </summary>
+        public event Action<SessionId> SessionClosed;
+
+        /// <summary>
         /// Creates a manager with the default 200-second grace window (4000 ticks at 20 Hz, OD-18).
         /// </summary>
         public SessionManager() : this(DefaultDisconnectGraceTicks)
@@ -526,24 +531,26 @@ namespace GlobalFront.Server.Sessions
                 return RebindResult.GraceExpired;
             }
 
-            if (record.State == SessionState.Disconnected)
+            if (record.State != SessionState.Disconnected)
             {
-                var elapsedTicks = currentTick >= record.DisconnectedAtTick
-                    ? currentTick - record.DisconnectedAtTick
-                    : 0ul;
+                return RebindResult.InvalidState;
+            }
 
-                if (elapsedTicks > (ulong)_disconnectGraceTicks)
+            var elapsedTicks = currentTick >= record.DisconnectedAtTick
+                ? currentTick - record.DisconnectedAtTick
+                : 0ul;
+
+            if (elapsedTicks > (ulong)_disconnectGraceTicks)
+            {
+                record.State = SessionState.Closed;
+                if (record.Match.IsValid &&
+                    _matches.TryGetValue(record.Match, out var matchRec) &&
+                    matchRec.Slots.TryGetValue(record.Player, out var slotRec))
                 {
-                    record.State = SessionState.Closed;
-                    if (record.Match.IsValid &&
-                        _matches.TryGetValue(record.Match, out var matchRec) &&
-                        matchRec.Slots.TryGetValue(record.Player, out var slotRec))
-                    {
-                        slotRec.State = PlayerConnectionState.Abandoned;
-                    }
-
-                    return RebindResult.GraceExpired;
+                    slotRec.State = PlayerConnectionState.Abandoned;
                 }
+
+                return RebindResult.GraceExpired;
             }
 
             if (record.Match.IsValid &&
@@ -603,6 +610,7 @@ namespace GlobalFront.Server.Sessions
             }
 
             record.State = SessionState.Closed;
+            SessionClosed?.Invoke(session);
             return true;
         }
 
@@ -772,6 +780,28 @@ namespace GlobalFront.Server.Sessions
             {
                 var record = pair.Value;
                 if (record.State == SessionState.Disconnected)
+                {
+                    if (!match.IsValid || record.Match == match)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Returns true if there are any sessions in Connected state.
+        /// If a match is specified, only checks sessions bound to that match.
+        /// Zero-GC allocation.
+        /// </summary>
+        public bool HasConnectedSessions(MatchId match = default)
+        {
+            foreach (var pair in _sessions)
+            {
+                var record = pair.Value;
+                if (record.State == SessionState.Connected)
                 {
                     if (!match.IsValid || record.Match == match)
                     {

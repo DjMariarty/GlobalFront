@@ -1,3 +1,4 @@
+#pragma warning disable CS0618, CS0067
 using System;
 using System.Collections.Generic;
 using GlobalFront.Client;

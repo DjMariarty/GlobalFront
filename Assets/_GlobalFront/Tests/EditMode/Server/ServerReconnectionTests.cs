@@ -162,6 +162,25 @@ namespace GlobalFront.Tests.EditMode.Server
         }
 
         [Test]
+        public void TryRebindSession_WhenAlreadyConnected_ReturnsInvalidState()
+        {
+            var matchId = _sessionManager.CreateMatch(2);
+            var handle = _sessionManager.CreateConnectionHandle();
+            var sessionId = _sessionManager.CreateSession(handle, out var secret);
+            Assert.That(_sessionManager.TryJoinMatch(sessionId, matchId, out _), Is.EqualTo(JoinResult.Assigned));
+
+            Assert.That(_sessionManager.TryGetSession(sessionId, out var rec), Is.True);
+            Assert.That(rec.State, Is.EqualTo(SessionState.Connected));
+
+            var newHandle = _sessionManager.CreateConnectionHandle();
+            var result = _sessionManager.TryRebindSession(
+                sessionId, in secret, newHandle, 10, out var session);
+
+            Assert.That(result, Is.EqualTo(RebindResult.InvalidState));
+            Assert.That(session, Is.Null);
+        }
+
+        [Test]
         public void TryRebindSession_ZeroGcAllocations()
         {
             var handle = _sessionManager.CreateConnectionHandle();
@@ -464,11 +483,8 @@ namespace GlobalFront.Tests.EditMode.Server
 
             // Reattach 1
             rig.Host.Sessions.NotifyConnectionLost(sessionId, 1);
-            var newHandle1 = rig.Host.Sessions.CreateConnectionHandle();
             Assert.That(rig.Host.Sessions.TryGetSession(sessionId, out var rec), Is.True);
             var secretVal = rec.Secret;
-            var rebind1 = rig.Host.Sessions.TryRebindSession(sessionId, in secretVal, newHandle1, 2, out _);
-            Assert.That(rebind1, Is.EqualTo(RebindResult.Accepted));
 
             // Raise reattached event on server transport host
             var reconnectAddress1 = rig.Pipe.CreateEndpoint();
@@ -492,9 +508,6 @@ namespace GlobalFront.Tests.EditMode.Server
 
             // Reattach 2
             rig.Host.Sessions.NotifyConnectionLost(sessionId, 5);
-            var newHandle2 = rig.Host.Sessions.CreateConnectionHandle();
-            var rebind2 = rig.Host.Sessions.TryRebindSession(sessionId, in secretVal, newHandle2, 6, out _);
-            Assert.That(rebind2, Is.EqualTo(RebindResult.Accepted));
 
             reconnectCarrier1.Send(connId1, TransportChannel.Control, buffer, 0, written1);
             for (var i = 0; i < 5; i++)
@@ -508,9 +521,6 @@ namespace GlobalFront.Tests.EditMode.Server
 
             // Reattach 3
             rig.Host.Sessions.NotifyConnectionLost(sessionId, 10);
-            var newHandle3 = rig.Host.Sessions.CreateConnectionHandle();
-            var rebind3 = rig.Host.Sessions.TryRebindSession(sessionId, in secretVal, newHandle3, 11, out _);
-            Assert.That(rebind3, Is.EqualTo(RebindResult.Accepted));
 
             reconnectCarrier1.Send(connId1, TransportChannel.Control, buffer, 0, written1);
             for (var i = 0; i < 5; i++)

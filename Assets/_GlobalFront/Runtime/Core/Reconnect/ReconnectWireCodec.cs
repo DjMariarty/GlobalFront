@@ -131,7 +131,7 @@ namespace GlobalFront.Core.Reconnect
             }
 
             byte rawResult = buffer[1];
-            if (rawResult > (byte)ReconnectResult.MatchFinished)
+            if (rawResult > (byte)ReconnectResult.InvalidState)
             {
                 response = default;
                 return false;
