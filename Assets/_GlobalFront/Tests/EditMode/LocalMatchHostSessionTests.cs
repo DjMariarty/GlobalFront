@@ -179,7 +179,10 @@ namespace GlobalFront.Tests.EditMode
         [Test]
         public void GraceExpiry_IsDrivenByServerTicks_ThroughTheHost()
         {
-            var shortGraceHost = new LocalMatchHost(new MatchServer(), disconnectGraceTicks: 2);
+            var shortGraceHost = new LocalMatchHost(new MatchServer(), disconnectGraceTicks: 2)
+            {
+                AutoPauseOnDisconnect = false
+            };
             var match = shortGraceHost.CreateSessionMatch(2);
             var local = shortGraceHost.CreateSession(shortGraceHost.CreateConnectionHandle());
             var enemy = shortGraceHost.CreateSession(shortGraceHost.CreateConnectionHandle());

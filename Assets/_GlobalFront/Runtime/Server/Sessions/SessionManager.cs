@@ -82,9 +82,26 @@ namespace GlobalFront.Server.Sessions
         private ulong _nextConnectionValue = 1;
 
         /// <summary>
-        /// Creates a manager with a grace window measured in server ticks
-        /// (OD-2). The concrete production grace duration remains an Owner
-        /// Decision; the hosting layer picks the value.
+        /// Default disconnect grace window for session-managed matches in server ticks
+        /// (200.0 seconds at 20 Hz, Phase 2.7 / OD-18).
+        /// </summary>
+        public const int DefaultDisconnectGraceTicks = 4000;
+
+        /// <summary>
+        /// Raised when an active connected session transitions to disconnected status.
+        /// </summary>
+        public event Action<SessionId, ulong> SessionDisconnected;
+
+        /// <summary>
+        /// Creates a manager with the default 200-second grace window (4000 ticks at 20 Hz, OD-18).
+        /// </summary>
+        public SessionManager() : this(DefaultDisconnectGraceTicks)
+        {
+        }
+
+        /// <summary>
+        /// Creates a manager with an explicit grace window measured in server ticks
+        /// (OD-2 / OD-18). Tests can pass a small tick count (e.g. 5-10 ticks) to test timeout expiration quickly.
         /// </summary>
         /// <exception cref="ArgumentOutOfRangeException">
         /// Thrown when <paramref name="disconnectGraceTicks"/> is negative.
@@ -383,6 +400,7 @@ namespace GlobalFront.Server.Sessions
                 slot.DisconnectedAtTick = atTick;
             }
 
+            SessionDisconnected?.Invoke(session, atTick);
             return true;
         }
 

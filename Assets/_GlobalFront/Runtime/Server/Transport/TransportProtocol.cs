@@ -58,7 +58,8 @@ namespace GlobalFront.Server.Transport
         MessageVersionMismatch = 1,
         SnapshotVersionMismatch = 2,
         ServerFull = 3,
-        Internal = 4
+        Internal = 4,
+        SessionResumeRejected = 5
     }
 
     /// <summary>

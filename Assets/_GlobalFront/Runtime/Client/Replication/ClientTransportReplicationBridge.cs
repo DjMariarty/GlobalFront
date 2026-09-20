@@ -181,7 +181,7 @@ namespace GlobalFront.Client.Replication
     /// </summary>
     public sealed class ClientTransportReplicationBridge
     {
-        private readonly IReplicationUplink _uplink;
+        private IReplicationUplink _uplink;
         private readonly ClientReplicationReceiver _receiver;
         private readonly ClientTransportReplicationBridgeConfig _config;
         private readonly DeltaAddRecord[] _addSink;
@@ -224,7 +224,6 @@ namespace GlobalFront.Client.Replication
             ClientReplicationReceiver receiver,
             in ClientTransportReplicationBridgeConfig config)
         {
-            _uplink = uplink ?? throw new ArgumentNullException(nameof(uplink));
             _receiver = receiver ?? throw new ArgumentNullException(nameof(receiver));
             _config = config;
 
@@ -236,6 +235,20 @@ namespace GlobalFront.Client.Replication
             _keyframeUnits = new DeltaAddRecord[config.MaxKeyframeUnits];
             _receivedParts = new bool[config.MaxParts];
 
+            BindUplink(uplink);
+        }
+
+        /// <summary>
+        /// Rebinds the bridge to a new transport uplink (e.g. after a carrier reconnect).
+        /// Safely unwires from previous uplink and wires snapshot events to the new one.
+        /// </summary>
+        public void BindUplink(IReplicationUplink uplink)
+        {
+            if (_uplink != null)
+            {
+                _uplink.SnapshotPayloadReceived -= OnSnapshotPayload;
+            }
+            _uplink = uplink ?? throw new ArgumentNullException(nameof(uplink));
             _uplink.SnapshotPayloadReceived += OnSnapshotPayload;
         }
 
@@ -496,11 +509,6 @@ namespace GlobalFront.Client.Replication
         /// </summary>
         public void PrepareForResync(ushort activeKeyframeSeq)
         {
-            if (_assembledKeyframeSeq == activeKeyframeSeq && _receiver.IsWorldUsable)
-            {
-                return;
-            }
-
             ResetAssembly();
             _assembledKeyframeSeq = (ushort)(activeKeyframeSeq == 0 ? 0 : activeKeyframeSeq - 1);
             _receiver.PrepareForResync(activeKeyframeSeq);

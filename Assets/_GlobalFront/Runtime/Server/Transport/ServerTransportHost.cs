@@ -47,6 +47,9 @@ namespace GlobalFront.Server.Transport
         /// <summary>Raised on the host thread when a session successfully re-attaches (Phase 2.7, ADR-011).</summary>
         public event Action<SessionId, MatchId, PlayerId> SessionReattached;
 
+        /// <summary>Raised on the host thread after ReconnectResponse has been sent to client (Phase 2.7, ADR-011).</summary>
+        public event Action<SessionId> PostSessionReattached;
+
         /// <summary>Optional provider for active keyframe sequence generation on reconnect response.</summary>
         public Func<SessionId, ushort> KeyframeSeqProvider { get; set; }
 
@@ -319,6 +322,11 @@ namespace GlobalFront.Server.Transport
                 _carrier.Send(
                     transportEvent.ConnectionId, TransportChannel.Control, _messageBuffer, 0, written);
             }
+
+            if (result == RebindResult.Accepted)
+            {
+                PostSessionReattached?.Invoke(session.Id);
+            }
         }
 
         private void HandleConnectRequest(TransportEvent transportEvent, TransportMessageHeader header)
@@ -334,9 +342,16 @@ namespace GlobalFront.Server.Transport
                     header.PayloadOffset,
                     transportEvent.Length,
                     out var snapshotVersion,
-                    out _))
+                    out var resumeSession))
             {
                 _carrier.Metrics.DroppedMalformed++;
+                return;
+            }
+
+            if (resumeSession != Guid.Empty)
+            {
+                // D4: Reject legacy resumeSession without valid C0 reconnect
+                SendConnectDenied(transportEvent.ConnectionId, ConnectDenyReason.SessionResumeRejected);
                 return;
             }
 

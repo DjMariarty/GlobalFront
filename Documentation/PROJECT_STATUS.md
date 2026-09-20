@@ -4,7 +4,7 @@
 
 ## Summary
  
-GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 1 и Phase 2.1–2.7 завершены. Phase 2.7 Reconnect & Resync — **COMPLETE**: Шаги 2.7.1 (Core Wire Codecs), 2.7.2 (Server Session Re-attachment & D1-D6), 2.7.3 (Client Reconnect Coordinator & FSM) и 2.7.4 (End-to-End Integration, Tactical Pause OD-18..OD-22, 5% Loss Stress) — **COMPLETE**. Проверка: **641/641 EditMode passed** (`Artifacts/TestResults/EditMode-step274.xml`, 2026-09-20) и **6/6 PlayMode passed** (`Artifacts/TestResults/PlayMode-step274.xml`, 2026-09-20). Текущая задача / Next Phase — **Phase 2.8 (Network Prototype Playtest 2v2)**.
+GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 1 и Phase 2.1–2.7 завершены. Phase 2.7 Reconnect & Resync — **COMPLETE & REVIEW GATE PASSED**: Шаги 2.7.1 (Core Wire Codecs), 2.7.2 (Server Session Re-attachment & D1-D6), 2.7.3 (Client Reconnect Coordinator & FSM), 2.7.4 (End-to-End Integration, Tactical Pause OD-18..OD-22, 5% Loss Stress) и закрытие дефектов Review Gate (P0-1..P0-3, P1-1, D4, D6) — **COMPLETE**. Проверка: **641/641 EditMode passed** (`Artifacts/TestResults/EditMode-reviewgate.xml`, 2026-09-20) и **6/6 PlayMode passed** (`Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20). Текущая задача / Next Phase — **Phase 2.8 (Network Prototype Playtest 2v2)**.
  
 ## Confirmed Baseline
  
@@ -15,12 +15,12 @@ GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 
 | Server | `MatchServer`, `TickDriver`, `SessionManager` (re-bind token, 32 B cryptographically secure secret, grace timeout); `Server.Transport` по ADR-009; `ServerReplicationEmitter` интегрирован с тиками, history ring (120 тиков), pacing-слайсингом keyframe и тактической паузой |
 | Transport | `INetworkCarrier` + `OwnDatagramCarrier` (детерминированные тесты через `VirtualNetworkPipe`) и `LiteNetLibCarrier` (LiteNetLib 1.3.5, real UDP); `NetworkCommandChannel` реализует `ICommandChannel` с асинхронным авторитетным `CommandAckPayload`; каналы C0/C1/C2 |
 | Client replication | `ClientReplicationReceiver`, `ClientReplicationWorld`, `ReplicationReceiverFSM`, `ClientTransportReplicationBridge`, `ClientReconnectCoordinator`; накат дельт, сборка keyframe-слайсов, 10 Hz `SnapshotAck` по C0, Zero-GC верификация StateChecksum, авто-восстановление и координация реконнекта |
-| Local integration | `LocalMatchHost` (ServerHost) внутри Client process: владеет `MatchServer`, `TickDriver` и `SessionManager`; тактическая пауза (OD-18..OD-22) и 5-секундный countdown таймер (OD-20); сквозная интеграция верифицирована в EditMode |
+| Local integration | `LocalMatchHost` (ServerHost) внутри Client process: владеет `MatchServer`, `TickDriver` и `SessionManager`; тактическая пауза (OD-18..OD-22), окно ожидания 200с / 4000 тиков (OD-18) и 5-секундный countdown таймер (OD-20); сквозная интеграция верифицирована в EditMode |
 | Commands | Move, Attack и Stop; `ICommandChannel` + session-attributed `LocalCommandChannel`; ingress проходит session gate; сохранение команд во время реконнекта |
 | Snapshots | Delta Snapshot Core/Server/Client слои Шагов 2.6.1–2.6.4 и Reconnect 2.7.1–2.7.4 завершены, rate-pacing/keyframe slicing/end-to-end integration и loss stress (1–5% loss) верифицированы; независимый аудит Phase 2.6 = APPROVE (zero P0/P1 blockers) |
 | Presentation | выбор, движение, атака, камера, HUD, runtime prototype world |
 | Scene | одна включённая `Assets/Scenes/SampleScene.unity` |
-| Tests | **641/641 EditMode passed** (`Artifacts/TestResults/EditMode-step274.xml`, 2026-09-20); **6/6 PlayMode passed** (`Artifacts/TestResults/PlayMode-step274.xml`, 2026-09-20) |
+| Tests | **641/641 EditMode passed** (`Artifacts/TestResults/EditMode-reviewgate.xml`, 2026-09-20); **6/6 PlayMode passed** (`Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20) |
  
 ## Phase 2 Status
  

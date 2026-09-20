@@ -751,11 +751,6 @@ namespace GlobalFront.Client.Replication
         /// </summary>
         public void PrepareForResync(ushort activeKeyframeSeq)
         {
-            if (CurrentKeyframeSeq == activeKeyframeSeq && State == ReplicationReceiverState.Streaming)
-            {
-                return;
-            }
-
             Reset();
             CurrentKeyframeSeq = (ushort)(activeKeyframeSeq == 0 ? 0 : activeKeyframeSeq - 1);
         }

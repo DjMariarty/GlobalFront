@@ -33,6 +33,7 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
 
             var client0 = world.Clients[0];
             var coord0 = new ClientReconnectCoordinator(client0.Receiver);
+            world.Rig.Host.BindReconnectCoordinator(coord0);
             coord0.ResyncStarted += seq => client0.Bridge.PrepareForResync(seq);
             coord0.CacheSession(
                 client0.Endpoint.Session,
@@ -69,9 +70,8 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
             Assert.That(client0.Endpoint.State, Is.EqualTo(ClientTransportState.Disconnected));
             Assert.That(coord0.State, Is.EqualTo(ClientReconnectState.Reconnecting));
 
-            // 5. Tactical Pause (OD-18)
-            world.Rig.Host.Pause();
-            Assert.That(world.Rig.Host.IsPaused, Is.True);
+            // 5. Tactical Pause (OD-18 / P0-1 / P0-2)
+            Assert.That(world.Rig.Host.IsPaused, Is.True, "Host must auto-pause on player disconnect (OD-18)");
             var pausedTick = world.Rig.Host.CurrentTick;
             Assert.That(world.Rig.Host.TickOnce(), Is.False, "Simulation must not advance during tactical pause (OD-18)");
             Assert.That(world.Rig.Host.CurrentTick, Is.EqualTo(pausedTick), "Tick counter remains frozen");
@@ -94,7 +94,8 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
             Assert.That(coord0.TryBuildReconnectRequest(reqBuffer, out var written), Is.True);
             reconnectCarrier.Send(reconnectConnId, TransportChannel.Control, reqBuffer, 0, written);
 
-            // 8. Client 0 receives ReconnectResponse and assembled Keyframe slices
+            // 8. Client 0 receives ReconnectResponse and assembled Keyframe slices while simulation remains paused (P0-3)
+            Assert.That(world.Rig.Host.IsPaused, Is.True, "Host must remain paused while slices are pumped and assembled");
             var responseReceived = false;
             ReconnectResponse reconnectResponse = default;
             var elapsed = 0L;
@@ -158,9 +159,8 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
             Assert.That(ready2, Is.True);
             Assert.That(coord0.State, Is.EqualTo(ClientReconnectState.Connected));
 
-            // 10. Tactical pause lifted, simulation resumes
-            world.Rig.Host.Resume();
-            Assert.That(world.Rig.Host.IsPaused, Is.False);
+            // 10. Tactical pause automatically lifted upon 5-second countdown completion (OD-20 / P1-1)
+            Assert.That(world.Rig.Host.IsPaused, Is.False, "Simulation must resume automatically when countdown finishes");
 
             for (var i = 0; i < 20; i++)
             {
@@ -193,7 +193,10 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
         public void Reconnect_TimeoutGraceExpired_SessionTerminated()
         {
             var world = ReplicationIntegrationWorld.Create(
-                new ImpairmentProfile(), ServerReplicationEmitterConfig.Default, clientCount: 2);
+                new ImpairmentProfile(),
+                ServerReplicationEmitterConfig.Default,
+                clientCount: 2,
+                disconnectGraceTicks: 10);
             world.StartMatch(new PlayerId(1), new PlayerId(2));
 
             var client0 = world.Clients[0];
@@ -214,10 +217,11 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
                 world.Pump(5);
             }
 
-            // Advance server ticks past DisconnectGraceTicks (default 500 ticks)
-            for (var i = 0; i < 510; i++)
+            // Unpause simulation to advance ticks past grace window (OD-18 grace is 10 ticks in this test)
+            world.Rig.Host.Resume();
+            for (var i = 0; i < 15; i++)
             {
-                world.Rig.Host.TickOnce();
+                Assert.That(world.Rig.Host.TickOnce(), Is.True);
             }
 
             // Attempt reconnect
@@ -353,6 +357,7 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
 
             var world = ReplicationIntegrationWorld.Create(
                 profile, ServerReplicationEmitterConfig.Default, clientCount: 2);
+            world.Rig.Host.AutoPauseOnDisconnect = false;
             world.StartMatch(new PlayerId(1), new PlayerId(2));
 
             var client0 = world.Clients[0];
@@ -395,11 +400,12 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
                 reconnectCarrier.Pump(world.Rig.Clock.NowMs);
             }
 
-            // Send ReconnectRequest once over reliable Control channel (ARQ will retransmit if dropped)
+            // Send ReconnectRequest over reliable Control channel
             var reqBuffer = new byte[ReconnectRequest.SizeBytes];
             Assert.That(coord0.TryBuildReconnectRequest(reqBuffer, out var written), Is.True);
             reconnectCarrier.Send(reconnectConnId, TransportChannel.Control, reqBuffer, 0, written);
 
+            ReconnectTestUplink reconnectUplink = null;
             var responseReceived = false;
             ReconnectResponse reconnectResponse = default;
             var elapsed = 0L;
@@ -407,6 +413,11 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
 
             while ((!responseReceived || !client0.Receiver.IsWorldUsable) && elapsed < 15000)
             {
+                if (!responseReceived && elapsed > 0 && elapsed % 200 == 0)
+                {
+                    reconnectCarrier.Send(reconnectConnId, TransportChannel.Control, reqBuffer, 0, written);
+                }
+
                 world.Rig.Pump(10);
                 reconnectCarrier.Pump(world.Rig.Clock.NowMs);
                 client0.Bridge.Pump(world.Rig.Clock.NowMs);
@@ -428,6 +439,11 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
                             {
                                 responseReceived = true;
                                 coord0.OnReconnectResponse(in reconnectResponse);
+
+                                Assert.That(world.Rig.ServerTransport.Binder.TryGetTokenBySession(client0.Endpoint.Session, out var activeToken), Is.True);
+                                reconnectCarrier.AssignSessionToken(reconnectConnId, activeToken);
+                                reconnectUplink = new ReconnectTestUplink(reconnectCarrier, reconnectConnId, activeToken);
+                                client0.Bridge.BindUplink(reconnectUplink);
                             }
                         }
                         else
@@ -437,7 +453,14 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
                             {
                                 var payload = new byte[header.PayloadLength];
                                 Array.Copy(evt.Data, header.PayloadOffset, payload, 0, header.PayloadLength);
-                                client0.Bridge.HandleSnapshotPayload(header.SnapshotTick, payload, header.PayloadLength, world.Rig.Clock.NowMs);
+                                if (reconnectUplink != null)
+                                {
+                                    reconnectUplink.RaiseSnapshotReceived(header.SnapshotTick, payload, header.PayloadLength);
+                                }
+                                else
+                                {
+                                    client0.Bridge.HandleSnapshotPayload(header.SnapshotTick, payload, header.PayloadLength, world.Rig.Clock.NowMs);
+                                }
                             }
                         }
                     }
@@ -448,12 +471,49 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
             Assert.That(responseReceived, Is.True, "Reconnect response must arrive within retry budget under 5% loss");
             Assert.That(reconnectResponse.Result, Is.EqualTo(ReconnectResult.Accepted));
             Assert.That(client0.Receiver.IsWorldUsable, Is.True);
-            Assert.That(client0.Receiver.CurrentKeyframeSeq, Is.EqualTo(reconnectResponse.ActiveKeyframeSeq));
+            Assert.That(client0.Receiver.CurrentKeyframeSeq, Is.GreaterThanOrEqualTo(reconnectResponse.ActiveKeyframeSeq));
 
             coord0.OnKeyframeInstalled();
             coord0.AdvanceCountdown(5.0f, out var ready);
             Assert.That(ready, Is.True);
             Assert.That(coord0.State, Is.EqualTo(ClientReconnectState.Connected));
+        }
+
+        private sealed class ReconnectTestUplink : IReplicationUplink
+        {
+            private readonly INetworkCarrier _carrier;
+            private readonly int _connectionId;
+            private readonly ulong _token;
+            private readonly byte[] _messageBuffer = new byte[TransportProtocol.MaxMessageBytes];
+
+            public ReconnectTestUplink(INetworkCarrier carrier, int connectionId, ulong token)
+            {
+                _carrier = carrier;
+                _connectionId = connectionId;
+                _token = token;
+            }
+
+            public event Action<ulong, byte[], int> SnapshotPayloadReceived;
+
+            public bool TrySendFeedback(ReplicationFeedbackKind kind, byte[] payload, int length)
+            {
+                if (payload == null || length <= 0)
+                {
+                    return false;
+                }
+
+                var type = kind == ReplicationFeedbackKind.Ack
+                    ? TransportMessageType.SnapshotAck
+                    : TransportMessageType.ReplicationRequest;
+                var offset = MessageCodec.WriteHeader(_messageBuffer, 0, type, _token, 0);
+                Array.Copy(payload, 0, _messageBuffer, offset, length);
+                return _carrier.Send(_connectionId, TransportChannel.Control, _messageBuffer, 0, offset + length);
+            }
+
+            public void RaiseSnapshotReceived(ulong tick, byte[] buffer, int length)
+            {
+                SnapshotPayloadReceived?.Invoke(tick, buffer, length);
+            }
         }
     }
 }

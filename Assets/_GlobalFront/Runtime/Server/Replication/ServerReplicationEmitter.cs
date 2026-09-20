@@ -303,12 +303,11 @@ namespace GlobalFront.Server.Replication
             public int PendingNextPart;
             public int PacingTokens;
             public ulong LastKeyframeTick;
-
-            /// <summary>Tick the client's stream last carried a state checksum.</summary>
             public ulong LastChecksumTick;
 
-            /// <summary>Preallocated 117 KB staging buffer (3000 units * 39 bytes) for zero-GC keyframe re-attachment (D6 fix).</summary>
-            public byte[] KeyframeStaging = new byte[Math.Max(3000 * DeltaSnapshotProtocol.AddRecordSizeBytes, 117 * 1024)];
+            /// <summary>Preallocated 159,744 bytes (SnapshotCapacity 4096 * 39 bytes) staging buffer for zero-GC keyframe re-attachment (D6 fix).</summary>
+            public const int DefaultKeyframeStagingBytes = 159744;
+            public byte[] KeyframeStaging = new byte[DefaultKeyframeStagingBytes];
         }
 
         public ServerReplicationEmitter(MatchServer server, IReplicationTransport transport)
@@ -359,6 +358,7 @@ namespace GlobalFront.Server.Replication
 
             _transport.SessionAttached += OnSessionAttached;
             _transport.SessionReattached += OnSessionReattached;
+            _transport.PostSessionReattached += OnPostSessionReattached;
             _transport.SessionDetached += OnSessionDetached;
             _transport.FeedbackReceived += OnFeedback;
 
@@ -727,7 +727,7 @@ namespace GlobalFront.Server.Replication
             var stagingBytes = unitCount * DeltaSnapshotProtocol.AddRecordSizeBytes;
             if (client.KeyframeStaging == null || client.KeyframeStaging.Length < stagingBytes)
             {
-                client.KeyframeStaging = new byte[Math.Max(stagingBytes, 64)];
+                client.KeyframeStaging = new byte[Math.Max(stagingBytes, ClientState.DefaultKeyframeStagingBytes)];
             }
 
             var capture = _captures[_captureIndex];
@@ -808,7 +808,7 @@ namespace GlobalFront.Server.Replication
                         count * DeltaSnapshotProtocol.AddRecordSizeBytes);
                 }
 
-                var envelopeTick = (client.KeyframeTick << 8) | (ulong)part;
+                var envelopeTick = (client.KeyframeTick << 8) | (ulong)(uint)part;
                 if (!_transport.SendToSession(client.Session, envelopeTick, _sliceBuffer, sliceSize))
                 {
                     _sendFailureCount++;
@@ -1078,8 +1078,43 @@ namespace GlobalFront.Server.Replication
             client.NeedsKeyframe = false;
             client.KeyframeInFlight = false;
             client.PacingTokens = _effectiveBurstBytes;
-            // D2 fix: NextKeyframeSeq monotonically increases (never resets to 0) and fresh Keyframe is forced
-            QueueKeyframe(client);
+            // D2 fix: NextKeyframeSeq monotonically increases (never resets to 0) and fresh Keyframe is staged
+            StartKeyframe(client, _lastCompletedTick);
+        }
+
+        private void OnPostSessionReattached(SessionId session)
+        {
+            var client = FindClient(session);
+            if (client != null && client.KeyframeInFlight)
+            {
+                PumpKeyframeSlices(client);
+            }
+        }
+
+        /// <summary>
+        /// Pumps in-flight keyframe slices for active clients during tactical pause (OD-18 / P0-3).
+        /// Refills pacing tokens and transmits slices while simulation ticks are halted.
+        /// </summary>
+        public void PumpPausedSlices()
+        {
+            for (var index = 0; index < _clients.Length; index++)
+            {
+                var client = _clients[index];
+                if (client != null && client.Active)
+                {
+                    if (!client.KeyframeInFlight && client.NeedsKeyframe)
+                    {
+                        StartKeyframe(client, _lastCompletedTick);
+                    }
+
+                    if (client.KeyframeInFlight)
+                    {
+                        client.PacingTokens = Math.Min(
+                            _effectiveBurstBytes, client.PacingTokens + _config.PacingRefillBytesPerTick);
+                        PumpKeyframeSlices(client);
+                    }
+                }
+            }
         }
 
         private ClientState FindClient(SessionId session)

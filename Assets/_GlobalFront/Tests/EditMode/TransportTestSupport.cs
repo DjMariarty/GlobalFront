@@ -46,16 +46,24 @@ namespace GlobalFront.Tests.EditMode
                 Pipe.Advance(milliseconds);
                 Clock.Advance(milliseconds);
                 ServerTransport.Pump(Clock.NowMs);
+                if (Host != null && Host.IsPaused)
+                {
+                    Host.PumpPausedSlices();
+                }
             }
         }
 
-        public static Rig CreateRig(ImpairmentProfile profile, int capacity = 2, bool autoJoin = true)
+        public static Rig CreateRig(
+            ImpairmentProfile profile,
+            int capacity = 2,
+            bool autoJoin = true,
+            int disconnectGraceTicks = LocalMatchHost.DefaultDisconnectGraceTicks)
         {
             var rig = new Rig
             {
                 Pipe = new VirtualNetworkPipe(profile),
                 Clock = new VirtualTransportClock(),
-                Host = new LocalMatchHost()
+                Host = new LocalMatchHost(disconnectGraceTicks)
             };
 
             var serverAddress = rig.Pipe.CreateEndpoint();

@@ -10,7 +10,7 @@
 
 **Phase 2.8 — Network Prototype Playtest (2v2)**
 
-Phase 2.7 Reconnect & Resync — **COMPLETE** (Steps 2.7.1–2.7.4: Core Wire Codecs, Server Session Re-attachment, Client Reconnect Coordinator & FSM, End-to-End Integration with Tactical Pause and 5% Packet Loss Stress Tests). 641/641 EditMode тестов green, 6/6 PlayMode тестов green. Zero-GC на путях переподключения, тактическая пауза (OD-18..OD-22) и 5-секундный countdown таймер (OD-20) полностью верифицированы.
+Phase 2.7 Reconnect & Resync — **COMPLETE & REVIEW GATE PASSED** (Steps 2.7.1–2.7.4 + Review Gate defects P0-1..P0-3, P1-1, D4, D6 resolved: Core Wire Codecs, Server Session Re-attachment, Client Reconnect Coordinator & FSM, End-to-End Integration with Tactical Pause and 5% Packet Loss Stress Tests). 641/641 EditMode тестов green, 6/6 PlayMode тестов green. Zero-GC на путях переподключения, тактическая пауза (OD-18..OD-22), окно 200с / 4000 тиков (OD-18) и 5-секундный countdown таймер (OD-20) полностью верифицированы.
 
 ## Last Commit
 
@@ -18,8 +18,8 @@ Phase 2.7 Reconnect & Resync — **COMPLETE** (Steps 2.7.1–2.7.4: Core Wire Co
 
 ## Tests
 
-- EditMode: **641/641 passed** (`Artifacts/TestResults/EditMode-step274.xml`, 2026-09-20; 599 baseline + 42 новых теста Phase 2.7; Zero-GC hot path реконнекта и репликации валидирован)
-- PlayMode: **6/6 passed** (`Artifacts/TestResults/PlayMode-step274.xml`, 2026-09-20)
+- EditMode: **641/641 passed** (`Artifacts/TestResults/EditMode-reviewgate.xml`, 2026-09-20; 599 baseline + 42 новых теста Phase 2.7; Zero-GC hot path реконнекта и репликации валидирован)
+- PlayMode: **6/6 passed** (`Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20)
 - Unity: `6000.5.6f1`
 
 ## Completed Milestones

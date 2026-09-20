@@ -40,10 +40,9 @@ namespace GlobalFront.Client
     {
         /// <summary>
         /// Default disconnect grace for session-managed matches, in server
-        /// ticks (5 seconds at the 20 Hz contract). The concrete production
-        /// grace duration remains an Owner Decision (Phase 2.4, OD-2).
+        /// ticks (200 seconds at the 20 Hz contract, Phase 2.7 / OD-18).
         /// </summary>
-        public const int DefaultDisconnectGraceTicks = 100;
+        public const int DefaultDisconnectGraceTicks = 4000;
 
         private readonly MatchServer _server;
         private readonly TickDriver _tickDriver;
@@ -78,6 +77,14 @@ namespace GlobalFront.Client
         }
 
         /// <summary>
+        /// Creates a host with a fresh empty server and an explicit disconnect grace window in ticks.
+        /// </summary>
+        public LocalMatchHost(int disconnectGraceTicks)
+            : this(new MatchServer(), new TickDriver(), disconnectGraceTicks)
+        {
+        }
+
+        /// <summary>
         /// Creates a host with a fresh empty server and a driver for the
         /// canonical 20 Hz contract. The tick driver starts in manual mode.
         /// </summary>
@@ -91,6 +98,13 @@ namespace GlobalFront.Client
             _tickDriver = tickDriver ?? throw new ArgumentNullException(nameof(tickDriver));
             _sessions = new SessionManager(disconnectGraceTicks);
             _tickDriver.TickDue += OnDriverTickDue;
+            _sessions.SessionDisconnected += (session, tick) =>
+            {
+                if (AutoPauseOnDisconnect)
+                {
+                    Pause();
+                }
+            };
         }
 
         /// <summary>
@@ -165,9 +179,17 @@ namespace GlobalFront.Client
         /// (<see cref="TickStarting"/> → server tick →
         /// <see cref="TickCompleted"/>). Returns the number of ticks
         /// executed; returns 0 when the driver is in manual mode.
+        /// When tactical pause is active, pumps in-flight keyframe slices (OD-18 / P0-3).
         /// </summary>
-        public int AdvanceRealTime(double elapsedSeconds) =>
-            _tickDriver.AdvanceRealTime(elapsedSeconds);
+        public int AdvanceRealTime(double elapsedSeconds)
+        {
+            if (IsPaused)
+            {
+                PumpPausedSlices();
+            }
+
+            return _tickDriver.AdvanceRealTime(elapsedSeconds);
+        }
 
         /// <summary>
         /// True when tick calculation is suspended for tactical pause (Phase 2.7, OD-18).
@@ -182,9 +204,45 @@ namespace GlobalFront.Client
 
         /// <summary>
         /// When true, the host automatically halts tick scheduling via <see cref="Pause"/>
-        /// whenever an active session disconnects.
+        /// whenever an active session disconnects. Defaults to true (OD-18 / P0-1).
         /// </summary>
-        public bool AutoPauseOnDisconnect { get; set; } = false;
+        public bool AutoPauseOnDisconnect { get; set; } = true;
+
+        /// <summary>
+        /// Pumps keyframe slices for reconnecting clients during tactical pause (OD-18 / P0-3).
+        /// </summary>
+        public void PumpPausedSlices()
+        {
+            if (IsPaused && Replication != null)
+            {
+                Replication.PumpPausedSlices();
+            }
+        }
+
+        /// <summary>
+        /// Binds the client reconnect coordinator so simulation automatically unpauses
+        /// when the 5-second countdown finishes (OD-20 / P1-1).
+        /// </summary>
+        public void BindReconnectCoordinator(ClientReconnectCoordinator coordinator)
+        {
+            if (coordinator == null)
+            {
+                throw new ArgumentNullException(nameof(coordinator));
+            }
+
+            coordinator.ReadyToResume += Resume;
+        }
+
+        /// <summary>
+        /// Handles player disconnection notice, halting ticks if <see cref="AutoPauseOnDisconnect"/> is enabled (OD-18).
+        /// </summary>
+        public void OnPlayerDisconnected(SessionId session)
+        {
+            if (AutoPauseOnDisconnect)
+            {
+                Pause();
+            }
+        }
 
         /// <summary>
         /// Initializes the match from a <see cref="MatchConfig"/>, delegating
@@ -246,6 +304,13 @@ namespace GlobalFront.Client
             var emitter = new ServerReplicationEmitter(_server, transport, config);
             Replication = emitter;
             TickCompleted += emitter.OnTickCompleted;
+            transport.SessionDetached += (session, reason) =>
+            {
+                if (AutoPauseOnDisconnect)
+                {
+                    Pause();
+                }
+            };
             return emitter;
         }
 

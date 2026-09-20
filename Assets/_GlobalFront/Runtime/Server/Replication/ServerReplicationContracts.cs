@@ -57,6 +57,9 @@ namespace GlobalFront.Server.Replication
         /// <summary>Raised when a session successfully re-attaches (Phase 2.7, ADR-011).</summary>
         event Action<SessionId, MatchId, PlayerId> SessionReattached;
 
+        /// <summary>Raised after ReconnectResponse has been sent to client (Phase 2.7, ADR-011).</summary>
+        event Action<SessionId> PostSessionReattached;
+
         /// <summary>Raised when a session is lost or closed.</summary>
         event Action<SessionId, TransportDisconnectReason> SessionDetached;
 
@@ -82,6 +85,7 @@ namespace GlobalFront.Server.Replication
             _host = host ?? throw new ArgumentNullException(nameof(host));
             _host.SessionAttached += OnSessionAttached;
             _host.SessionReattached += OnSessionReattached;
+            _host.PostSessionReattached += OnPostSessionReattached;
             _host.SessionDetached += OnSessionDetached;
             _host.ReplicationFeedbackReceived += OnFeedback;
         }
@@ -92,6 +96,8 @@ namespace GlobalFront.Server.Replication
         public event Action<SessionId, MatchId, PlayerId> SessionAttached;
 
         public event Action<SessionId, MatchId, PlayerId> SessionReattached;
+
+        public event Action<SessionId> PostSessionReattached;
 
         public event Action<SessionId, TransportDisconnectReason> SessionDetached;
 
@@ -108,6 +114,9 @@ namespace GlobalFront.Server.Replication
 
         private void OnSessionReattached(SessionId session, MatchId match, PlayerId player) =>
             SessionReattached?.Invoke(session, match, player);
+
+        private void OnPostSessionReattached(SessionId session) =>
+            PostSessionReattached?.Invoke(session);
 
         private void OnSessionDetached(SessionId session, TransportDisconnectReason reason) =>
             SessionDetached?.Invoke(session, reason);

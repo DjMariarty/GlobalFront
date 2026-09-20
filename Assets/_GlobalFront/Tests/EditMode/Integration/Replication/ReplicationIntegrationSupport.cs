@@ -76,11 +76,12 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
         public static ReplicationIntegrationWorld Create(
             ImpairmentProfile profile,
             ServerReplicationEmitterConfig emitterConfig,
-            int clientCount = 1)
+            int clientCount = 1,
+            int disconnectGraceTicks = LocalMatchHost.DefaultDisconnectGraceTicks)
         {
             var world = new ReplicationIntegrationWorld
             {
-                Rig = TransportTestSupport.CreateRig(profile),
+                Rig = TransportTestSupport.CreateRig(profile, disconnectGraceTicks: disconnectGraceTicks),
                 Profile = profile
             };
 
@@ -362,6 +363,8 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
         public event Action<SessionId, MatchId, PlayerId> SessionAttached;
 
         public event Action<SessionId, MatchId, PlayerId> SessionReattached;
+
+        public event Action<SessionId> PostSessionReattached;
 
         public event Action<SessionId, TransportDisconnectReason> SessionDetached;
 
