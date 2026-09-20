@@ -1,10 +1,10 @@
 # Статус проекта GlobalFront
 
-> Фактический технический статус • обновлено 2026-09-07
+> Фактический технический статус • обновлено 2026-09-20
 
 ## Summary
- 
-GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 1 и Phase 2.1–2.7 завершены. Phase 2.7 Reconnect & Resync — **COMPLETE & REVIEW GATE PASSED**: Шаги 2.7.1 (Core Wire Codecs), 2.7.2 (Server Session Re-attachment & D1-D6), 2.7.3 (Client Reconnect Coordinator & FSM), 2.7.4 (End-to-End Integration, Tactical Pause OD-18..OD-22, 5% Loss Stress) и закрытие дефектов Review Gate (P0-1..P0-3, P1-1, D4, D6) — **COMPLETE**. Проверка: **641/641 EditMode passed** (`Artifacts/TestResults/EditMode-reviewgate.xml`, 2026-09-20) и **6/6 PlayMode passed** (`Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20). Текущая задача / Next Phase — **Phase 2.8 (Network Prototype Playtest 2v2)**.
+
+GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`; отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Проверка: **661/661 EditMode passed (100%)** и **6/6 PlayMode passed (100%)**, консоль Unity: 0 ошибок, 0 предупреждений. Текущая задача / Next Phase — **Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]**.
  
 ## Confirmed Baseline
  
@@ -20,18 +20,24 @@ GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 
 | Snapshots | Delta Snapshot Core/Server/Client слои Шагов 2.6.1–2.6.4 и Reconnect 2.7.1–2.7.4 завершены, rate-pacing/keyframe slicing/end-to-end integration и loss stress (1–5% loss) верифицированы; независимый аудит Phase 2.6 = APPROVE (zero P0/P1 blockers) |
 | Presentation | выбор, движение, атака, камера, HUD, runtime prototype world |
 | Scene | одна включённая `Assets/Scenes/SampleScene.unity` |
-| Tests | **641/641 EditMode passed** (`Artifacts/TestResults/EditMode-reviewgate.xml`, 2026-09-20); **6/6 PlayMode passed** (`Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20) |
+| Tests | **661/661 EditMode passed (100%)**; **6/6 PlayMode passed (100%)** (Grand Audit baseline `a37f53d`; prior gates: `Artifacts/TestResults/EditMode-reviewgate.xml`, `Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20) |
+
+## Phase 1.0 – 2.8 Status — [100% COMPLETED / AUDITED]
+
+- Phase 1.x (RTS Foundation / Prototype) — **[100% COMPLETED / AUDITED]** (включена в Grand Audit `a37f53d`, [APPROVED: ZERO DEFECTS]).
+
+## Phase 2 Status — [100% COMPLETED / AUDITED]
  
-## Phase 2 Status
- 
-- 2.1 Server-Owned Match State — COMPLETE
-- 2.2 Command Channel — COMPLETE
-- 2.3 Server Tick Driver — COMPLETE, `ea0435d` (ADR-007)
-- 2.4 Session / Player Identity — COMPLETE, `73d1276` (ADR-008); lifecycle завершается на `MatchPhase.Finished`, `Closed` зарезервирован для будущего server lifecycle/teardown
-- 2.5 Network Transport — COMPLETE, `feat: implement network transport (Phase 2.5)` (ADR-009, OD-1 = LiteNetLib 1.3.5 за контрактом `INetworkCarrier`; финальный независимый review = APPROVE, P0=0/P1=0/P2=0)
-- 2.6 Snapshot Networking — APPROVED (Independent adversarial audit passed with zero P0/P1 blockers; ADR-010; Шаги 2.6.1–2.6.4 complete; 599/599 EditMode, 6/6 PlayMode)
-- 2.7 Reconnect / Resync — COMPLETE (Steps 2.7.1–2.7.4 complete; 641/641 EditMode, 6/6 PlayMode; Zero-GC, tactical pause OD-18..OD-22, 5s countdown OD-20)
-- 2.8 Network Prototype Playtest (2v2) — COMPLETE (Steps 2.8.1–2.8.3 complete; 655/655 EditMode, 6/6 PlayMode; 2v2 topology, command ownership, HUD + tactical pause overlay, abandonment unpause P2-1/P2-2)
+- 2.1 Server-Owned Match State — [100% COMPLETED / AUDITED]
+- 2.2 Command Channel — [100% COMPLETED / AUDITED]
+- 2.3 Server Tick Driver — [100% COMPLETED / AUDITED], `ea0435d` (ADR-007)
+- 2.4 Session / Player Identity — [100% COMPLETED / AUDITED], `73d1276` (ADR-008); lifecycle завершается на `MatchPhase.Finished`, `Closed` зарезервирован для будущего server lifecycle/teardown
+- 2.5 Network Transport — [100% COMPLETED / AUDITED], `feat: implement network transport (Phase 2.5)` (ADR-009, OD-1 = LiteNetLib 1.3.5 за контрактом `INetworkCarrier`; финальный независимый review = APPROVE, P0=0/P1=0/P2=0)
+- 2.6 Snapshot Networking — [100% COMPLETED / AUDITED] (Independent adversarial audit passed with zero P0/P1 blockers; ADR-010; Шаги 2.6.1–2.6.4 complete; 599/599 EditMode, 6/6 PlayMode)
+- 2.7 Reconnect / Resync — [100% COMPLETED / AUDITED] (Steps 2.7.1–2.7.4 complete; 641/641 EditMode, 6/6 PlayMode; Zero-GC, tactical pause OD-18..OD-22, 5s countdown OD-20; Review Gate APPROVED)
+- 2.8 Network Prototype Playtest (2v2) — [100% COMPLETED / AUDITED] (Steps 2.8.1–2.8.3 complete; 655/655 EditMode baseline → 661/661 на `a37f53d` после F-01/F-02; 6/6 PlayMode; 2v2 topology, command ownership, HUD + tactical pause overlay, abandonment unpause P2-1/P2-2)
+
+## Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]
 
 ## Product Scope vs Implementation
 

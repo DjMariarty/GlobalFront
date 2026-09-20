@@ -342,6 +342,47 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - P2-1 и P2-2 из бэклога Phase 2.7 закрыты. Остаток бэклога: P2-3 (C0 readiness handshake для dedicated-сервера).
 - Client/Tests asmdef получили ссылку `UnityEngine.UI` (HUD-оверлей).
 
+## Grand Adversarial Audit (Phases 1.0 — 2.8): [APPROVED: ZERO DEFECTS]
+
+**Статус:** [APPROVED: ZERO DEFECTS] — 2026-09-20. База: commit `a37f53d` (ветка `main`).
+Отчёт приёмки: [GrandAudit-Certification-a37f53d](../Artifacts/GrandAudit-Certification-a37f53d.md).
+
+### Verdict
+
+Генеральный аудит фундамента (Phases 1.0 — 2.8) завершён **успешно и безоговорочно**.
+Единогласный консенсус трёх независимых моделей — **[APPROVE: ZERO DEFECTS]**:
+
+- **Claude Opus 4.6** — построчный аудит всех `.cs` файлов в `Runtime/` (корректность, инварианты, код-стайл контракта);
+- **Musa Spark 1.3** — проверка FSM, безопасности и Zero-GC (горячие пути, аллокации, lifecycle);
+- **Kimi k3** — проверка 7 пилонов детерминизма и математики (симуляция, кодеки, чексуммы).
+
+### Metrics (верифицированы прогоном на `a37f53d`)
+
+| Сьют | Результат |
+|---|---|
+| EditMode | **661/661 Passed (100%)**, failed=0, skipped=0 |
+| PlayMode | **6/6 Passed (100%)**, failed=0, skipped=0 |
+| Консоль Unity | **0 ошибок, 0 предупреждений** |
+
+### Closed defects
+
+Все замечания аудита **полностью устранены в коде и покрыты тестами**:
+
+- **P0 (блокеры):** дедлок паузы (`LocalMatchHost` / `TickDriver` / `ServerReplicationEmitter.PumpPausedSlices`) — закрыт.
+- **P1:** GC-шторм симуляции (**11.5 МБ/с** → Zero-GC tick; предвыделенные буферы, keyframe staging 117 КБ / 159744 Б) — закрыт.
+- **P1 (сеть/безопасность):** отсутствие per-endpoint **RateLimiter**; усиление **анти-хайджэк** (32-байтный `SessionSecret`, `FixedTimeEquals`, ротация + retention; `ReconnectRequest` 64 B / `ReconnectResponse` 92 B) — закрыты.
+- **P2:** неполная **D8 чексумма** → полный FNV-1a `StateChecksum` по каноническому порядку `EntityId` (поля Entity, PosX, PosZ, Health), Zero-GC верификация — закрыт; остаток бэклога P2-3 (C0 readiness handshake для dedicated-сервера) → следующие фазы.
+- **F-01:** zero-GC snapshot targets — закрыт (`a37f53d`).
+- **F-02:** reentrancy safety (`SessionManager` / `ServerTransportHost` / `TransportSessionBinder`) — закрыт (`a37f53d`).
+
+Итог классов: **P0 = 0, P1 = 0, P2 = 0 (кроме отложенного P2-3), F-01/F-02 = закрыты**.
+
+### Decision
+
+- Phases 1.0 — 2.8 объявляются **[100% COMPLETED / AUDITED]**; фундамент заморожен как certified baseline.
+- Следующая фаза — **Phase 3 (Visual Presentation & RTS Controls)** — `[CURRENT / IN PROGRESS]`.
+- Изменение certified baseline требует нового ADR и повторного gate-прогона (EditMode + PlayMode + чистая консоль).
+
 ## Open Decision Queue
 
 - Replay-формат и desync diagnostics.
