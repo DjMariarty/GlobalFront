@@ -24,6 +24,7 @@ namespace GlobalFront.Client
             root.AddComponent<PrototypeWorldBootstrap>();
             root.AddComponent<PrototypeRtsController>();
             root.AddComponent<PrototypeHud>();
+            root.AddComponent<RtsInputManager>();
 
             var mainCamera = Camera.main != null
                 ? Camera.main
