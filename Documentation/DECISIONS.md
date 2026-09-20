@@ -275,7 +275,7 @@ Phase 2 создаёт networking foundation; Phase 4 интегрирует е�
 
 ## ADR-011: Reconnect & Resync Architecture (Phase 2.7)
 
-**Статус:** Accepted, 2026-09-19 (OD-18…OD-22 утверждены владельцем; Generals-Style Tactical Pause 200.0s, сохранение очереди команд, resync застывшего мира с 5с отсчётом, 32-байтный SessionSecret anti-hijacking с валидацией FixedTimeEquals, закрытие дефектов baseline D1–D6). Основание: [Phase 2.7 Reconnect & Resync R&D, Rev. 2](Research/Phase_02_07_Reconnect_Resync_RND.md).
+**Статус:** [ACCEPTED / APPROVED] — Accepted 2026-09-19 (OD-18…OD-22 утверждены владельцем; Generals-Style Tactical Pause 200.0s, сохранение очереди команд, resync застывшего мира с 5с отсчётом, 32-байтный SessionSecret anti-hijacking с валидацией FixedTimeEquals, закрытие дефектов baseline D1–D6); Review Gate 2026-09-20 — **[APPROVED]** (641/641 EditMode, 6/6 PlayMode; дефекты P0-1..P0-3, P1-1, D4, D6 закрыты). Основание: [Phase 2.7 Reconnect & Resync R&D, Rev. 2](Research/Phase_02_07_Reconnect_Resync_RND.md). Приёмка: [Phase 2.7 Review Gate](../Artifacts/Phase27-ReviewGate-c7d68c2.md).
 
 ### Context
 
