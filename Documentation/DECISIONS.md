@@ -325,6 +325,23 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - Персистентность сессий между рестартами сервера (reconnect после restart) — вне scope; требует отдельного ADR о снапшот-рестор состояния.
 - Включение pinned retry для экономических команд (Build/Produce) — Phase 3+, вместе с экономикой.
 
+## Phase 2.8: Network Prototype Playtest 2v2
+
+**Статус:** [COMPLETED] — 2026-09-20. Шаги 2.8.1 (сессии 2v2, Command Ownership, abandonment unpause P2-1/P2-2), 2.8.2 (сетевой HUD и оверлей тактической паузы), 2.8.3 (сквозной плейтест 2v2, `Match2v2Fixture`, 3 сценария) — COMPLETE. Проверка: **655/655 EditMode passed** (641 baseline + 14 новых), **6/6 PlayMode passed**, консоль Unity: 0 ошибок, 0 предупреждений. Отчёт: [Phase 2.8 Completion Summary](../Artifacts/Phase28-Completion-Summary.md).
+
+### Decision
+
+- **2v2 Topology:** `MatchTopology2v2` (Core) — 4 слота, Team 0 Red (Players 1–2) / Team 1 Blue (Players 3–4); новый `TeamId` (`Identifiers.cs`).
+- **Command Ownership:** `PrototypeCommandQueue` (Move/Attack/Stop) отвергает приказы на чужие юниты (`unit.Owner != _localPlayer`).
+- **Abandonment unpause (P2-1 / P2-2):** `SessionManager.SessionGraceExpired` + `HasDisconnectedSessionsInGrace`; `LocalMatchHost` автоматически снимает паузу, когда в grace не остаётся отключённых сессий; `SessionManager.SessionDisconnected` — единый каноничный источник паузы (`OnPlayerDisconnected` deprecated).
+- **HUD:** `NetworkMatchHudState` (4 слота, `SlotStatus`, grace-таймер 200с, countdown 5..1), `NetworkHudPresenter` (event-driven, Zero-GC steady state), `TacticalPauseOverlay` (`MonoBehaviour`, headless/null-safe).
+- **Playtest:** `Match2v2Fixture` — (1) одновременный бой с побитовым детерминизмом чексумм, (2) дисконнект союзника в бою с реконнектом и продолжением боя, (3) выход игрока с переходом в 2v1.
+
+### Consequences
+
+- P2-1 и P2-2 из бэклога Phase 2.7 закрыты. Остаток бэклога: P2-3 (C0 readiness handshake для dedicated-сервера).
+- Client/Tests asmdef получили ссылку `UnityEngine.UI` (HUD-оверлей).
+
 ## Open Decision Queue
 
 - Replay-формат и desync diagnostics.

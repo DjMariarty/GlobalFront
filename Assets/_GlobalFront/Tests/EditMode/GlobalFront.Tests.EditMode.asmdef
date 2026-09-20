@@ -6,7 +6,8 @@
         "UnityEditor.TestRunner",
         "GlobalFront.Core",
         "GlobalFront.Server",
-        "GlobalFront.Client"
+        "GlobalFront.Client",
+        "UnityEngine.UI"
     ],
     "includePlatforms": [
         "Editor"

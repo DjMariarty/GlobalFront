@@ -81,7 +81,7 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
         {
             var world = new ReplicationIntegrationWorld
             {
-                Rig = TransportTestSupport.CreateRig(profile, disconnectGraceTicks: disconnectGraceTicks),
+                Rig = TransportTestSupport.CreateRig(profile, capacity: Math.Max(2, clientCount), disconnectGraceTicks: disconnectGraceTicks),
                 Profile = profile
             };
 

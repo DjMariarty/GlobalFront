@@ -55,6 +55,9 @@ namespace GlobalFront.Client
         /// dedicated host may manage several.
         /// </summary>
         private MatchId _activeSessionMatch;
+        private double _pausedSecondsAccumulator;
+        private ulong _pausedGraceTicks;
+        private bool _isAdvancingRealTime;
 
         /// <summary>
         /// Creates a host around an externally-constructed server. Intended
@@ -105,6 +108,7 @@ namespace GlobalFront.Client
                     Pause();
                 }
             };
+            _sessions.SessionGraceExpired += OnSessionGraceExpired;
         }
 
         /// <summary>
@@ -122,6 +126,26 @@ namespace GlobalFront.Client
         /// <see cref="AttachReplication"/> streams its deltas from here.
         /// </summary>
         public event Action<ulong> TickCompleted;
+
+        /// <summary>
+        /// Raised when tactical pause is activated (Phase 2.8, Step 2.8.2).
+        /// </summary>
+        public event Action Paused;
+
+        /// <summary>
+        /// Raised when simulation resumes from tactical pause (Phase 2.8, Step 2.8.2).
+        /// </summary>
+        public event Action Resumed;
+
+        /// <summary>
+        /// Raised when real-time advances while the host is running or paused.
+        /// </summary>
+        public event Action<double> RealTimeAdvanced;
+
+        /// <summary>
+        /// Raised when pause ticks advance directly outside of AdvanceRealTime.
+        /// </summary>
+        public event Action<ulong> PauseTicksAdvanced;
 
         /// <summary>Underlying authoritative server, exposed for diagnostics.</summary>
         public MatchServer Server => _server;
@@ -186,9 +210,39 @@ namespace GlobalFront.Client
             if (IsPaused)
             {
                 PumpPausedSlices();
+
+                _pausedSecondsAccumulator += elapsedSeconds;
+                _isAdvancingRealTime = true;
+                try
+                {
+                    while (_pausedSecondsAccumulator >= _tickDriver.TickDurationSeconds)
+                    {
+                        _pausedSecondsAccumulator -= _tickDriver.TickDurationSeconds;
+                        AdvancePauseTicks(1);
+                    }
+                }
+                finally
+                {
+                    _isAdvancingRealTime = false;
+                }
             }
 
-            return _tickDriver.AdvanceRealTime(elapsedSeconds);
+            var executed = _tickDriver.AdvanceRealTime(elapsedSeconds);
+            RealTimeAdvanced?.Invoke(elapsedSeconds);
+            return executed;
+        }
+
+        /// <summary>
+        /// Advances elapsed grace ticks during tactical pause, pumping session grace expiry (Phase 2.8, P2-1).
+        /// </summary>
+        public void AdvancePauseTicks(ulong ticks = 1)
+        {
+            _pausedGraceTicks += ticks;
+            _sessions.OnTickCompleted(_server.CurrentTick + _pausedGraceTicks);
+            if (!_isAdvancingRealTime)
+            {
+                PauseTicksAdvanced?.Invoke(ticks);
+            }
         }
 
         /// <summary>
@@ -197,10 +251,20 @@ namespace GlobalFront.Client
         public bool IsPaused => _tickDriver.IsPaused;
 
         /// <summary>Halts tick calculation for tactical pause (OD-18).</summary>
-        public void Pause() => _tickDriver.Pause();
+        public void Pause()
+        {
+            _tickDriver.Pause();
+            Paused?.Invoke();
+        }
 
-        /// <summary>Resumes tick calculation after tactical pause (OD-18/OD-20).</summary>
-        public void Resume() => _tickDriver.Resume();
+        /// <summary>Resumes tick calculation after tactical pause (OD-18/OD-20/P2-1).</summary>
+        public void Resume()
+        {
+            _pausedSecondsAccumulator = 0;
+            _pausedGraceTicks = 0;
+            _tickDriver.Resume();
+            Resumed?.Invoke();
+        }
 
         /// <summary>
         /// When true, the host automatically halts tick scheduling via <see cref="Pause"/>
@@ -235,12 +299,22 @@ namespace GlobalFront.Client
 
         /// <summary>
         /// Handles player disconnection notice, halting ticks if <see cref="AutoPauseOnDisconnect"/> is enabled (OD-18).
+        /// Deprecated under P2-2: <see cref="SessionManager.SessionDisconnected"/> is the single canonical pause source.
         /// </summary>
+        [Obsolete("Deprecated under P2-2. SessionManager.SessionDisconnected is the single canonical pause source.", false)]
         public void OnPlayerDisconnected(SessionId session)
         {
             if (AutoPauseOnDisconnect)
             {
                 Pause();
+            }
+        }
+
+        private void OnSessionGraceExpired(SessionId session)
+        {
+            if (!_sessions.HasDisconnectedSessionsInGrace(_activeSessionMatch))
+            {
+                Resume();
             }
         }
 

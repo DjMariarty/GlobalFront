@@ -52,6 +52,34 @@ namespace GlobalFront.Core.Model
     }
 
     /// <summary>
+    /// Identifies a team in multiplayer matches (Phase 2.8).
+    /// Team 0 = Red, Team 1 = Blue in 2v2 topology.
+    /// </summary>
+    public readonly struct TeamId : IEquatable<TeamId>
+    {
+        public TeamId(byte value)
+        {
+            Value = value;
+        }
+
+        public byte Value { get; }
+
+        public bool IsValid => Value <= 1;
+
+        public bool Equals(TeamId other) => Value == other.Value;
+
+        public override bool Equals(object obj) => obj is TeamId other && Equals(other);
+
+        public override int GetHashCode() => Value.GetHashCode();
+
+        public override string ToString() => $"Team{Value}";
+
+        public static bool operator ==(TeamId left, TeamId right) => left.Equals(right);
+
+        public static bool operator !=(TeamId left, TeamId right) => !left.Equals(right);
+    }
+
+    /// <summary>
     /// Opaque server-assigned identity of one client attachment (Phase 2.4,
     /// ADR-008). Guid-backed so the value carries entropy: until
     /// authentication exists, the SessionId is also the reconnect identity

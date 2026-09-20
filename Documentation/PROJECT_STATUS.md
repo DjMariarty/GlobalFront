@@ -31,7 +31,7 @@ GlobalFront находится в **Phase 2 — Multiplayer Foundation**. Phase 
 - 2.5 Network Transport — COMPLETE, `feat: implement network transport (Phase 2.5)` (ADR-009, OD-1 = LiteNetLib 1.3.5 за контрактом `INetworkCarrier`; финальный независимый review = APPROVE, P0=0/P1=0/P2=0)
 - 2.6 Snapshot Networking — APPROVED (Independent adversarial audit passed with zero P0/P1 blockers; ADR-010; Шаги 2.6.1–2.6.4 complete; 599/599 EditMode, 6/6 PlayMode)
 - 2.7 Reconnect / Resync — COMPLETE (Steps 2.7.1–2.7.4 complete; 641/641 EditMode, 6/6 PlayMode; Zero-GC, tactical pause OD-18..OD-22, 5s countdown OD-20)
-- 2.8 Network Prototype Playtest (2v2) — NEXT (planned)
+- 2.8 Network Prototype Playtest (2v2) — COMPLETE (Steps 2.8.1–2.8.3 complete; 655/655 EditMode, 6/6 PlayMode; 2v2 topology, command ownership, HUD + tactical pause overlay, abandonment unpause P2-1/P2-2)
 
 ## Product Scope vs Implementation
 

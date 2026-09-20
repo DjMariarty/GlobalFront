@@ -93,6 +93,11 @@ namespace GlobalFront.Server.Sessions
         public event Action<SessionId, ulong> SessionDisconnected;
 
         /// <summary>
+        /// Raised when a disconnected session's grace window has fully elapsed and transitions to Abandoned / Closed (Phase 2.8, P2-1).
+        /// </summary>
+        public event Action<SessionId> SessionGraceExpired;
+
+        /// <summary>
         /// Creates a manager with the default 200-second grace window (4000 ticks at 20 Hz, OD-18).
         /// </summary>
         public SessionManager() : this(DefaultDisconnectGraceTicks)
@@ -671,6 +676,8 @@ namespace GlobalFront.Server.Sessions
                 {
                     slot.State = PlayerConnectionState.Abandoned;
                 }
+
+                SessionGraceExpired?.Invoke(record.Id);
             }
         }
 
@@ -751,6 +758,28 @@ namespace GlobalFront.Server.Sessions
             }
 
             count = 0;
+            return false;
+        }
+
+        /// <summary>
+        /// Returns true if there are any sessions in Disconnected state (within grace window).
+        /// If a match is specified, only checks sessions bound to that match.
+        /// Zero-GC allocation.
+        /// </summary>
+        public bool HasDisconnectedSessionsInGrace(MatchId match = default)
+        {
+            foreach (var pair in _sessions)
+            {
+                var record = pair.Value;
+                if (record.State == SessionState.Disconnected)
+                {
+                    if (!match.IsValid || record.Match == match)
+                    {
+                        return true;
+                    }
+                }
+            }
+
             return false;
         }
 

@@ -4,7 +4,8 @@
   "references": [
     "GlobalFront.Core",
     "GlobalFront.Server",
-    "Unity.InputSystem"
+    "Unity.InputSystem",
+    "UnityEngine.UI"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

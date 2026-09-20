@@ -27,7 +27,10 @@ namespace GlobalFront.Server.Sessions
         Attached = Connected,
 
         /// <summary>Alias for Disconnected under ADR-011 re-attachment terminology.</summary>
-        Detached = Disconnected
+        Detached = Disconnected,
+
+        /// <summary>Alias for Closed when grace expires or session is abandoned (Phase 2.8, P2-1).</summary>
+        Abandoned = Closed
     }
 
     /// <summary>Lifecycle phase of one session-managed match (Phase 2.4, ADR-008).</summary>

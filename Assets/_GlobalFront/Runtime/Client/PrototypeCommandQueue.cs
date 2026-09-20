@@ -122,6 +122,12 @@ namespace GlobalFront.Client
             {
                 if (_registry.TryGetUnit(selectedEntities[index], out var unit))
                 {
+                    if (unit.Owner != _localPlayer)
+                    {
+                        LastCommandMessage = "Move rejected: not entity owner";
+                        return;
+                    }
+
                     centerX += unit.CurrentPosition.X;
                     centerZ += unit.CurrentPosition.Z;
                 }
@@ -172,6 +178,18 @@ namespace GlobalFront.Client
                 return;
             }
 
+            for (var index = 0; index < selectedEntities.Length; index++)
+            {
+                if (_registry.TryGetUnit(selectedEntities[index], out var attackerUnit))
+                {
+                    if (attackerUnit.Owner != _localPlayer)
+                    {
+                        LastCommandMessage = "Attack rejected: not entity owner";
+                        return;
+                    }
+                }
+            }
+
             if (_registry.TryGetUnit(target, out var targetUnit) &&
                 targetUnit.IsAlive &&
                 targetUnit.Owner == _localPlayer)
@@ -216,6 +234,18 @@ namespace GlobalFront.Client
             {
                 LastCommandMessage = "Stop rejected: empty selection";
                 return;
+            }
+
+            for (var index = 0; index < selectedEntities.Length; index++)
+            {
+                if (_registry.TryGetUnit(selectedEntities[index], out var unit))
+                {
+                    if (unit.Owner != _localPlayer)
+                    {
+                        LastCommandMessage = "Stop rejected: not entity owner";
+                        return;
+                    }
+                }
             }
 
             var header = new CommandHeader(
