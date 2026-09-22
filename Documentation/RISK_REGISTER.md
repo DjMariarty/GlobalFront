@@ -23,6 +23,11 @@
 | Reconnect/resync может восстановить неполное или несовместимое authoritative state и вызвать desync. | Critical | Versioned state contracts; Phase 2.7 tests; Phase 4 gameplay integration tests; induced-disconnect/desync scenarios; replay/diagnostic evidence. | TBD — Owner Decision Required | OPEN |
 | Production presentation может снизить gameplay readability или нарушить performance targets. | High | Performance budgets и profiling; UI/readability review; content/VFX regression; representative presentation в benchmarks; quality gates Phase 7–10. | TBD — Owner Decision Required | OPEN |
 
+## Known Test Issues
+
+- **[FLAKY-TEST] Domain Reload GC Spikes in `ClientReconnectTests`:**
+  Тест `Coordinator_TryBuildReconnectRequest_AllocatesZeroGC` может спорадически фиксировать аллокации в первом прогоне сразу после доменного перезапуска редактора из-за внутренней инициализации Unity GC-рекордера. При повторном прогоне тест всегда зелёный. Корректировка продуктового кода не требуется.
+
 ## Review Rules
 
 - Реестр проверяется на Scope, Architecture, Integration, Alpha, Beta и Release Candidate gates.

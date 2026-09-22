@@ -4,7 +4,7 @@
 
 ## Summary
 
-GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`; отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Базовая проверка: **661/661 EditMode passed (100%)** и **6/6 PlayMode passed (100%)**, консоль Unity: 0 ошибок, 0 предупреждений. Текущая задача / Next Phase — **Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]**: Шаг 3.1 RTS Camera & Input — **[COMPLETE]** (**665/665 EditMode passed**, commit `59ef38a`); в работе — **Шаг 3.2: ядро интерполяции `UnitViewTickBuffer`** (ADR-012, OD-23).
+GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`; отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Базовая проверка: **661/661 EditMode passed (100%)** и **6/6 PlayMode passed (100%)**, консоль Unity: 0 ошибок, 0 предупреждений. Текущая задача / Next Phase — **Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]**: Шаг 3.1 RTS Camera & Input — **[COMPLETE]** (commit `59ef38a`); Шаг 3.2 UnitViewTickBuffer & Interpolation — **[100% COMPLETED / AUDITED]** (**673/673 EditMode passed**, zero-GC, `Artifacts/TestResults/EditMode-phase32-A.xml`); в работе — **Шаг 3.3 / OD-29: репликация `UnitKind` и справочник `UnitCatalog`** (ADR-012).
  
 ## Confirmed Baseline
  
@@ -18,9 +18,9 @@ GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Advers
 | Local integration | `LocalMatchHost` (ServerHost) внутри Client process: владеет `MatchServer`, `TickDriver` и `SessionManager`; тактическая пауза (OD-18..OD-22), окно ожидания 200с / 4000 тиков (OD-18) и 5-секундный countdown таймер (OD-20); сквозная интеграция верифицирована в EditMode |
 | Commands | Move, Attack и Stop; `ICommandChannel` + session-attributed `LocalCommandChannel`; ingress проходит session gate; сохранение команд во время реконнекта |
 | Snapshots | Delta Snapshot Core/Server/Client слои Шагов 2.6.1–2.6.4 и Reconnect 2.7.1–2.7.4 завершены, rate-pacing/keyframe slicing/end-to-end integration и loss stress (1–5% loss) верифицированы; независимый аудит Phase 2.6 = APPROVE (zero P0/P1 blockers) |
-| Presentation | RTS camera (`RtsCameraController`) и input layer (`RtsInputManager`) — Шаг 3.1 (ADR-012); выбор, движение, атака, HUD, runtime prototype world |
+| Presentation | RTS camera (`RtsCameraController`) и input layer (`RtsInputManager`) — Шаг 3.1; `UnitViewTickBuffer` (SoA, 37 B/slot, safe alpha, adaptive 10/5Hz delay) — Шаг 3.2 (ADR-012, OD-23); выбор, движение, атака, HUD, runtime prototype world |
 | Scene | одна включённая `Assets/Scenes/SampleScene.unity` |
-| Tests | **665/665 EditMode passed (100%)** (661 Grand Audit baseline `a37f53d` + 4 новых `RtsCameraTests` Шага 3.1); **6/6 PlayMode passed (100%)** (Grand Audit baseline; prior gates: `Artifacts/TestResults/EditMode-reviewgate.xml`, `Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20) |
+| Tests | **673/673 EditMode passed (100%)** (661 Grand Audit baseline `a37f53d` + 4 `RtsCameraTests` Шага 3.1 + 8 `UnitViewTickBufferTests` Шага 3.2; zero-GC подтверждён; gate: `Artifacts/TestResults/EditMode-phase32-A.xml`, 2026-09-22); **6/6 PlayMode passed (100%)** (Grand Audit baseline; prior gates: `Artifacts/TestResults/EditMode-reviewgate.xml`, `Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20) |
 
 ## Phase 1.0 – 2.8 Status — [100% COMPLETED / AUDITED]
 
@@ -41,8 +41,9 @@ GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Advers
 
 ## Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]
 
-- 3.1 RTS Camera & Input — **[COMPLETE]** (commit `59ef38a`: `RtsCameraController`, `RtsInputManager`, `RtsCameraTests`, wiring в `GlobalFrontRuntimeBootstrap`; **665/665 EditMode passed**)
-- 3.2 UnitViewTickBuffer Interpolation Core — **[CURRENT / IN PROGRESS]** (ADR-012, OD-23: кольцевой буфер 32 слота, адаптивная задержка, clamped-экстраполяция, snap при `newerTick == olderTick`)
+- 3.1 RTS Camera & Input — **[100% COMPLETED / AUDITED]** (commit `59ef38a`: `RtsCameraController`, `RtsInputManager`, `RtsCameraTests`, wiring в `GlobalFrontRuntimeBootstrap`; **665/665 EditMode passed**)
+- 3.2 UnitViewTickBuffer & Interpolation — **[100% COMPLETED / AUDITED]** (**673 EditMode green, 0 GC allocs, SoA 37 B/slot, safe alpha, adaptive 10/5Hz delay**; ADR-012, OD-23: кольцевой буфер 32 слота, clamped-экстраполяция, snap при `newerTick == olderTick`, `Flush()`/`Resync()`; gate: `Artifacts/TestResults/EditMode-phase32-A.xml`)
+- 3.3 UnitKind Replication & UnitCatalog — **[CURRENT / IN PROGRESS]** (OD-29: поле `byte UnitKind` в `DeltaAddRecord` с бампом `DeltaProtocolVersion`, клиентский справочник `UnitCatalog`)
 
 Архитектурные решения Фазы 3 (OD-23 — OD-29) зафиксированы в [ADR-012](DECISIONS.md).
 
