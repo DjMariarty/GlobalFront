@@ -252,9 +252,10 @@ namespace GlobalFront.Server.Replication
         }
 
         /// <summary>
-        /// Full state of a newly visible entity as a 39-byte v1-compatible ADD
-        /// record. Values are passed through unchanged so an ADD stays
-        /// byte-identical to the same unit inside a Snapshot Protocol v1 packet.
+        /// Full state of a newly visible entity as an ADD record. Values are passed
+        /// through unchanged, including the OD-29 archetype: the ADD section is the
+        /// only place a client can learn a unit's kind, so dropping it here would
+        /// silently degrade every presentation slot that later depends on it.
         /// </summary>
         public static DeltaAddRecord ToAddRecord(in ServerUnitSnapshot snapshot)
         {
@@ -266,7 +267,8 @@ namespace GlobalFront.Server.Replication
                 snapshot.HasMoveTarget,
                 snapshot.MoveTarget,
                 snapshot.AttackTarget,
-                snapshot.AutoAcquireEnemies);
+                snapshot.AutoAcquireEnemies,
+                snapshot.UnitKind);
         }
 
         /// <summary>

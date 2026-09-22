@@ -7,9 +7,11 @@ namespace GlobalFront.Core.Snapshot
     ///
     /// This is a version space of its own: <see cref="Version"/> evolves
     /// independently from Snapshot Protocol v1 (<c>SnapshotProtocol.Version</c>),
-    /// from the carrier envelope version and from the message version. Only the
-    /// ADD record deliberately reuses the byte layout of the v1 unit record so a
-    /// keyframe/delta stream can be re-based without a second decoder.
+    /// from the carrier envelope version and from the message version. The ADD
+    /// record keeps the byte layout of the v1 unit record as its leading
+    /// <c>SnapshotProtocol.SnapshotSizeBytes</c> bytes so a keyframe/delta stream
+    /// can be re-based without a second decoder, and version 2 appends one further
+    /// byte to it.
     ///
     /// All values are protocol-significant constants: changing any of them
     /// requires a compatibility review and an ADR (DEVELOPMENT_STANDARD).
@@ -19,8 +21,14 @@ namespace GlobalFront.Core.Snapshot
         /// <summary>
         /// Delta wire-format version carried by every delta packet header.
         /// Bump on any change of the delta layout; never bump Snapshot Protocol v1.
+        ///
+        /// Version 2 (OD-29) appends <c>UnitKind u8</c> to the ADD record. It is a
+        /// hard break, not an extension: a v1 peer and a v2 peer cannot share a
+        /// connection, because the record run length no longer matches the declared
+        /// count on either side, so both codecs reject the other's packets rather
+        /// than mis-parse them.
         /// </summary>
-        public const uint Version = 1;
+        public const uint Version = 2;
 
         /// <summary>
         /// C2 message type of an establishing delta packet
@@ -47,13 +55,14 @@ namespace GlobalFront.Core.Snapshot
         public const int MaxPacketBytes = HeaderSizeBytes + MaxPayloadBytes;
 
         /// <summary>
-        /// Fixed size of one ADD record. Identical to
-        /// <c>SnapshotProtocol.SnapshotSizeBytes</c> of Snapshot Protocol v1:
-        /// <c>Entity u64, Owner u8, PosX i32, PosZ i32, Health i32,
+        /// Fixed size of one ADD record: the 39-byte Snapshot Protocol v1 unit
+        /// record (<c>Entity u64, Owner u8, PosX i32, PosZ i32, Health i32,
         /// HasMoveTarget u8, MoveTargetX i32, MoveTargetZ i32, AttackTarget u64,
-        /// AutoAcquire u8</c>.
+        /// AutoAcquire u8</c>) plus the OD-29 <c>UnitKind u8</c> appended in
+        /// version 2. The kind is last so the v1 prefix stays byte-for-byte the
+        /// record a v1 peer writes.
         /// </summary>
-        public const int AddRecordSizeBytes = 39;
+        public const int AddRecordSizeBytes = 40;
 
         /// <summary>Smallest UPDATE record: 1 id varint byte + 1 dirty-mask byte.</summary>
         public const int UpdateRecordMinSizeBytes = 2;

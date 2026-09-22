@@ -15,7 +15,8 @@ namespace GlobalFront.Core.Model
             PlayerId owner,
             WorldPointMm position,
             int speedMmPerTick,
-            bool autoAcquireEnemies)
+            bool autoAcquireEnemies,
+            byte unitKind = UnitKinds.Unknown)
         {
             if (!owner.IsValid)
             {
@@ -36,6 +37,7 @@ namespace GlobalFront.Core.Model
             Position = position;
             SpeedMmPerTick = speedMmPerTick;
             AutoAcquireEnemies = autoAcquireEnemies;
+            UnitKind = unitKind;
         }
 
         public PlayerId Owner { get; }
@@ -46,17 +48,26 @@ namespace GlobalFront.Core.Model
 
         public bool AutoAcquireEnemies { get; }
 
+        /// <summary>
+        /// OD-29 archetype of the unit to spawn (<see cref="UnitKinds"/>). Part of
+        /// the specification identity: two otherwise identical specs that ask for
+        /// different archetypes are not the same unit, and a config replayed from a
+        /// template must reproduce the same kinds.
+        /// </summary>
+        public byte UnitKind { get; }
+
         public bool Equals(UnitSpawnSpec other) =>
             Owner == other.Owner &&
             Position == other.Position &&
             SpeedMmPerTick == other.SpeedMmPerTick &&
-            AutoAcquireEnemies == other.AutoAcquireEnemies;
+            AutoAcquireEnemies == other.AutoAcquireEnemies &&
+            UnitKind == other.UnitKind;
 
         public override bool Equals(object obj) =>
             obj is UnitSpawnSpec other && Equals(other);
 
         public override int GetHashCode() =>
-            HashCode.Combine(Owner, Position, SpeedMmPerTick, AutoAcquireEnemies);
+            HashCode.Combine(Owner, Position, SpeedMmPerTick, AutoAcquireEnemies, UnitKind);
     }
 
     /// <summary>

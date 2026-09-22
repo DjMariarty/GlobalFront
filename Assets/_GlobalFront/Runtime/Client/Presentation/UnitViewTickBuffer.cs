@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Client.Catalog;
 using GlobalFront.Client.Replication;
 using GlobalFront.Core.Simulation;
 
@@ -167,8 +168,11 @@ namespace GlobalFront.Client.Presentation
         /// <summary>
         /// Fastest authoritative unit step per tick, used as the extrapolation
         /// speed cap. It mirrors the prototype movement contract
-        /// (<c>PrototypeUnit.MovementPerTickMm</c>) and becomes a per-roster value
-        /// once unit kind is replicated (OD-29).
+        /// (<c>PrototypeUnit.MovementPerTickMm</c>). The archetype is replicated
+        /// since OD-29, but speed is not: it lives on <c>UnitSpawnSpec</c> per unit,
+        /// so the cap stays one conservative configured value until the roster
+        /// publishes speeds (over-estimating only lengthens a reach by a tick, while
+        /// under-estimating makes every fast unit freeze mid-move).
         /// </summary>
         public const int DefaultMaxStepPerTickMm = 350;
 
@@ -244,6 +248,7 @@ namespace GlobalFront.Client.Presentation
 
         private readonly int _capacity;
         private readonly double _tickDurationSeconds;
+        private readonly IUnitCatalog _catalog;
 
         private ulong _capturedTick = EmptyTick;
         private ulong _minimumAcceptableTick = EmptyTick;
@@ -262,9 +267,16 @@ namespace GlobalFront.Client.Presentation
         /// Unit slots to cover; must be at least <see cref="ClientReplicationWorld.Capacity"/>.
         /// </param>
         /// <param name="tickDurationSeconds">Simulation tick length, in seconds.</param>
+        /// <param name="catalog">
+        /// Archetype table used to resolve the health denominator of a slot when it
+        /// starts holding a unit. Null selects <see cref="UnitCatalog.Default"/>;
+        /// an explicit <see cref="SetSlotMaximumHealth"/> still wins for that slot,
+        /// which is how a caller keeps a per-match override.
+        /// </param>
         public UnitViewTickBuffer(
             int capacity = DefaultCapacity,
-            double tickDurationSeconds = SimulationConstants.ServerTickDurationSeconds)
+            double tickDurationSeconds = SimulationConstants.ServerTickDurationSeconds,
+            IUnitCatalog catalog = null)
         {
             if (capacity <= 0)
             {
@@ -278,6 +290,7 @@ namespace GlobalFront.Client.Presentation
 
             _capacity = capacity;
             _tickDurationSeconds = tickDurationSeconds;
+            _catalog = catalog ?? UnitCatalog.Default;
 
             var entries = capacity * HistoryTicks;
             _sampleTick = new ulong[entries];
@@ -342,12 +355,14 @@ namespace GlobalFront.Client.Presentation
             (uint)slot < (uint)_capacity && _slotNewestTick[slot] != EmptyTick;
 
         /// <summary>
-        /// Installs the maximum health of the unit in <paramref name="slot"/>, from
-        /// the binder's roster table. The delta protocol carries
-        /// <c>CurrentHealth</c> but no unit kind, so this is the client's only
-        /// source of the denominator until OD-29 puts the kind on the wire.
-        /// 0 is a legal input and yields <c>InvMaxHealth = 0</c>: a health fraction
-        /// of 0 instead of the <c>0/0 = NaN</c> that
+        /// Overrides the health denominator of one slot. Normally
+        /// <see cref="CaptureTick"/> resolves it from the replicated archetype
+        /// through <see cref="IUnitCatalog"/>; this is the escape hatch for a caller
+        /// that knows better (a per-match stat override, or an
+        /// <see cref="GlobalFront.Core.Model.UnitKinds.Unknown"/> record from before
+        /// OD-29 whose stats the binder resolved elsewhere). It wins over the
+        /// catalog for that slot until the slot is recycled, and 0 is a legal input:
+        /// it yields an empty bar rather than the <c>0/0 = NaN</c> that
         /// <c>PrototypeUnit.MaximumHealth</c> can produce today.
         /// </summary>
         public void SetSlotMaximumHealth(int slot, int maximumHealth)
@@ -434,6 +449,17 @@ namespace GlobalFront.Client.Presentation
                 var previousCell = hadSample
                     ? baseIndex + (int)(_slotNewestTick[slot] & HistoryMask)
                     : -1;
+
+                // OD-29: a slot that starts holding a unit resolves its health
+                // denominator from the replicated archetype exactly once, here. Only
+                // when the slot is unresolved, so a binder that already called
+                // SetSlotMaximumHealth keeps its value, and an Unknown archetype
+                // leaves the 0 that makes the bar read empty instead of dividing.
+                if (!hadSample && _slotInvMaxHealth[slot] == 0f &&
+                    _catalog.TryGet(state.UnitKind, out var definition))
+                {
+                    _slotInvMaxHealth[slot] = definition.InvMaxHealth;
+                }
 
                 // "Keep the previous heading" must read the last <b>captured</b>
                 // yaw, not the slewed presentation yaw: the latter is owned by

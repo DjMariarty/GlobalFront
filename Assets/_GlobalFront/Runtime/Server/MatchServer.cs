@@ -47,7 +47,8 @@ namespace GlobalFront.Server
             bool hasMoveTarget,
             WorldPointMm moveTarget,
             EntityId attackTarget,
-            bool autoAcquireEnemies)
+            bool autoAcquireEnemies,
+            byte unitKind = UnitKinds.Unknown)
         {
             Entity = entity;
             Owner = owner;
@@ -57,6 +58,7 @@ namespace GlobalFront.Server
             MoveTarget = moveTarget;
             AttackTarget = attackTarget;
             AutoAcquireEnemies = autoAcquireEnemies;
+            UnitKind = unitKind;
         }
 
         public EntityId Entity { get; }
@@ -75,6 +77,14 @@ namespace GlobalFront.Server
 
         public bool AutoAcquireEnemies { get; }
 
+        /// <summary>
+        /// OD-29 archetype id (<see cref="UnitKinds"/>) replicated to clients so
+        /// presentation can resolve mesh, ring radius and maximum health. Carried
+        /// for replication only: it is not part of the deterministic state and not
+        /// mixed into <c>StateChecksum</c>.
+        /// </summary>
+        public byte UnitKind { get; }
+
         public bool Equals(ServerUnitSnapshot other) =>
             Entity == other.Entity &&
             Owner == other.Owner &&
@@ -83,7 +93,8 @@ namespace GlobalFront.Server
             HasMoveTarget == other.HasMoveTarget &&
             MoveTarget == other.MoveTarget &&
             AttackTarget == other.AttackTarget &&
-            AutoAcquireEnemies == other.AutoAcquireEnemies;
+            AutoAcquireEnemies == other.AutoAcquireEnemies &&
+            UnitKind == other.UnitKind;
 
         public override bool Equals(object obj) =>
             obj is ServerUnitSnapshot other && Equals(other);
@@ -141,6 +152,13 @@ namespace GlobalFront.Server
             public WorldPointMm MoveTarget;
 
             public bool AutoAcquireEnemies;
+
+            /// <summary>
+            /// OD-29 archetype forwarded to clients for presentation. Fixed at
+            /// spawn and never read by movement or combat resolution, so it cannot
+            /// perturb deterministic simulation state.
+            /// </summary>
+            public byte UnitKind;
         }
 
         private sealed class ScheduledCommand
@@ -201,7 +219,14 @@ namespace GlobalFront.Server
             {
                 var spec = config.Units[index];
                 var entity = new EntityId(_nextEntityValue++);
-                SpawnUnitCore(entity, spec.Owner, config.UnitStats, spec.Position, spec.SpeedMmPerTick, spec.AutoAcquireEnemies);
+                SpawnUnitCore(
+                    entity,
+                    spec.Owner,
+                    config.UnitStats,
+                    spec.Position,
+                    spec.SpeedMmPerTick,
+                    spec.AutoAcquireEnemies,
+                    spec.UnitKind);
                 entityIds[index] = entity;
             }
 
@@ -217,12 +242,18 @@ namespace GlobalFront.Server
         /// within <see cref="SimulationConstants.AutoAcquireRangeMm"/> whenever
         /// it has no explicit attack target. Mirrors PrototypeUnit.AutoAcquireEnemies.
         /// </param>
+        /// <param name="unitKind">
+        /// OD-29 archetype replicated to clients. Presentation-only, so callers that
+        /// do not care about archetypes leave the <see cref="UnitKinds.Unknown"/>
+        /// default and their clients keep the no-stat-resolved fallback.
+        /// </param>
         public EntityId SpawnUnit(
             PlayerId owner,
             CombatStats stats,
             WorldPointMm position,
             int speedMmPerTick,
-            bool autoAcquire = false)
+            bool autoAcquire = false,
+            byte unitKind = UnitKinds.Unknown)
         {
             if (!owner.IsValid)
             {
@@ -245,7 +276,8 @@ namespace GlobalFront.Server
             }
 
             var entity = new EntityId(_nextEntityValue++);
-            return SpawnUnitCore(entity, owner, stats, position, speedMmPerTick, autoAcquire);
+            return SpawnUnitCore(
+                entity, owner, stats, position, speedMmPerTick, autoAcquire, unitKind);
         }
 
         /// <summary>
@@ -260,7 +292,8 @@ namespace GlobalFront.Server
             CombatStats stats,
             WorldPointMm position,
             int speedMmPerTick,
-            bool autoAcquire = false)
+            bool autoAcquire = false,
+            byte unitKind = UnitKinds.Unknown)
         {
             if (!entity.IsValid)
             {
@@ -278,7 +311,8 @@ namespace GlobalFront.Server
                 _nextEntityValue = entity.Value + 1;
             }
 
-            return SpawnUnitCore(entity, owner, stats, position, speedMmPerTick, autoAcquire);
+            return SpawnUnitCore(
+                entity, owner, stats, position, speedMmPerTick, autoAcquire, unitKind);
         }
 
         private EntityId SpawnUnitCore(
@@ -287,14 +321,16 @@ namespace GlobalFront.Server
             CombatStats stats,
             WorldPointMm position,
             int speedMmPerTick,
-            bool autoAcquire)
+            bool autoAcquire,
+            byte unitKind)
         {
             var record = new UnitRecord
             {
                 Combat = new CombatantState(entity, owner, stats),
                 Position = position,
                 SpeedMmPerTick = speedMmPerTick,
-                AutoAcquireEnemies = autoAcquire
+                AutoAcquireEnemies = autoAcquire,
+                UnitKind = unitKind
             };
 
             _units.Add(entity, record);
@@ -568,7 +604,8 @@ namespace GlobalFront.Server
                 record.HasMoveTarget,
                 record.MoveTarget,
                 record.Combat.AttackTarget,
-                record.AutoAcquireEnemies);
+                record.AutoAcquireEnemies,
+                record.UnitKind);
 
         private MatchCommandRejection ValidateCommonHeader(
             CommandHeader header,

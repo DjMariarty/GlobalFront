@@ -220,9 +220,10 @@ namespace GlobalFront.Core.Snapshot
 
     /// <summary>
     /// Canonical ADD record: a unit that appeared in the authoritative world.
-    /// The wire form is byte-identical to the 39-byte unit record of Snapshot
-    /// Protocol v1 (<see cref="DeltaSnapshotProtocol.AddRecordSizeBytes"/>), so a
-    /// keyframe and a delta ADD section can be produced by the same writer.
+    /// Its first <c>SnapshotProtocol.SnapshotSizeBytes</c> bytes are the Snapshot
+    /// Protocol v1 unit record and version 2 appends <c>UnitKind</c>
+    /// (<see cref="DeltaSnapshotProtocol.AddRecordSizeBytes"/>), so a keyframe and
+    /// a delta ADD section are still produced by the same writer.
     /// </summary>
     public readonly struct DeltaAddRecord : IEquatable<DeltaAddRecord>
     {
@@ -234,7 +235,8 @@ namespace GlobalFront.Core.Snapshot
             bool hasMoveTarget,
             WorldPointMm moveTarget,
             EntityId attackTarget,
-            bool autoAcquireEnemies)
+            bool autoAcquireEnemies,
+            byte unitKind = UnitKinds.Unknown)
         {
             Entity = entity;
             Owner = owner;
@@ -244,6 +246,7 @@ namespace GlobalFront.Core.Snapshot
             MoveTarget = moveTarget;
             AttackTarget = attackTarget;
             AutoAcquireEnemies = autoAcquireEnemies;
+            UnitKind = unitKind;
         }
 
         /// <summary>Entity identity; strictly ascending inside the ADD section.</summary>
@@ -263,6 +266,16 @@ namespace GlobalFront.Core.Snapshot
 
         public bool AutoAcquireEnemies { get; }
 
+        /// <summary>
+        /// OD-29 archetype id (<see cref="UnitKinds"/>) that lets the client resolve
+        /// mesh, selection ring radius and maximum health. Immutable for the life of
+        /// the entity, so it travels on ADD and on keyframes only and has no
+        /// <see cref="UnitDirtyMask"/> bit: an archetype never changes in place, and
+        /// a mutable kind would let a folded change-set disagree with its own ADD.
+        /// <see cref="UnitKinds.Unknown"/> means no archetype was resolved.
+        /// </summary>
+        public byte UnitKind { get; }
+
         public bool Equals(DeltaAddRecord other) =>
             Entity == other.Entity &&
             Owner == other.Owner &&
@@ -271,7 +284,8 @@ namespace GlobalFront.Core.Snapshot
             HasMoveTarget == other.HasMoveTarget &&
             MoveTarget == other.MoveTarget &&
             AttackTarget == other.AttackTarget &&
-            AutoAcquireEnemies == other.AutoAcquireEnemies;
+            AutoAcquireEnemies == other.AutoAcquireEnemies &&
+            UnitKind == other.UnitKind;
 
         public override bool Equals(object obj) =>
             obj is DeltaAddRecord other && Equals(other);
@@ -287,13 +301,14 @@ namespace GlobalFront.Core.Snapshot
             hash.Add(MoveTarget);
             hash.Add(AttackTarget);
             hash.Add(AutoAcquireEnemies);
+            hash.Add(UnitKind);
             return hash.ToHashCode();
         }
 
         public override string ToString() =>
             $"Add(entity={Entity}, owner={Owner}, pos={Position}, hp={CurrentHealth}, " +
             $"moveTarget={(HasMoveTarget ? MoveTarget.ToString() : "none")}, attackTarget={AttackTarget}, " +
-            $"autoAcquire={AutoAcquireEnemies})";
+            $"autoAcquire={AutoAcquireEnemies}, kind={UnitKind})";
 
         public static bool operator ==(DeltaAddRecord left, DeltaAddRecord right) => left.Equals(right);
 

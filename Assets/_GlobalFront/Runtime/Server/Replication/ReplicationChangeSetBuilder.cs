@@ -419,7 +419,13 @@ namespace GlobalFront.Server.Replication
                 hasMoveTarget,
                 moveTarget,
                 attackTarget,
-                autoAcquire);
+                autoAcquire,
+
+                // The archetype has no dirty bit because it cannot change in
+                // place: folding an update into an ADD must carry it over, or the
+                // merged ADD would hand the client an Unknown kind for a unit whose
+                // kind the original ADD already stated.
+                add.UnitKind);
         }
 
         /// <summary>

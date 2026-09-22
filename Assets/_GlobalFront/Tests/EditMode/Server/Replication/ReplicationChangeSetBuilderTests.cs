@@ -27,7 +27,8 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
             int moveTargetX = 0,
             int moveTargetZ = 0,
             ulong attackTarget = 0,
-            bool autoAcquire = false)
+            bool autoAcquire = false,
+            byte unitKind = UnitKinds.Unknown)
         {
             return new DeltaAddRecord(
                 new EntityId(id),
@@ -37,7 +38,8 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
                 hasMoveTarget,
                 new WorldPointMm(moveTargetX, moveTargetZ),
                 new EntityId(attackTarget),
-                autoAcquire);
+                autoAcquire,
+                unitKind);
         }
 
         private static DeltaUpdateRecord Update(
@@ -251,7 +253,10 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
         {
             var builder = new ReplicationChangeSetBuilder(4, 8, 4);
 
-            builder.TryMerge(SetOf(new[] { Add(7, owner: 1, posX: 1, posZ: 1, health: 100) }, NoUpdates, NoRemoves));
+            builder.TryMerge(SetOf(
+                new[] { Add(7, owner: 1, posX: 1, posZ: 1, health: 100, unitKind: UnitKinds.Tank) },
+                NoUpdates,
+                NoRemoves));
             Assert.That(builder.TryMerge(SetOf(NoAdds,
                 new[] { Update(7, UnitDirtyMask.Position | UnitDirtyMask.Health, posX: 2, posZ: 3, health: 90) },
                 NoRemoves)), Is.True);
@@ -263,6 +268,11 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
             Assert.That(merged.Adds[0].Position, Is.EqualTo(new WorldPointMm(2, 3)));
             Assert.That(merged.Adds[0].CurrentHealth, Is.EqualTo(90));
             Assert.That(merged.Adds[0].Owner.Value, Is.EqualTo(1), "untouched fields keep the ADD value");
+
+            // The archetype has no dirty bit, so folding can only carry it over: an
+            // ADD that arrived as a Tank must not reach the client as Unknown.
+            Assert.That(merged.Adds[0].UnitKind, Is.EqualTo(UnitKinds.Tank),
+                "folding an update into an ADD must not lose the replicated archetype");
         }
 
         [Test]

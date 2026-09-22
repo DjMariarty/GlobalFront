@@ -305,8 +305,14 @@ namespace GlobalFront.Server.Replication
             public ulong LastKeyframeTick;
             public ulong LastChecksumTick;
 
-            /// <summary>Preallocated 159,744 bytes (SnapshotCapacity 4096 * 39 bytes) staging buffer for zero-GC keyframe re-attachment (D6 fix).</summary>
-            public const int DefaultKeyframeStagingBytes = 159744;
+            /// <summary>
+            /// Preallocated 163,840 bytes (SnapshotCapacity 4096 * 40-byte ADD
+            /// records) staging buffer for zero-GC keyframe re-attachment (D6 fix).
+            /// Sized from the delta ADD record, so it grew with the OD-29 kind byte.
+            /// </summary>
+            public const int DefaultKeyframeStagingBytes =
+                ServerReplicationEmitterConfig.DefaultSnapshotCapacity *
+                DeltaSnapshotProtocol.AddRecordSizeBytes;
             public byte[] KeyframeStaging = new byte[DefaultKeyframeStagingBytes];
         }
 

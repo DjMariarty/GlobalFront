@@ -49,8 +49,14 @@ namespace GlobalFront.Core.Snapshot
     /// 20  u16 SliceAddCount   unit records in THIS slice
     /// 22  u16 Reserved0       written as 0, must be 0 on decode
     /// </code>
-    /// followed by <c>SliceAddCount</c> ADD records in the 39-byte v1-identical
-    /// layout (see <see cref="DeltaSnapshotWireCodec.TryEncodeAddRecords"/>).
+    /// followed by <c>SliceAddCount</c> ADD records in the 40-byte delta layout
+    /// (the v1 unit record plus the OD-29 archetype byte; see
+    /// <see cref="DeltaSnapshotWireCodec.TryEncodeAddRecords"/>). Because the
+    /// framed record grew, <see cref="SliceVersion"/> moved to 2 with
+    /// <see cref="DeltaSnapshotProtocol.Version"/>: the size arithmetic rejects a
+    /// v1 slice on its own (a declared count would need 39 bytes per record, not
+    /// 40), but a framing version that describes the wrong record is a lie worth
+    /// avoiding rather than a defence to rely on.
     ///
     /// The message-type byte reuses the 0x02 keyframe-slice slot the delta
     /// protocol reserved for the C2 space, so a payload is classified by its
@@ -109,8 +115,11 @@ namespace GlobalFront.Core.Snapshot
     /// </summary>
     public static class KeyframeSliceCodec
     {
-        /// <summary>Wire version of the slice framing; independent version space.</summary>
-        public const byte SliceVersion = 1;
+        /// <summary>
+        /// Wire version of the slice framing; independent version space. Version 2
+        /// frames the 40-byte ADD record that carries the OD-29 archetype byte.
+        /// </summary>
+        public const byte SliceVersion = 2;
 
         /// <summary>C2 message type of a keyframe slice (reserved space).</summary>
         public const byte MessageType = KeyframeSliceHeader.MessageTypeValue;

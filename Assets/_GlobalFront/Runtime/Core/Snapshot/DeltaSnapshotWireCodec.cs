@@ -70,10 +70,11 @@ namespace GlobalFront.Core.Snapshot
     ///                                 (OD-14 apply-gating reference)
     /// Sections, in this order: ADD | UPDATE | REMOVE
     ///
-    /// ADD record, fixed 39 bytes (byte-identical to the v1 unit record):
+    /// ADD record, fixed 40 bytes: the 39-byte v1 unit record with the OD-29
+    /// archetype byte appended:
     ///   u64 Entity | u8 Owner | i32 PosX | i32 PosZ | i32 Health |
     ///   u8 HasMoveTarget | i32 MoveTargetX | i32 MoveTargetZ |
-    ///   u64 AttackTarget | u8 AutoAcquire
+    ///   u64 AttackTarget | u8 AutoAcquire | u8 UnitKind
     ///
     /// UPDATE record, variable:
     ///   varint-zigzag EntityIdDelta   delta from the previous record of the
@@ -381,10 +382,10 @@ namespace GlobalFront.Core.Snapshot
         }
 
         /// <summary>
-        /// Encodes a run of ADD records without a packet header (39 bytes each,
-        /// byte-identical to the v1 unit record). This is the record framing of
-        /// the keyframe slice codec (step 2.6.4): a baseline streams as one
-        /// slice header followed by fixed-size record runs, so no second
+        /// Encodes a run of ADD records without a packet header (40 bytes each,
+        /// the v1 unit record plus the OD-29 archetype byte), which is the record
+        /// framing of the keyframe slice codec (step 2.6.4): a baseline streams as
+        /// one slice header followed by fixed-size record runs, so no second
         /// decoder exists beside the delta one.
         /// </summary>
         /// <param name="adds">Records in canonical ascending entity-id order.</param>
@@ -727,6 +728,10 @@ namespace GlobalFront.Core.Snapshot
                 writer.WriteInt32(record.MoveTarget.Z);
                 writer.WriteUInt64(record.AttackTarget.Value);
                 writer.WriteUInt8(ToFlagByte(record.AutoAcquireEnemies));
+
+                // OD-29: appended last so the leading 39 bytes remain exactly the
+                // Snapshot Protocol v1 unit record.
+                writer.WriteUInt8(record.UnitKind);
             }
         }
 
@@ -838,6 +843,13 @@ namespace GlobalFront.Core.Snapshot
                     return result;
                 }
 
+                // Version 2 only: a v1 run is one byte per record short here and
+                // lands in BufferTooSmall rather than inventing an archetype.
+                if (!reader.TryReadUInt8(out var unitKind))
+                {
+                    return DeltaCodecResult.BufferTooSmall;
+                }
+
                 adds[index] = new DeltaAddRecord(
                     new EntityId(entityValue),
                     new PlayerId(owner),
@@ -846,7 +858,8 @@ namespace GlobalFront.Core.Snapshot
                     hasMoveTarget,
                     new WorldPointMm(moveTargetX, moveTargetZ),
                     new EntityId(attackTargetValue),
-                    autoAcquire);
+                    autoAcquire,
+                    unitKind);
             }
 
             return DeltaCodecResult.Ok;

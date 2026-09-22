@@ -341,7 +341,8 @@ namespace GlobalFront.Server.Sessions
                     ownerMap[spec.Owner],
                     spec.Position,
                     spec.SpeedMmPerTick,
-                    spec.AutoAcquireEnemies);
+                    spec.AutoAcquireEnemies,
+                    spec.UnitKind);
             }
 
             entityIds = server.InitializeMatch(new MatchConfig(template.UnitStats, mappedSpecs));

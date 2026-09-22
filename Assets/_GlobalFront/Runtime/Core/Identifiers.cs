@@ -80,6 +80,46 @@ namespace GlobalFront.Core.Model
     }
 
     /// <summary>
+    /// Wire identifiers of the unit archetypes the client can present (OD-29).
+    ///
+    /// A raw <see cref="byte"/> rather than an enum type because the value is
+    /// protocol-significant: it is the 40th byte of a delta ADD record and the key
+    /// of the client-side <c>UnitCatalog</c>. Unknown is deliberately 0: the
+    /// record structs are pooled and folded through <c>default(DeltaAddRecord)</c>
+    /// in the change-set builder, so 0 must mean "no kind resolved" instead of
+    /// quietly claiming the cheapest real archetype. A record that predates OD-29,
+    /// a Snapshot Protocol v1 unit record and a buffer slot the catalog has no row
+    /// for all decode to Unknown, and presentation falls back to its
+    /// no-stat-resolved behaviour rather than guessing.
+    ///
+    /// Values are append-only: renumbering an existing kind would silently
+    /// re-skin every unit in a recorded stream or an older client build.
+    /// </summary>
+    public static class UnitKinds
+    {
+        /// <summary>No archetype resolved: legacy record, or a kind the catalog lacks.</summary>
+        public const byte Unknown = 0;
+
+        /// <summary>Fast line unit; the cheapest roster entry.</summary>
+        public const byte Scout = 1;
+
+        /// <summary>Slow armoured unit; the turret-bearing presentation case.</summary>
+        public const byte Tank = 2;
+
+        /// <summary>Static economy structure; excluded from unit rings by rules later on.</summary>
+        public const byte BaseStructure = 3;
+
+        /// <summary>
+        /// One past the highest defined kind, so <c>UnitKinds.Count</c> is directly
+        /// usable as the O(1) catalog array length.
+        /// </summary>
+        public const byte Count = 4;
+
+        /// <summary>False for 0 (Unknown) and for anything at or above <see cref="Count"/>.</summary>
+        public static bool IsDefined(byte kind) => kind != Unknown && kind < Count;
+    }
+
+    /// <summary>
     /// Opaque server-assigned identity of one client attachment (Phase 2.4,
     /// ADR-008). Guid-backed so the value carries entropy: until
     /// authentication exists, the SessionId is also the reconnect identity

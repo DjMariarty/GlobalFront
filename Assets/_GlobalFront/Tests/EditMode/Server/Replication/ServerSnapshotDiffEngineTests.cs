@@ -27,7 +27,8 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
             int moveTargetX = 0,
             int moveTargetZ = 0,
             ulong attackTarget = 0,
-            bool autoAcquire = false)
+            bool autoAcquire = false,
+            byte unitKind = UnitKinds.Unknown)
         {
             return new ServerUnitSnapshot(
                 new EntityId(id),
@@ -37,7 +38,26 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
                 hasMoveTarget,
                 new WorldPointMm(moveTargetX, moveTargetZ),
                 new EntityId(attackTarget),
-                autoAcquire);
+                autoAcquire,
+                unitKind);
+        }
+
+        [Test]
+        public void ToAddRecord_CarriesEveryFieldIncludingTheArchetype()
+        {
+            var snapshot = Unit(12, posX: 700, posZ: 800, health: 55, unitKind: UnitKinds.BaseStructure);
+            var add = ServerSnapshotDiffEngine.ToAddRecord(in snapshot);
+
+            Assert.That(add.Entity, Is.EqualTo(snapshot.Entity));
+            Assert.That(add.Owner, Is.EqualTo(snapshot.Owner));
+            Assert.That(add.Position, Is.EqualTo(snapshot.Position));
+            Assert.That(add.CurrentHealth, Is.EqualTo(snapshot.CurrentHealth));
+            Assert.That(add.AutoAcquireEnemies, Is.EqualTo(snapshot.AutoAcquireEnemies));
+
+            // The ADD section is the only place a client learns what a unit is, so
+            // a dropped kind here would be invisible in the diff and visible on
+            // screen: no mesh, no ring radius, no health denominator.
+            Assert.That(add.UnitKind, Is.EqualTo(UnitKinds.BaseStructure));
         }
 
         /// <summary>World slices are always handed over in canonical ascending order.</summary>

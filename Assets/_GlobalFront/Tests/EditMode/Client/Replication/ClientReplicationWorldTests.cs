@@ -28,7 +28,8 @@ namespace GlobalFront.Tests.EditMode.Client.Replication
             int moveTargetX = 0,
             int moveTargetZ = 0,
             ulong attackTarget = 0,
-            bool autoAcquire = false)
+            bool autoAcquire = false,
+            byte unitKind = UnitKinds.Unknown)
         {
             return new DeltaAddRecord(
                 new EntityId(id),
@@ -38,7 +39,8 @@ namespace GlobalFront.Tests.EditMode.Client.Replication
                 hasMoveTarget,
                 new WorldPointMm(moveTargetX, moveTargetZ),
                 new EntityId(attackTarget),
-                autoAcquire);
+                autoAcquire,
+                unitKind);
         }
 
         internal static DeltaUpdateRecord Update(
@@ -764,6 +766,71 @@ namespace GlobalFront.Tests.EditMode.Client.Replication
             if (!HasFlag(changed, UnitDirtyMask.AutoAcquire))
             {
                 Assert.That(after.AutoAcquire, Is.EqualTo(before.AutoAcquire), "auto-acquire leaked");
+            }
+
+            // The archetype has no dirty bit at all, so it must survive every mask
+            // combination unchanged: a merge that dropped it would silently strip
+            // the client's mesh and health denominator on the next packet.
+            Assert.That(after.UnitKind, Is.EqualTo(before.UnitKind), "unit kind leaked");
+        }
+
+        [Test]
+        public void Add_InstallsUnitKind()
+        {
+            var world = new ClientReplicationWorld(16);
+
+            Assert.That(
+                world.ApplyAdd(Add(11, unitKind: UnitKinds.Tank)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+            Assert.That(
+                world.ApplyAdd(Add(12)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+
+            Assert.That(world.TryGet(new EntityId(11), out var tank));
+            Assert.That(tank.UnitKind, Is.EqualTo(UnitKinds.Tank));
+
+            // A record from before OD-29 (or from the v1 snapshot path) yields
+            // Unknown rather than borrowing the first real archetype.
+            Assert.That(world.TryGet(new EntityId(12), out var legacy));
+            Assert.That(legacy.UnitKind, Is.EqualTo(UnitKinds.Unknown));
+        }
+
+        [Test]
+        public void Update_KeepsUnitKindAcrossEveryDirtyMask()
+        {
+            var world = new ClientReplicationWorld(16);
+            Assert.That(
+                world.ApplyAdd(Add(21, posX: 100, posZ: 200, unitKind: UnitKinds.Scout)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+
+            var masks = new[]
+            {
+                UnitDirtyMask.Position,
+                UnitDirtyMask.Health,
+                UnitDirtyMask.Owner | UnitDirtyMask.Position,
+                UnitDirtyMask.HasMoveTarget | UnitDirtyMask.MoveTarget,
+                UnitDirtyMask.AttackTarget | UnitDirtyMask.AutoAcquire,
+            };
+
+            for (var index = 0; index < masks.Length; index++)
+            {
+                Assert.That(
+                    world.ApplyUpdate(Update(
+                        21,
+                        masks[index],
+                        owner: 2,
+                        posX: 900 + index,
+                        posZ: 800,
+                        health: 42,
+                        hasMoveTarget: true,
+                        moveTargetX: 10,
+                        moveTargetZ: 20,
+                        attackTarget: 77,
+                        autoAcquire: true)),
+                    Is.EqualTo(ClientWorldApplyResult.Ok));
+
+                Assert.That(world.TryGet(new EntityId(21), out var after));
+                Assert.That(after.UnitKind, Is.EqualTo(UnitKinds.Scout), $"mask {masks[index]}");
             }
         }
 

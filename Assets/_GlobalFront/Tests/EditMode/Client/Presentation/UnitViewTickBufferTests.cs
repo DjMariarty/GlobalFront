@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Client.Catalog;
 using GlobalFront.Client.Presentation;
 using GlobalFront.Client.Replication;
 using GlobalFront.Core.Model;
@@ -45,7 +46,8 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             bool hasMoveTarget = false,
             int moveTargetX = 0,
             int moveTargetZ = 0,
-            ulong attackTarget = 0)
+            ulong attackTarget = 0,
+            byte unitKind = UnitKinds.Unknown)
         {
             return new DeltaAddRecord(
                 new EntityId(SingleEntity),
@@ -55,7 +57,8 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                 hasMoveTarget,
                 new WorldPointMm(moveTargetX, moveTargetZ),
                 new EntityId(attackTarget),
-                false);
+                false,
+                unitKind);
         }
 
         private static DeltaUpdateRecord MoveTo(int posX, int posZ)
@@ -500,6 +503,68 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             Assert.That(buffer.TrySample(0, out _), Is.False);
             Assert.That(buffer.RenderDelayTicks, Is.EqualTo(UnitViewTickBuffer.MinRenderDelayTicks));
             Assert.That(buffer.ObservedIntervalTicks, Is.EqualTo(0d), "the cadence estimate restarts");
+        }
+
+        [Test]
+        public void ReplicatedUnitKind_ResolvesTheHealthDenominator()
+        {
+            // Distinct maxima per archetype, so the assertion can only pass if the
+            // number came from the replicated kind and not from a constant.
+            var catalog = new UnitCatalog(new[]
+            {
+                new UnitDefinition(UnitKinds.Scout, "Scout", 100, 500),
+                new UnitDefinition(UnitKinds.Tank, "Tank", 400, 900),
+            });
+
+            var world = NewWorld(AddRecord(0, 0, health: 50, unitKind: UnitKinds.Tank));
+            var buffer = new UnitViewTickBuffer(SlotCapacity, catalog: catalog);
+
+            // No SetSlotMaximumHealth call: OD-29 put the kind on the wire, so the
+            // bar denominator now resolves from the record itself.
+            buffer.CaptureTick(10, world);
+            buffer.Advance(TickSeconds);
+            Assert.That(buffer.TrySample(0, out var tank), Is.True);
+            Assert.That(tank.Health, Is.EqualTo(50));
+            Assert.That(tank.HealthFraction, Is.EqualTo(0.125f).Within(1e-6f));
+
+            // An Unknown archetype stays unresolved rather than borrowing a row.
+            var legacyWorld = NewWorld(AddRecord(0, 0, health: 50));
+            var legacyBuffer = new UnitViewTickBuffer(SlotCapacity, catalog: catalog);
+            legacyBuffer.CaptureTick(10, legacyWorld);
+            legacyBuffer.Advance(TickSeconds);
+            Assert.That(legacyBuffer.TrySample(0, out var legacy), Is.True);
+            Assert.That(legacy.HealthFraction, Is.EqualTo(0f));
+            Assert.That(float.IsNaN(legacy.HealthFraction), Is.False);
+
+            // An explicit override still wins, and only until the slot is recycled.
+            buffer.SetSlotMaximumHealth(0, 50);
+            Assert.That(buffer.TrySample(0, out var overridden), Is.True);
+            Assert.That(overridden.HealthFraction, Is.EqualTo(1f));
+
+            // Slot recycling: the table hands a freed slot to the next unit, and the
+            // denominator must follow that unit's kind instead of its predecessor's.
+            Assert.That(
+                world.ApplyRemove(new DeltaRemoveRecord(
+                    new EntityId(SingleEntity), DeltaRemoveCause.Destroyed)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+            Assert.That(
+                world.ApplyAdd(new DeltaAddRecord(
+                    new EntityId(99),
+                    new PlayerId(2),
+                    new WorldPointMm(10, 10),
+                    50,
+                    false,
+                    new WorldPointMm(0, 0),
+                    new EntityId(0),
+                    false,
+                    UnitKinds.Scout)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+
+            buffer.CaptureTick(12, world);
+            buffer.Advance(TickSeconds);
+            Assert.That(buffer.TrySample(0, out var recycled), Is.True);
+            Assert.That(recycled.HealthFraction, Is.EqualTo(0.5f).Within(1e-6f),
+                "a recycled slot must re-resolve from the new unit's archetype");
         }
 
         [Test]

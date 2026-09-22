@@ -26,7 +26,8 @@ namespace GlobalFront.Client.Replication
             int moveTargetX,
             int moveTargetZ,
             EntityId attackTarget,
-            bool autoAcquire)
+            bool autoAcquire,
+            byte unitKind = UnitKinds.Unknown)
         {
             Entity = entity;
             Owner = owner;
@@ -38,6 +39,7 @@ namespace GlobalFront.Client.Replication
             MoveTargetZ = moveTargetZ;
             AttackTarget = attackTarget;
             AutoAcquire = autoAcquire;
+            UnitKind = unitKind;
         }
 
         /// <summary>Builds the client state of a freshly spawned unit.</summary>
@@ -53,7 +55,8 @@ namespace GlobalFront.Client.Replication
                 add.MoveTarget.X,
                 add.MoveTarget.Z,
                 add.AttackTarget,
-                add.AutoAcquireEnemies);
+                add.AutoAcquireEnemies,
+                add.UnitKind);
         }
 
         public EntityId Entity { get; }
@@ -81,6 +84,14 @@ namespace GlobalFront.Client.Replication
 
         public bool AutoAcquire { get; }
 
+        /// <summary>
+        /// OD-29 archetype id (<see cref="UnitKinds"/>) as it arrived on the ADD or
+        /// keyframe record, unchanged for the life of the entity. The client's
+        /// presentation resolves mesh, ring radius and maximum health from it;
+        /// <see cref="UnitKinds.Unknown"/> covers a record from before OD-29.
+        /// </summary>
+        public byte UnitKind { get; }
+
         public WorldPointMm Position => new WorldPointMm(PosX, PosZ);
 
         public WorldPointMm MoveTarget => new WorldPointMm(MoveTargetX, MoveTargetZ);
@@ -98,7 +109,8 @@ namespace GlobalFront.Client.Replication
             MoveTargetX == other.MoveTargetX &&
             MoveTargetZ == other.MoveTargetZ &&
             AttackTarget == other.AttackTarget &&
-            AutoAcquire == other.AutoAcquire;
+            AutoAcquire == other.AutoAcquire &&
+            UnitKind == other.UnitKind;
 
         public override bool Equals(object obj) => obj is ClientUnitState other && Equals(other);
 
@@ -115,13 +127,14 @@ namespace GlobalFront.Client.Replication
             hash.Add(MoveTargetZ);
             hash.Add(AttackTarget);
             hash.Add(AutoAcquire);
+            hash.Add(UnitKind);
             return hash.ToHashCode();
         }
 
         public override string ToString() =>
             $"ClientUnit(entity={Entity}, owner={Owner}, pos={Position}, hp={Health}, " +
             $"moveTarget={(HasMoveTarget ? MoveTarget.ToString() : "none")}, attackTarget={AttackTarget}, " +
-            $"autoAcquire={AutoAcquire})";
+            $"autoAcquire={AutoAcquire}, kind={UnitKind})";
 
         public static bool operator ==(ClientUnitState left, ClientUnitState right) => left.Equals(right);
 
@@ -600,7 +613,12 @@ namespace GlobalFront.Client.Replication
                 HasFlag(mask, UnitDirtyMask.AttackTarget) ? update.AttackTarget : existing.AttackTarget,
                 HasFlag(mask, UnitDirtyMask.AutoAcquire)
                     ? update.AutoAcquireEnemies
-                    : existing.AutoAcquire);
+                    : existing.AutoAcquire,
+
+                // No dirty bit for the archetype: an UPDATE that dropped this line
+                // would silently turn a known unit into UnitKinds.Unknown and strip
+                // the client's mesh and health denominator on the next packet.
+                existing.UnitKind);
         }
 
         private static bool HasFlag(byte mask, UnitDirtyMask flag) => (mask & (byte)flag) == (byte)flag;

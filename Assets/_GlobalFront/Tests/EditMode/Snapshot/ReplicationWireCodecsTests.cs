@@ -45,7 +45,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         {
             Assert.That(KeyframeSliceCodec.HeaderSizeBytes, Is.EqualTo(24));
             Assert.That(KeyframeSliceCodec.GetSliceSize(0), Is.EqualTo(24));
-            Assert.That(KeyframeSliceCodec.GetSliceSize(3), Is.EqualTo(24 + 3 * 39));
+            Assert.That(KeyframeSliceCodec.GetSliceSize(3), Is.EqualTo(24 + 3 * 40));
             Assert.That(KeyframeSliceCodec.GetSliceSize(-1), Is.EqualTo(-1));
             Assert.That(
                 KeyframeSliceCodec.GetSliceSize(ushort.MaxValue + 1), Is.EqualTo(-1));
@@ -62,10 +62,14 @@ namespace GlobalFront.Tests.EditMode.Snapshot
                 Is.EqualTo(0));
             Assert.That(
                 KeyframeSliceCodec.MaxRecordsForSliceBudget(KeyframeSliceCodec.HeaderSizeBytes + 39),
+                Is.EqualTo(0),
+                "OD-29 grew the framed record to 40 bytes: a v1-sized budget no longer fits one record");
+            Assert.That(
+                KeyframeSliceCodec.MaxRecordsForSliceBudget(KeyframeSliceCodec.HeaderSizeBytes + 40),
                 Is.EqualTo(1));
             Assert.That(
                 KeyframeSliceCodec.MaxRecordsForSliceBudget(16384),
-                Is.EqualTo((16384 - 24) / 39));
+                Is.EqualTo((16384 - 24) / 40));
         }
 
         // ------------------------------------------------------------------
@@ -103,6 +107,41 @@ namespace GlobalFront.Tests.EditMode.Snapshot
                 Assert.That(decoded[index].Position, Is.EqualTo(adds[index].Position));
                 Assert.That(decoded[index].CurrentHealth, Is.EqualTo(adds[index].CurrentHealth));
             }
+        }
+
+        [Test]
+        public void Slice_RoundTrip_PreservesUnitKind()
+        {
+            // A resync rebuilds the client world from keyframe ADD records only, so
+            // a kind that survives deltas but not the slice path would leave every
+            // re-attached client without meshes or health denominators.
+            Assert.That(KeyframeSliceCodec.SliceVersion, Is.EqualTo((byte)2),
+                "the framing version moved with the record it frames");
+
+            var adds = new[]
+            {
+                new DeltaAddRecord(
+                    new EntityId(1), new PlayerId(1), new WorldPointMm(0, 0), 100,
+                    false, new WorldPointMm(0, 0), new EntityId(0), false, UnitKinds.Tank),
+                new DeltaAddRecord(
+                    new EntityId(2), new PlayerId(2), new WorldPointMm(500, 0), 100,
+                    false, new WorldPointMm(0, 0), new EntityId(0), false, UnitKinds.Unknown),
+            };
+
+            var header = SliceHeader(tick: 90, seq: 3, partIndex: 0, partCount: 1, total: 2, sliceCount: 2);
+            var buffer = new byte[KeyframeSliceCodec.GetSliceSize(2)];
+            Assert.That(
+                KeyframeSliceCodec.TryEncodeSlice(header, adds, buffer, out var written),
+                Is.EqualTo(KeyframeSliceCodecResult.Ok));
+
+            var decoded = new DeltaAddRecord[2];
+            Assert.That(
+                KeyframeSliceCodec.TryDecodeSlice(
+                    buffer.AsSpan(0, written), decoded, out _, out var read),
+                Is.EqualTo(KeyframeSliceCodecResult.Ok));
+            Assert.That(read, Is.EqualTo(2));
+            Assert.That(decoded[0].UnitKind, Is.EqualTo(UnitKinds.Tank));
+            Assert.That(decoded[1].UnitKind, Is.EqualTo(UnitKinds.Unknown));
         }
 
         [Test]
