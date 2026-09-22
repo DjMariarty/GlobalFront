@@ -1,10 +1,10 @@
 # Статус проекта GlobalFront
 
-> Фактический технический статус • обновлено 2026-09-20
+> Фактический технический статус • обновлено 2026-09-22
 
 ## Summary
 
-GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`; отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Проверка: **661/661 EditMode passed (100%)** и **6/6 PlayMode passed (100%)**, консоль Unity: 0 ошибок, 0 предупреждений. Текущая задача / Next Phase — **Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]**.
+GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`; отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Базовая проверка: **661/661 EditMode passed (100%)** и **6/6 PlayMode passed (100%)**, консоль Unity: 0 ошибок, 0 предупреждений. Текущая задача / Next Phase — **Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]**: Шаг 3.1 RTS Camera & Input — **[COMPLETE]** (**665/665 EditMode passed**, commit `59ef38a`); в работе — **Шаг 3.2: ядро интерполяции `UnitViewTickBuffer`** (ADR-012, OD-23).
  
 ## Confirmed Baseline
  
@@ -18,9 +18,9 @@ GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Advers
 | Local integration | `LocalMatchHost` (ServerHost) внутри Client process: владеет `MatchServer`, `TickDriver` и `SessionManager`; тактическая пауза (OD-18..OD-22), окно ожидания 200с / 4000 тиков (OD-18) и 5-секундный countdown таймер (OD-20); сквозная интеграция верифицирована в EditMode |
 | Commands | Move, Attack и Stop; `ICommandChannel` + session-attributed `LocalCommandChannel`; ingress проходит session gate; сохранение команд во время реконнекта |
 | Snapshots | Delta Snapshot Core/Server/Client слои Шагов 2.6.1–2.6.4 и Reconnect 2.7.1–2.7.4 завершены, rate-pacing/keyframe slicing/end-to-end integration и loss stress (1–5% loss) верифицированы; независимый аудит Phase 2.6 = APPROVE (zero P0/P1 blockers) |
-| Presentation | выбор, движение, атака, камера, HUD, runtime prototype world |
+| Presentation | RTS camera (`RtsCameraController`) и input layer (`RtsInputManager`) — Шаг 3.1 (ADR-012); выбор, движение, атака, HUD, runtime prototype world |
 | Scene | одна включённая `Assets/Scenes/SampleScene.unity` |
-| Tests | **661/661 EditMode passed (100%)**; **6/6 PlayMode passed (100%)** (Grand Audit baseline `a37f53d`; prior gates: `Artifacts/TestResults/EditMode-reviewgate.xml`, `Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20) |
+| Tests | **665/665 EditMode passed (100%)** (661 Grand Audit baseline `a37f53d` + 4 новых `RtsCameraTests` Шага 3.1); **6/6 PlayMode passed (100%)** (Grand Audit baseline; prior gates: `Artifacts/TestResults/EditMode-reviewgate.xml`, `Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20) |
 
 ## Phase 1.0 – 2.8 Status — [100% COMPLETED / AUDITED]
 
@@ -40,6 +40,11 @@ GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Advers
 - 2.8 Network Prototype Playtest (2v2) — [100% COMPLETED / AUDITED] (Steps 2.8.1–2.8.3 complete; 655/655 EditMode baseline → 661/661 на `a37f53d` после F-01/F-02; 6/6 PlayMode; 2v2 topology, command ownership, HUD + tactical pause overlay, abandonment unpause P2-1/P2-2)
 
 ## Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]
+
+- 3.1 RTS Camera & Input — **[COMPLETE]** (commit `59ef38a`: `RtsCameraController`, `RtsInputManager`, `RtsCameraTests`, wiring в `GlobalFrontRuntimeBootstrap`; **665/665 EditMode passed**)
+- 3.2 UnitViewTickBuffer Interpolation Core — **[CURRENT / IN PROGRESS]** (ADR-012, OD-23: кольцевой буфер 32 слота, адаптивная задержка, clamped-экстраполяция, snap при `newerTick == olderTick`)
+
+Архитектурные решения Фазы 3 (OD-23 — OD-29) зафиксированы в [ADR-012](DECISIONS.md).
 
 ## Product Scope vs Implementation
 

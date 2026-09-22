@@ -1,6 +1,6 @@
 # Архитектурные и проектные решения (ADR)
 
-> Живой нормативный и исторический журнал • обновлено 2026-09-19
+> Живой нормативный и исторический журнал • обновлено 2026-09-22
 
 Каждое долговременное решение содержит Context, Alternatives, Decision, Consequences и при необходимости Open Decisions. Детали, которых нет в утверждённом плане, не считаются решёнными.
 
@@ -382,6 +382,43 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - Phases 1.0 — 2.8 объявляются **[100% COMPLETED / AUDITED]**; фундамент заморожен как certified baseline.
 - Следующая фаза — **Phase 3 (Visual Presentation & RTS Controls)** — `[CURRENT / IN PROGRESS]`.
 - Изменение certified baseline требует нового ADR и повторного gate-прогона (EditMode + PlayMode + чистая консоль).
+
+## ADR-012: Phase 3 Client Presentation Stack & Tick Interpolation Architecture
+*Status:* ACCEPTED (Consensus: DeepSeek R&D + Qwen Peer-Review)  
+*Date:* 2026-09-22  
+*Target:* Unity 6000.5.6f1 / URP 17.5.0 / uGUI 2.5.0  
+### Context & Problem Statement
+Симуляция работает на 20 Гц (целочисленные миллиметры WorldPointMm, Y=0), а сетевая репликация дельт работает с адаптивной частотой 10 Гц (с падением до 5 Гц при потерях пакетов согласно ADR-010/OD-12). Клиентский рендеринг работает с частотой 60–144+ FPS. Требуется исключить джиттер, предотвратить деление на 0 (0/0 = NaN), устранить устаревший прототип PrototypeUnit (делавший new Material и CreatePrimitive в рантайме) и обеспечить 60+ FPS на 400 юнитах при Zero-GC.
+### Owner Decisions (OD-23 — OD-29):
+#### [OD-23] Presentation Interpolation & Tick Buffer Policy
+- **Буфер:** Кольцевой буфер `UnitViewTickBuffer` на 32 слота со строгой степенью двойки (`tick & 31`). Индексация по номеру тика как временной оси.
+- **Задержка:** Адаптивная задержка в пакетах ($k \times \text{observedInterval}$), номинал 3–4 тика (150–200 мс) при 10 Гц, 6–8 тиков при 5 Гц.
+- **Экстраполяция:** При задержке пакета вместо мертвого фриза включается зажатая (clamped) экстраполяция к авторитетному `MoveTarget` со скоростью `MaxStepPerTickMm` (не более 1–2 тиков), затем мягкий hold.
+- **Безопасная математика:** При единственном сэмпле или `newerTick == olderTick` выполняется мгновенный snap (деление на 0 в alpha исключено).
+- **Поворот (Yaw):** Приоритет отдается наведению на `MoveTarget`/`AttackTarget`. Смещение используется как fallback с мертвой зоной ($|\Delta p| < 10\text{ mm}$ — угол сохраняется), сглаживание через `SlewDegrees`.
+- **Сброс:** Публичные методы `Flush()` и `Resync()` для корректной обработки тактической паузы (OD-18) и сетевого ресинка (OD-20).
+#### [OD-24] UI & HUD Framework
+- **Runtime HUD:** Строго на **uGUI (Canvas)**. Изоляция на 3 канваса: постоянный HUD, динамическая выборка, transient-канвас для рамки выделения (1 `Image` типа Sliced, 0 аллокаций).
+- **Миникарта:** Статический террейн запекается в текстуру 1 раз при загрузке карты. В рантайме на 30 Гц рисуется только оверлей инстансированных точек юнитов поверх нее (без второй постоянной камеры URP).
+- **UI Toolkit:** Зарезервирован исключительно для Editor-тулов.
+#### [OD-25] Instanced Overlay Batches (Rings & HP Bars)
+- Полоски здоровья и кольца выделения рендерятся через `Graphics.RenderMeshInstanced` (1 draw call на бары, 1 на кольца).
+- Отрисовка заворачивается в URP `ScriptableRenderPass` (через `RasterCommandBuffer`) в событие `AfterRenderingOpaques` для полной совместимости с RenderGraph.
+- Запрет per-unit Canvas и URP Decal Projector для подвижных колец.
+- Защита от NaN: `InvMaxHealth` предвычисляется при спавне, расчет доли здоровья ведется умножением (`health * invMaxHealth`).
+#### [OD-26] Crowd Rendering & Animation Hierarchy
+- URP **GPU Resident Drawer (GRD)** в Forward+ режиме с `MeshRenderer` + обязательный `ObjectPool` (без Instantiate/Destroy в бою).
+- Иерархия юнита: статичный корпус (движение гусениц через UV-scroll в шейдере) + дочерний меш башни со сглаженным доворотом к цели.
+- Отказ от `Animator` (Mecanim) для массовых юнитов (только статический меш + шейдерная анимация).
+#### [OD-27] Terrain & Coordinate Convention
+- Модульный Mesh-террейн с абсолютно плоскими проходимыми зонами строго на $Y = 0$.
+- Отказ от runtime Unity Terrain во избежание рассинхрона между плоской сеткой пути и визуальной высотой.
+- Карта $400 \times 400$ м с центром в $(0, 0)$.
+#### [OD-28] Performance Targets & Budget
+- Базовый профиль: 400 активных юнитов на экране при стабильных 60+ FPS на средних ПК. Замер качества батчинга через Frame Debugger (Hybrid Batch Groups).
+#### [OD-29] Protocol Extension: UnitKind & UnitCatalog
+- Добавление поля `byte UnitKind` в запись добавления юнита (`DeltaAddRecord`) с бампом `DeltaProtocolVersion`.
+- Создание клиентского справочника `UnitCatalog` (статы, меши, радиусы, MaxHealth по `UnitKind`).
 
 ## Open Decision Queue
 
