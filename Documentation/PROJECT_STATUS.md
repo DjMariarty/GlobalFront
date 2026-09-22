@@ -4,7 +4,7 @@
 
 ## Summary
 
-GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`; отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Базовая проверка: **661/661 EditMode passed (100%)** и **6/6 PlayMode passed (100%)**, консоль Unity: 0 ошибок, 0 предупреждений. Текущая задача / Next Phase — **Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]**: Шаг 3.1 RTS Camera & Input — **[COMPLETE]** (commit `59ef38a`); Шаг 3.2 UnitViewTickBuffer & Interpolation — **[100% COMPLETED / AUDITED]** (**673/673 EditMode passed**, zero-GC, `Artifacts/TestResults/EditMode-phase32-A.xml`); в работе — **Шаг 3.3 / OD-29: репликация `UnitKind` и справочник `UnitCatalog`** (ADR-012).
+GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`; отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Проверка: **687/687 EditMode passed (100%)** и **6/6 PlayMode passed (100%)**, консоль Unity: 0 ошибок, 0 предупреждений (independent unityMCP verification, 2026-09-22). Текущая задача / Next Phase — **Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]**: Шаг 3.1 RTS Camera & Input — **[COMPLETE]** (commit `59ef38a`); Шаг 3.2 UnitViewTickBuffer & Interpolation — **[100% COMPLETED / AUDITED]** (commit `6ab12ad`, zero-GC, `Artifacts/TestResults/EditMode-phase32-A.xml`); OD-29 UnitKind Replication & UnitCatalog — **[100% COMPLETED / AUDITED]** (commit `be03002`, protocol v2, **687/687 EditMode + 6/6 PlayMode green**); в работе — **Шаг 3.3: UnitViewBinder & Object Pooling** (ADR-012).
  
 ## Confirmed Baseline
  
@@ -20,7 +20,7 @@ GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Advers
 | Snapshots | Delta Snapshot Core/Server/Client слои Шагов 2.6.1–2.6.4 и Reconnect 2.7.1–2.7.4 завершены, rate-pacing/keyframe slicing/end-to-end integration и loss stress (1–5% loss) верифицированы; независимый аудит Phase 2.6 = APPROVE (zero P0/P1 blockers) |
 | Presentation | RTS camera (`RtsCameraController`) и input layer (`RtsInputManager`) — Шаг 3.1; `UnitViewTickBuffer` (SoA, 37 B/slot, safe alpha, adaptive 10/5Hz delay) — Шаг 3.2 (ADR-012, OD-23); выбор, движение, атака, HUD, runtime prototype world |
 | Scene | одна включённая `Assets/Scenes/SampleScene.unity` |
-| Tests | **673/673 EditMode passed (100%)** (661 Grand Audit baseline `a37f53d` + 4 `RtsCameraTests` Шага 3.1 + 8 `UnitViewTickBufferTests` Шага 3.2; zero-GC подтверждён; gate: `Artifacts/TestResults/EditMode-phase32-A.xml`, 2026-09-22); **6/6 PlayMode passed (100%)** (Grand Audit baseline; prior gates: `Artifacts/TestResults/EditMode-reviewgate.xml`, `Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20) |
+| Tests | **687/687 EditMode passed (100%)** (661 Grand Audit baseline `a37f53d` + 4 `RtsCameraTests` + 8 `UnitViewTickBufferTests` + 14 OD-29/`UnitCatalogTests`; gate: `Artifacts/TestResults/EditMode-od29-unitkind.xml`, 2026-09-22); **6/6 PlayMode passed (100%)** (independent unityMCP verification, 2026-09-22; prior gates: `Artifacts/TestResults/EditMode-reviewgate.xml`, `Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20) |
 
 ## Phase 1.0 – 2.8 Status — [100% COMPLETED / AUDITED]
 
@@ -43,7 +43,8 @@ GlobalFront: Phases 1.0 — 2.8 — **[100% COMPLETED / AUDITED]** (Grand Advers
 
 - 3.1 RTS Camera & Input — **[100% COMPLETED / AUDITED]** (commit `59ef38a`: `RtsCameraController`, `RtsInputManager`, `RtsCameraTests`, wiring в `GlobalFrontRuntimeBootstrap`; **665/665 EditMode passed**)
 - 3.2 UnitViewTickBuffer & Interpolation — **[100% COMPLETED / AUDITED]** (**673 EditMode green, 0 GC allocs, SoA 37 B/slot, safe alpha, adaptive 10/5Hz delay**; ADR-012, OD-23: кольцевой буфер 32 слота, clamped-экстраполяция, snap при `newerTick == olderTick`, `Flush()`/`Resync()`; gate: `Artifacts/TestResults/EditMode-phase32-A.xml`)
-- 3.3 UnitKind Replication & UnitCatalog — **[CURRENT / IN PROGRESS]** (OD-29: поле `byte UnitKind` в `DeltaAddRecord` с бампом `DeltaProtocolVersion`, клиентский справочник `UnitCatalog`)
+- OD-29 UnitKind Replication & UnitCatalog — **[100% COMPLETED / AUDITED]** (commit `be03002`: поле `byte UnitKind` в `DeltaAddRecord` с бампом `DeltaProtocolVersion` → protocol v2, клиентский справочник `UnitCatalog`; **687/687 EditMode green, 6/6 PlayMode, 0 ошибок, 0 варнингов** — independent unityMCP verification; gate: `Artifacts/TestResults/EditMode-od29-unitkind.xml`)
+- 3.3 UnitViewBinder & Object Pooling — **[CURRENT / IN PROGRESS]** (ADR-012; биндинг `UnitViewTickBuffer` → view-объекты через ObjectPool без Instantiate/Destroy в бою)
 
 Архитектурные решения Фазы 3 (OD-23 — OD-29) зафиксированы в [ADR-012](DECISIONS.md).
 
