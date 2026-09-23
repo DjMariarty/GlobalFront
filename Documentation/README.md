@@ -17,7 +17,7 @@
 |---|---|---|---|
 | [MASTER_GAME_PLAN.md](MASTER_GAME_PLAN.md) | Product Scope, roadmap и milestones | живой, нормативный | готов на уровне утверждённого плана |
 | [GDD.md](GDD.md) | gameplay intent и продуктовые границы | живой, нормативный | утверждённый scope; детали roster/balance остаются TBD |
-| [CURRENT_STATE.md](CURRENT_STATE.md) | быстрый handoff состояния | живой, оперативный | актуален для Phase 2.3 |
+| [CURRENT_STATE.md](CURRENT_STATE.md) | быстрый handoff состояния | живой, оперативный | актуален для Phase 3 (Шаг 3.3) |
 | [ROADMAP.md](ROADMAP.md) | Phase 0–12 и порядок поставки | живой, нормативный | готов |
 | [PROJECT_STATUS.md](PROJECT_STATUS.md) | реализовано, не реализовано, риски | живой, фактический | готов для текущего baseline |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | текущие и целевые технические границы | живой, нормативный | готов; будущие детали через ADR |

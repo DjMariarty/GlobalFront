@@ -1,6 +1,6 @@
 # Архитектура GlobalFront
 
-> Живой нормативный документ • current baseline + approved target • обновлено 2026-08-21
+> Живой нормативный документ • current baseline + approved target • обновлено 2026-09-23
 
 ## Architectural Principle
 
@@ -14,7 +14,7 @@ GlobalFront строится вокруг authoritative server и deterministic 
 |---|---|---|
 | `GlobalFront.Core` | детерминированные identifiers (`EntityId`, `PlayerId`, opaque `SessionId`/`MatchId`), commands, coordinates, movement, combat, formation, `MatchConfig`, constants | none; Unity API запрещён |
 | `GlobalFront.Server` | authoritative `MatchServer`, state, validation, tick phases, `TickDriver` (server tick scheduling), snapshots и Snapshot Protocol v1, session/player identity (`SessionManager`, Phase 2.4) | `GlobalFront.Core`; Unity API запрещён |
-| `GlobalFront.Client` | Unity input/presentation, selection, camera, HUD, bootstrap, `LocalMatchHost` (ServerHost: владеет `MatchServer`, `TickDriver` и `SessionManager`), command channel adapter, `ClientSession` | Core, Server, Unity/Input System |
+| `GlobalFront.Client` | Unity input/presentation, selection, `RtsCameraController`, `RtsInputManager`, `UnitViewTickBuffer`, `UnitCatalog`, HUD, bootstrap, `LocalMatchHost` (ServerHost: владеет `MatchServer`, `TickDriver` и `SessionManager`), command channel adapter, `ClientSession` | Core, Server, Unity/Input System |
 
 ```text
 GlobalFront.Core  ←  GlobalFront.Server
@@ -99,11 +99,11 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 
 ## Verification Baseline
 
-- Unity `6000.5.6f1`
-- 301/301 EditMode passed 2026-08-29 (`Artifacts/TestResults/editmode-phase25-r4.xml`; baseline 223 + 78 Phase 2.5 tests)
-- 6/6 PlayMode passed 2026-08-29 (`Artifacts/TestResults/playmode-phase25-r4.xml`)
-- last committed technical milestone: `feat: implement network transport (Phase 2.5)`
-- Phase 2.4 Session / Player Identity: complete, `73d1276` (ADR-008); Phase 2.5 Network Transport: complete (ADR-009, final review APPROVE)
+- Unity `6000.5.6f1`, URP `17.5.0`
+- 687/687 EditMode passed (100%) (`Artifacts/TestResults/EditMode-od29-unitkind.xml`)
+- 6/6 PlayMode passed (100%)
+- last committed milestone: `212740a` (OD-29 UnitKind Replication & UnitCatalog)
+- Фазы 1.0–2.8 заморожены как сертифицированный бейзлайн (`a37f53d`, Grand Audit APPROVED: ZERO DEFECTS)
 
 ## Связанные документы
 

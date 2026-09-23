@@ -1,6 +1,6 @@
 # GlobalFront Current State
 
-> Быстрый handoff для AI-агента • обновлено 2026-09-20
+> Быстрый handoff для AI-агента • обновлено 2026-09-23
 
 ## Current Phase
 
@@ -8,18 +8,18 @@
 
 ## Current Task
 
-**Phase 2.8 — Network Prototype Playtest (2v2) — COMPLETE & AUDITED**
+**Phase 3.3: UnitViewBinder & Object Pooling — [IN PROGRESS]** (ADR-012, OD-26)
 
-Phase 2.8 завершена (Steps 2.8.1–2.8.3: 2v2 topology, command ownership, HUD + tactical pause overlay, abandonment unpause P2-1/P2-2). Grand Adversarial Audit (Phases 1.0 — 2.8) — **[APPROVED: ZERO DEFECTS]** на `a37f53d` (отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). 661/661 EditMode тестов green, 6/6 PlayMode тестов green. Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
+Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Phases 1.0 — 2.8) — **[APPROVED: ZERO DEFECTS]** на `a37f53d` (отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Phase 3.1 (RTS Camera & Input) — **[COMPLETE]** (`59ef38a`). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[COMPLETE]** (`6ab12ad`). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[COMPLETE]** (`be03002`, `212740a`). 687/687 EditMode тестов green, 6/6 PlayMode тестов green. Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
 
 ## Last Commit
 
-`872d0b2` (`docs: certify Grand Audit (Phases 1.0 - 2.8) APPROVED [ZERO DEFECTS] on a37f53d`)
+`212740a` (`docs: certify OD-29 UnitKind completion and Step 3.3 UnitViewBinder as current (687 tests green)`)
 
 ## Tests
 
-- EditMode: **661/661 passed** (Grand Audit baseline `a37f53d`; артефакт: `Artifacts/TestResults/EditMode-661-passed.xml`)
-- PlayMode: **6/6 passed** (`Artifacts/TestResults/PlayMode-reviewgate.xml`, 2026-09-20)
+- EditMode: **687/687 passed** (`Artifacts/TestResults/EditMode-od29-unitkind.xml`)
+- PlayMode: **6/6 passed** (2026-09-23)
 - Unity: `6000.5.6f1`
 
 ## Completed Milestones
@@ -44,10 +44,13 @@ Phase 2.8 завершена (Steps 2.8.1–2.8.3: 2v2 topology, command ownersh
 - Phase 2.8 Network Prototype Playtest (2v2) — COMPLETE (Steps 2.8.1–2.8.3; 2v2 topology, command ownership, HUD + tactical pause overlay, abandonment unpause P2-1/P2-2)
 - Grand Adversarial Audit Remediation — COMPLETE (`c3cce4d`: P0 pause deadlock, Zero-GC tick 11.5 МБ/с, RateLimiter, anti-hijack, D8 full checksum; `a37f53d`: F-01 zero-gc snapshot targets, F-02 reentrancy safety)
 - Grand Adversarial Audit (Phases 1.0 — 2.8) — [APPROVED: ZERO DEFECTS] (`872d0b2`; 661/661 EditMode, 6/6 PlayMode; `Artifacts/GrandAudit-Certification-a37f53d.md`)
+- Phase 3.1 RTS Camera & Input — COMPLETE (`59ef38a`, 665 тестов)
+- Phase 3.2 UnitViewTickBuffer & Interpolation — COMPLETE (`6ab12ad`, 673 теста)
+- OD-29 UnitKind Replication & UnitCatalog — COMPLETE (`be03002`, `212740a`, 687 тестов)
 
 ## Next Step
 
-Phase 3.0 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]: RTS Camera, Controls, Visuals поверх принятого фундамента Фаз 1.0–2.8.
+Phase 3.3 (UnitViewBinder & Object Pooling по ADR-012/OD-26) — [IN PROGRESS]: привязка серверных снапшотов к пулированным UnitView поверх принятого фундамента Фаз 1.0–2.8 и завершённых Шагов 3.1, 3.2 и OD-29.
 
 ## Backlog
 

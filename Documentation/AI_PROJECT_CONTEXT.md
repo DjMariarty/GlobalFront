@@ -211,7 +211,7 @@ Commit:
 dadc593 — feat: implement network transport (Phase 2.5)
 ```
 
-This is the latest confirmed technical checkpoint in the available independent-review material.
+Historical checkpoint superseded by Phases 2.6–2.8, Grand Audit, Phase 3.1–3.2 and OD-29 below.
 
 Known facts from the Phase 2.5 review:
 
@@ -228,21 +228,47 @@ Known facts from the Phase 2.5 review:
 
 The Phase 2.5 independent review found P0/P1 issues resolved before the accepted checkpoint; remaining notes were informational/P2-level follow-ups.
 
+### Phase 2.6 — Snapshot Networking — COMPLETE
+
+ADR-010 accepted. Steps 2.6.1–2.6.4 implemented and verified: Core Delta Wire Codec, Server Replication Engine & History Ring, Client Replication Receiver & FSM (`ClientReplicationReceiver`, `ClientReplicationWorld`, `ReplicationReceiverFSM`), full integration & impairment tests. **599/599 EditMode passed**. Zero-GC hot path of emitter, bridge, client and transport validated.
+
+### Phase 2.7 — Reconnect & Resync — COMPLETE
+
+Steps 2.7.1–2.7.4 implemented and verified: reconnect wire models and Zero-GC codecs, server session re-attachment, client reconnect coordinator & FSM, end-to-end integration with tactical pause and stress tests. **641/641 EditMode passed, 6/6 PlayMode passed**.
+
+### Phase 2.8 — Network Prototype Playtest (2v2) — COMPLETE
+
+Steps 2.8.1–2.8.3 implemented and verified: 2v2 topology, command ownership, HUD + tactical pause overlay, abandonment unpause.
+
+### Grand Adversarial Audit (Phases 1.0 — 2.8) — APPROVED: ZERO DEFECTS
+
+Remediation commits `c3cce4d` and `a37f53d`. Certification commit `872d0b2` (`Artifacts/GrandAudit-Certification-a37f53d.md`). **661/661 EditMode passed, 6/6 PlayMode passed**. Phases 1.0–2.8 are frozen as the certified baseline.
+
+### Phase 3.1 — RTS Camera & Input — COMPLETE
+
+Commit `59ef38a`. `RtsCameraController` and `RtsInputManager` implemented in `GlobalFront.Client`. **665/665 EditMode passed**.
+
+### Phase 3.2 — UnitViewTickBuffer & Interpolation — COMPLETE
+
+Commit `6ab12ad`. `UnitViewTickBuffer` with adaptive 10/5 Hz delay and Zero-GC interpolation implemented in `GlobalFront.Client`. **673/673 EditMode passed**.
+
+### OD-29 — UnitKind Replication, Protocol v2 & UnitCatalog — COMPLETE
+
+Commits `be03002` and `212740a`. Protocol v2 and `UnitCatalog` implemented. **687/687 EditMode passed** (`Artifacts/TestResults/EditMode-od29-unitkind.xml`), **6/6 PlayMode passed**. Current HEAD: `212740a`.
+
 ---
 
 ## 7. Current Development Position
 
-### Phase 2.6 — Snapshot Networking
+### Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]
 
-**Status: R&D only. Not approved for implementation.**
+**Step 3.3: UnitViewBinder & Object Pooling — [IN PROGRESS]** (ADR-012, OD-26).
 
-This is the current architectural focus.
+Phases 1.0–2.8 are **[100% COMPLETED / AUDITED]** (Grand Audit APPROVED: ZERO DEFECTS on `a37f53d`). Phase 3.1 (RTS Camera & Input) — **[COMPLETE]** (`59ef38a`, 665 tests). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[COMPLETE]** (`6ab12ad`, 673 tests). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[COMPLETE]** (`be03002`, `212740a`, 687 tests). Current HEAD: `212740a`. Confirmed tests: **687/687 EditMode passed** (`Artifacts/TestResults/EditMode-od29-unitkind.xml`), **6/6 PlayMode passed**.
 
-The repository should be treated as being at the Phase 2.5 accepted baseline until the actual repository proves otherwise.
+### Phase 2.6 — Snapshot Networking — COMPLETE (historical note)
 
-### Why Phase 2.6 is not yet implementation-ready
-
-The first proposed snapshot model was rejected during independent review because:
+The initial snapshot proposal was rejected during independent review because:
 
 - sending large full snapshots over unreliable C2 is statistically ineffective under packet loss;
 - cumulative deltas can approach full-state bandwidth during active combat;
@@ -252,7 +278,7 @@ The first proposed snapshot model was rejected during independent review because
 - reliable keyframe delivery can create head-of-line blocking because C0/C1 share a reliable sequence space;
 - catch-up/re-baseline boundaries were underspecified.
 
-The revised R&D direction, currently considered promising but not approved, is a hybrid model:
+The accepted and implemented hybrid model (ADR-010, Phase 2.6 COMPLETE):
 
 ```text
 Reliable keyframe / baseline
@@ -266,13 +292,13 @@ Cumulative catch-up inside the window
 Reliable re-baseline when the client falls outside the window
 ```
 
-A candidate 10 Hz snapshot cadence and compact keyframe fragmentation were proposed, but these remain parameters to validate by benchmark rather than fixed implementation facts.
+A 10 Hz snapshot cadence and compact keyframe fragmentation were implemented and validated by benchmark in Phase 2.6.
 
 ---
 
-## 8. Phase 2.6 Required R&D Revision
+## 8. Phase 2.6 Required R&D Revision (historical — CLOSED, Phase 2.6 COMPLETE)
 
-Before implementation is authorized, the coordinator must require a new R&D revision that closes the independent-review findings.
+The R&D revision below was required and completed before Phase 2.6 implementation (ADR-010 accepted).
 
 Minimum required topics:
 
