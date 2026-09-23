@@ -1,5 +1,8 @@
 using System;
+using GlobalFront.Client.Catalog;
 using GlobalFront.Client.Replication;
+using GlobalFront.Core.Model;
+using UnityEngine;
 
 namespace GlobalFront.Client.Presentation
 {
@@ -43,6 +46,16 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         private readonly ulong[] _capturedTickAtBind;
 
+        /// <summary>
+        /// Health denominator per archetype, resolved once from the catalog at
+        /// construction. A spawn has to state a unit's health fraction before the
+        /// ring has anything to show, and the buffer's own copy of that table is
+        /// private — so the binder keeps its own array-indexed lookup rather than
+        /// paying a virtual catalog call per spawn. O(1), no allocation, and the same
+        /// zero for an unresolved archetype that keeps a bar from dividing by 0.
+        /// </summary>
+        private readonly float[] _invMaxHealthByKind;
+
         private readonly int _slotLimit;
 
         private int _boundCount;
@@ -50,11 +63,13 @@ namespace GlobalFront.Client.Presentation
         private long _releaseCount;
         private long _rebindCount;
         private long _unpresentedCount;
+        private long _destroyedViewCount;
 
         public UnitViewBinder(
             UnitViewPool pool,
             ClientReplicationWorld world,
-            UnitViewTickBuffer buffer)
+            UnitViewTickBuffer buffer,
+            IUnitCatalog catalog = null)
         {
             if (pool == null)
             {
@@ -80,6 +95,25 @@ namespace GlobalFront.Client.Presentation
             _slotLimit = buffer.Capacity < world.Capacity ? buffer.Capacity : world.Capacity;
             _viewBySlot = new UnitView[_slotLimit];
             _capturedTickAtBind = new ulong[_slotLimit];
+
+            var source = catalog ?? UnitCatalog.Default;
+            _invMaxHealthByKind = new float[UnitKinds.Count];
+            for (var kind = 1; kind < _invMaxHealthByKind.Length; kind++)
+            {
+                if (source.TryGet((byte)kind, out var definition))
+                {
+                    _invMaxHealthByKind[kind] = definition.InvMaxHealth;
+                }
+            }
+
+            if (_slotLimit > pool.MaximumViews)
+            {
+                // Warm-up can be fixed later, but this one is structural: with fewer
+                // views than slots, some unit in a full-size match can never be
+                // presented, and the symptom (an invisible unit) is far from the cause.
+                Debug.LogWarning(
+                    $"{nameof(UnitViewBinder)}: the replication world exposes {_slotLimit} unit slots but the view pool is capped at {pool.MaximumViews}; units past the cap will stay un-presented.");
+            }
         }
 
         /// <summary>Pool views are taken from and returned to.</summary>
@@ -142,6 +176,26 @@ namespace GlobalFront.Client.Presentation
             for (var slot = 0; slot < _slotLimit; slot++)
             {
                 var view = views[slot];
+
+                // A reference that is non-null but Unity-null is a view whose GameObject
+                // was destroyed outside the pool. Treated as an ordinary release, this
+                // would slip through: the pool's own reference check drops the call
+                // before it can tidy its bookkeeping, the counters keep claiming the
+                // corpse is presented, and the next frame repeats forever. Say so once,
+                // and let the release below happen through the reference check.
+                if (!ReferenceEquals(view, null) && view == null)
+                {
+                    _destroyedViewCount++;
+                    if (_destroyedViewCount <= 16)
+                    {
+                        Debug.LogWarning(
+                            $"{nameof(UnitViewBinder)}: replication slot {slot} held a view destroyed outside the pool ({nameof(UnityEngine.Object.Destroy)} in combat is banned by OD-26); it has been dropped and the unit rebound. Find and fix whatever destroyed it.");
+                    }
+
+                    ReleaseSlot(slot);
+                    view = null;
+                }
+
                 if (!world.TryGetSlotState(slot, out var state))
                 {
                     // Destroyed, fog-hidden, or never there: nothing may stay on
@@ -221,6 +275,12 @@ namespace GlobalFront.Client.Presentation
             return released;
         }
 
+        /// <summary>
+        /// Detaches and releases every bound view back to the pool.
+        /// Convenience alias for <see cref="ReleaseAllViews"/> (P2-7).
+        /// </summary>
+        public void Detach() => ReleaseAllViews();
+
         private bool TryBindSlot(int slot, in ClientUnitState state, ulong capturedTick)
         {
             if (!_pool.TryAcquire(state.UnitKind, out var view))
@@ -233,10 +293,13 @@ namespace GlobalFront.Client.Presentation
 
             view.Bind(state.Entity);
 
-            // Authoritative position first, interpolated pose from the next capture:
+            // Authoritative position and health first, interpolated pose from the next capture:
             // a unit that materialised at the world origin for three frames is a
             // worse artefact than one that holds still for a packet.
-            view.SnapToMillimetres(state.PosX, state.PosZ);
+            var invMaxHealth = (uint)state.UnitKind < (uint)_invMaxHealthByKind.Length
+                ? _invMaxHealthByKind[state.UnitKind]
+                : 0f;
+            view.SnapToAuthority(in state, invMaxHealth);
 
             _viewBySlot[slot] = view;
             _capturedTickAtBind[slot] = capturedTick;

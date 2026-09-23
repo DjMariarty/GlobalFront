@@ -1,3 +1,4 @@
+using GlobalFront.Client.Replication;
 using GlobalFront.Core.Model;
 using UnityEngine;
 using EntityId = GlobalFront.Core.Model.EntityId;
@@ -88,6 +89,15 @@ namespace GlobalFront.Client.Presentation
         public bool IsPooledView => _isPooledView;
 
         /// <summary>
+        /// True when the native object behind this managed wrapper is gone, i.e. the
+        /// view was destroyed from outside the pool. Reading it goes through Unity's
+        /// null comparison only, so it is the one thing still safe to ask a destroyed
+        /// view — which is exactly what the pool needs to decide whether the instance
+        /// can be re-queued or has to be dropped from its ownership.
+        /// </summary>
+        public bool WasDestroyedExternally => this == null;
+
+        /// <summary>
         /// True between <see cref="Bind"/> and <see cref="Release"/>: a view sitting
         /// in the pool's free list is never bound, so an overlay pass can tell a
         /// presented unit from an idle instance.
@@ -168,6 +178,43 @@ namespace GlobalFront.Client.Presentation
                 xMillimetres * MillimetresToMetres,
                 0f,
                 zMillimetres * MillimetresToMetres);
+        }
+
+        /// <summary>
+        /// Stamps the health readout directly. The interpolation ring only publishes a
+        /// pose once it has captured the slot, so without this the health bar of a
+        /// freshly bound unit reads empty for the play-out delay (150–200 ms), which is
+        /// a spawn flicker on every single unit, not just on damaged ones.
+        /// </summary>
+        public void SnapHealth(int health, float healthFraction)
+        {
+            Health = health;
+            HealthFraction = Mathf.Clamp01(healthFraction);
+        }
+
+        /// <summary>
+        /// Places and fills a newly bound view from the replicated state it was bound
+        /// to, in one call: position, hit points and the fraction the overlay pass
+        /// draws. <paramref name="invMaxHealth"/> is the catalog's precomputed
+        /// reciprocal (0 for an archetype the client has no row for), so this is a
+        /// multiply and can never divide by an unresolved maximum.
+        ///
+        /// Taking the state by <c>in</c> keeps the binder's single slot copy from being
+        /// copied again per argument on the spawn path.
+        /// </summary>
+        public void SnapToAuthority(in ClientUnitState state, float invMaxHealth)
+        {
+            SnapToMillimetres(state.PosX, state.PosZ);
+            SnapHealth(state.Health, state.Health * invMaxHealth);
+        }
+
+        /// <summary>
+        /// Places and fills a newly bound view from explicit position and health values.
+        /// </summary>
+        public void SnapToAuthority(int xMillimetres, int zMillimetres, int health, float invMaxHealth)
+        {
+            SnapToMillimetres(xMillimetres, zMillimetres);
+            SnapHealth(health, health * invMaxHealth);
         }
 
         /// <summary>

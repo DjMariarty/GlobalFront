@@ -342,6 +342,7 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         public void Pool_Exhaustion_AllocatesOneBlockAndWarns()
         {
             var pool = new UnitViewPool(_root, growBlock: 3);
+            pool.AllowCombatGrowth = true;
             Assert.That(pool.Warmup(UnitKinds.Tank, 1), Is.EqualTo(1));
 
             var first = pool.Acquire(UnitKinds.Tank);
@@ -361,6 +362,7 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         public void Pool_Ceiling_RejectsInsteadOfGrowingForever()
         {
             var pool = new UnitViewPool(_root, growBlock: 4, maximumViews: 2);
+            pool.AllowCombatGrowth = true;
             Assert.That(pool.Warmup(UnitKinds.Scout, 8), Is.EqualTo(2), "warm-up respects the ceiling too");
 
             Assert.That(pool.Acquire(UnitKinds.Scout), Is.Not.Null);
@@ -623,7 +625,8 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             Assert.That(_binder.TryGetView(SlotOf(1), out var view), Is.True);
             Assert.That(view.Hull.position.x, Is.EqualTo(1f).Within(1e-4f));
             Assert.That(view.Hull.position.z, Is.EqualTo(2f).Within(1e-4f));
-            Assert.That(view.Health, Is.EqualTo(0), "the spawn snap carries no pose, and none was applied");
+            Assert.That(view.Health, Is.EqualTo(PrototypeHealth), "spawn snap carries authority health (P2-1)");
+            Assert.That(view.HealthFraction, Is.EqualTo(1f).Within(1e-5f));
 
             // A recycled slot is the case the gate exists for: the ring still holds
             // the dead unit's samples until the next capture.
@@ -761,6 +764,7 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         {
             _pool.Dispose();
             _pool = new UnitViewPool(_root, growBlock: 1, maximumViews: 1);
+            _pool.AllowCombatGrowth = true;
             CreateMatch(2);
 
             LogAssert.ignoreFailingMessages = true;
@@ -891,6 +895,7 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         {
             _pool.Dispose();
             _pool = new UnitViewPool(_root, growBlock: 2);
+            _pool.AllowCombatGrowth = true;
             CreateMatch(1);
             Assert.That(_pool.Warmup(UnitKinds.Scout, 1), Is.EqualTo(1));
             FeedPacket(10);
@@ -906,6 +911,216 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             FeedPacket(14);
             Assert.That(_binder.PeakViewCount, Is.EqualTo(3), "the peak is what to warm to, not the current count");
             Assert.That(_binder.BoundViewCount, Is.EqualTo(2));
+        }
+
+        // ---------------------------------------------------------------- remediation tests (P1 & P2 audit findings)
+
+        [Test]
+        public void Pool_TheFirstAcquireOfAMatch_DoesNotAllocate()
+        {
+            byte[] ballast = null;
+            Assert.That(() => { ballast = new byte[1024]; }, GcAssert.AllocatingGCMemory());
+            Assert.That(ballast, Is.Not.Null);
+
+            var pool = new UnitViewPool(_root, growBlock: 4, maximumViews: 16);
+            Assert.That(pool.Warmup(UnitKinds.Scout, 4), Is.EqualTo(4));
+
+            UnitView acquired = null;
+            Assert.That(
+                () =>
+                {
+                    acquired = pool.Acquire(UnitKinds.Scout);
+                    pool.Release(acquired);
+                },
+                Is.Not.AllocatingGCMemory(),
+                "the very first Acquire of a match must not allocate; collections are pre-sized at load");
+
+            pool.Dispose();
+        }
+
+        [Test]
+        public void TickBuffer_RecycledSlot_ResetsHeadingAndSlewClock()
+        {
+            CreateMatch(0);
+            Assert.That(_pool.Warmup(UnitKinds.Scout, 2), Is.EqualTo(2));
+            Assert.That(
+                _world.ApplyAdd(new DeltaAddRecord(
+                    new EntityId(1),
+                    new PlayerId(1),
+                    new WorldPointMm(0, 0),
+                    PrototypeHealth,
+                    true,
+                    new WorldPointMm(0, -10000), // south -> 180 deg
+                    new EntityId(0),
+                    false,
+                    UnitKinds.Scout)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+
+            var slot = SlotOf(1);
+            FeedPacket(10);
+            Assert.That(_buffer.TrySample(slot, out var pose1), Is.True);
+            Assert.That(pose1.BodyYawDegrees, Is.EqualTo(180f).Within(1f));
+
+            Assert.That(_world.ApplyRemove(Destroy(1)), Is.EqualTo(ClientWorldApplyResult.Ok));
+
+            Assert.That(
+                _world.ApplyAdd(new DeltaAddRecord(
+                    new EntityId(2),
+                    new PlayerId(1),
+                    new WorldPointMm(0, 0),
+                    PrototypeHealth,
+                    true,
+                    new WorldPointMm(0, 10000), // north -> 0 deg
+                    new EntityId(0),
+                    false,
+                    UnitKinds.Scout)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+
+            Assert.That(SlotOf(2), Is.EqualTo(slot), "slot was recycled");
+
+            _buffer.CaptureTick(12, _world);
+            _binder.Render(FrameSeconds);
+
+            Assert.That(_buffer.TrySample(slot, out var pose2), Is.True);
+            Assert.That(pose2.BodyYawDegrees, Is.EqualTo(0f).Within(1f), "heading must not slew from previous dead unit");
+
+            Assert.That(_binder.TryGetView(slot, out var view), Is.True);
+            view.Apply(in pose2);
+            Assert.That(view.Hull.eulerAngles.y, Is.EqualTo(0f).Within(1f));
+        }
+
+        [Test]
+        public void Pool_CombatGrowth_IsDisabledByDefault()
+        {
+            var pool = new UnitViewPool(_root, growBlock: 4, maximumViews: 10);
+            Assert.That(pool.AllowCombatGrowth, Is.False, "OD-26 forbids instantiation in combat by default");
+            Assert.That(pool.Warmup(UnitKinds.Scout, 1), Is.EqualTo(1));
+
+            var first = pool.Acquire(UnitKinds.Scout);
+            Assert.That(first, Is.Not.Null);
+
+            LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                Assert.That(pool.TryAcquire(UnitKinds.Scout, out var second), Is.False);
+                Assert.That(second, Is.Null);
+                Assert.That(pool.GrowCount, Is.EqualTo(0));
+                Assert.That(pool.TotalCreated, Is.EqualTo(1));
+                Assert.That(pool.RejectedCount, Is.EqualTo(1));
+            }
+            finally
+            {
+                LogAssert.ignoreFailingMessages = false;
+            }
+
+            pool.Dispose();
+        }
+
+        [Test]
+        public void Prototype_WithAnimator_IsRejected()
+        {
+            var go = new GameObject("PrefabWithAnimator");
+            go.AddComponent<UnitView>();
+            go.AddComponent<Animator>();
+
+            var pool = new UnitViewPool(_root, growBlock: 2, maximumViews: 4);
+
+            LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                var registered = pool.SetPrototype(UnitKinds.Scout, go);
+                Assert.That(registered, Is.False, "OD-26 bans Mecanim Animator on crowd units");
+            }
+            finally
+            {
+                LogAssert.ignoreFailingMessages = false;
+                Object.DestroyImmediate(go);
+                pool.Dispose();
+            }
+        }
+
+        [Test]
+        public void Pool_WarmupAboveCeiling_WarnsAndTruncates()
+        {
+            var pool = new UnitViewPool(_root, growBlock: 2, maximumViews: 3);
+
+            LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                var created = pool.Warmup(UnitKinds.Scout, 5);
+                Assert.That(created, Is.EqualTo(3), "warmup must be capped at maximumViews");
+                Assert.That(pool.TotalCreated, Is.EqualTo(3));
+            }
+            finally
+            {
+                LogAssert.ignoreFailingMessages = false;
+                pool.Dispose();
+            }
+        }
+
+        [Test]
+        public void Binder_WarnsWhenSlotsExceedPoolCapacity()
+        {
+            var smallPool = new UnitViewPool(_root, growBlock: 1, maximumViews: 2);
+            var world = new ClientReplicationWorld(10);
+            var buffer = new UnitViewTickBuffer(10, TickSeconds);
+
+            LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                var binder = new UnitViewBinder(smallPool, world, buffer);
+                Assert.That(binder, Is.Not.Null);
+            }
+            finally
+            {
+                LogAssert.ignoreFailingMessages = false;
+                smallPool.Dispose();
+            }
+        }
+
+        [Test]
+        public void Pool_DestroyedView_ReleasesWithoutThrowing()
+        {
+            var pool = new UnitViewPool(_root, growBlock: 2, maximumViews: 4);
+            Assert.That(pool.Warmup(UnitKinds.Scout, 2), Is.EqualTo(2));
+
+            var view = pool.Acquire(UnitKinds.Scout);
+            Assert.That(view, Is.Not.Null);
+            Assert.That(pool.InUseCount, Is.EqualTo(1));
+
+            Object.DestroyImmediate(view.ViewObject);
+
+            LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                Assert.That(view.WasDestroyedExternally, Is.True);
+                var released = pool.Release(view);
+                Assert.That(released, Is.True, "Release of externally destroyed view must succeed gracefully");
+                Assert.That(pool.InUseCount, Is.EqualTo(0));
+                Assert.That(pool.TotalCreated, Is.EqualTo(1), "destroyed view was dropped from created list");
+            }
+            finally
+            {
+                LogAssert.ignoreFailingMessages = false;
+                pool.Dispose();
+            }
+        }
+
+        [Test]
+        public void Binder_Detach_ReleasesEveryView()
+        {
+            CreateMatch(3);
+            Assert.That(_pool.Warmup(UnitKinds.Scout, 3), Is.EqualTo(3));
+            FeedPacket(10);
+
+            Assert.That(_binder.BoundViewCount, Is.EqualTo(3));
+            Assert.That(_pool.InUseCount, Is.EqualTo(3));
+
+            _binder.Detach();
+
+            Assert.That(_binder.BoundViewCount, Is.EqualTo(0));
+            Assert.That(_pool.InUseCount, Is.EqualTo(0));
+            Assert.That(_pool.FreeCount(UnitKinds.Scout), Is.EqualTo(3));
         }
     }
 }

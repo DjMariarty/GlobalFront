@@ -435,13 +435,23 @@ namespace GlobalFront.Client.Presentation
                 }
 
                 var baseIndex = slot * HistoryTicks;
-                if (_slotEntity[slot] != state.Entity.Value)
+                var recycled = _slotEntity[slot] != state.Entity.Value;
+                if (recycled)
                 {
                     // The table recycles freed slots, so a slot can start holding a
                     // different unit whose history is not this unit's at all.
                     ClearSlot(slot);
                     _slotEntity[slot] = state.Entity.Value;
                     _slotInvMaxHealth[slot] = 0f;
+
+                    // Presentation state is per slot, not per unit. Left alone, the
+                    // replacement inherits the casualty's heading and slew clock, and
+                    // a unit that took over a slot facing the other way spends up to
+                    // three quarters of a second turning through the dead unit's turn
+                    // — Mecanim-free presentation has nothing else to hide it with.
+                    _slotBodyYaw[slot] = 0f;
+                    _slotTurretYaw[slot] = 0f;
+                    _slotLastRenderTick[slot] = 0.0;
                     _recycledSlotCount++;
                 }
 
@@ -497,6 +507,19 @@ namespace GlobalFront.Client.Presentation
                 }
 
                 _slotNewestTick[slot] = tick;
+
+                if (recycled)
+                {
+                    // Seed the reset state from the replacement's own captured heading
+                    // so the first pose rendered for this slot is exact. Zeroing the yaw
+                    // above is not enough on its own: the slew would still start there
+                    // and crawl to the real heading at MaxBodyDegreesPerSecond, and the
+                    // zeroed render-clock anchor only buys an instant turn in as much as
+                    // the elapsed time happens to allow.
+                    _slotBodyYaw[slot] = bodyYaw;
+                    _slotTurretYaw[slot] = turretYaw;
+                    _slotLastRenderTick[slot] = _renderTick;
+                }
             }
 
             ObserveArrival(tick, previousTick);

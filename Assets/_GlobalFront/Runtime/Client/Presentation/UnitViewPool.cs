@@ -45,14 +45,16 @@ namespace GlobalFront.Client.Presentation
         private readonly GameObject[] _prototypeByKind = new GameObject[UnitKinds.Count];
         private readonly Stack<UnitView>[] _freeByKind;
         private readonly int[] _activeByKind = new int[UnitKinds.Count];
-        private readonly HashSet<UnitView> _inUse = new HashSet<UnitView>();
-        private readonly List<UnitView> _created = new List<UnitView>();
+        private readonly HashSet<UnitView> _inUse;
+        private readonly List<UnitView> _created;
         private readonly int _growBlock;
         private readonly int _maximumViews;
 
         private int _inUseCount;
         private long _growCount;
         private long _rejectedCount;
+        private bool _combatGrowthRefusalLogged;
+        private bool _ceilingLogged;
         private bool _disposed;
 
         /// <param name="root">
@@ -89,10 +91,17 @@ namespace GlobalFront.Client.Presentation
             _growBlock = growBlock;
             _maximumViews = maximumViews;
 
+            // Every collection is sized to the ceiling here, at load, and never after:
+            // growth is a re-hash and a re-copy, and the moment it happens most cheaply
+            // is the first spawn of the match — which used to be an allocation, not a
+            // steady-state one. This is what makes the first Acquire of a match as
+            // allocation-free as the four-hundredth.
+            _inUse = new HashSet<UnitView>(maximumViews);
+            _created = new List<UnitView>(maximumViews);
             _freeByKind = new Stack<UnitView>[UnitKinds.Count];
             for (var kind = 0; kind < _freeByKind.Length; kind++)
             {
-                _freeByKind[kind] = new Stack<UnitView>();
+                _freeByKind[kind] = new Stack<UnitView>(maximumViews);
             }
         }
 
@@ -118,6 +127,21 @@ namespace GlobalFront.Client.Presentation
         public bool IsDisposed => _disposed;
 
         /// <summary>
+        /// Whether an exhausted pool may instantiate more views. <b>False by default,
+        /// and that default is the rule</b>: OD-26 forbids <c>Instantiate</c> in
+        /// combat, and an auto-growing pool is a per-spawn frame spike that only
+        /// appears at four hundred units in a real firefight — the exact condition the
+        /// load-screen warm-up exists to cover.
+        ///
+        /// <see cref="Warmup"/> is unaffected by this flag; it is the sanctioned
+        /// creation path. Enabling growth is a deliberate, out-of-combat decision (an
+        /// editor harness, a prototype level, a load screen that wants a safety net),
+        /// and while it is off an over-subscribed match honestly reports
+        /// <see cref="RejectedCount"/> instead of quietly allocating.
+        /// </summary>
+        public bool AllowCombatGrowth { get; set; }
+
+        /// <summary>
         /// Registers the content prototype of one archetype. The pool instantiates
         /// that object instead of building a placeholder, which is how real
         /// silhouettes (hull mesh + turret child, OD-26) enter presentation without
@@ -126,6 +150,11 @@ namespace GlobalFront.Client.Presentation
         /// Rejected unless the prototype carries a <see cref="UnitView"/>: a view the
         /// pool cannot type would surface as a null handed to the binder mid-match,
         /// far away from the asset that caused it.
+        ///
+        /// Also rejected when the prototype carries an <see cref="Animator"/> anywhere
+        /// in its hierarchy. OD-26 bans Mecanim on crowd units — 400 animators is 400
+        /// per-frame animation evaluations the interpolation path does not need, and
+        /// the ban is only as strong as the one door content enters through.
         /// </summary>
         public bool SetPrototype(byte kind, GameObject prototype)
         {
@@ -140,6 +169,14 @@ namespace GlobalFront.Client.Presentation
             {
                 Debug.LogError(
                     $"{nameof(UnitViewPool)}: prototype for unit kind {kind} has no {nameof(UnitView)} component and was ignored.",
+                    prototype);
+                return false;
+            }
+
+            if (prototype.GetComponentInChildren<Animator>(true) != null)
+            {
+                Debug.LogError(
+                    $"{nameof(UnitViewPool)}: prototype for unit kind {kind} carries an Animator; OD-26 bans Mecanim on crowd units (track motion is a hull material UV scroll) and the prototype was ignored.",
                     prototype);
                 return false;
             }
@@ -190,13 +227,24 @@ namespace GlobalFront.Client.Presentation
                 created++;
             }
 
+            if (owned < count)
+            {
+                // A warm-up that asks past the ceiling is a data error worth hearing
+                // about here, at load, rather than as an un-presented unit forty
+                // minutes into a match.
+                Debug.LogWarning(
+                    $"{nameof(UnitViewPool)}: warm-up of unit kind {kind} asked for {count} views and got {owned}; the ceiling of {_maximumViews} total views is reached.");
+            }
+
             return created;
         }
 
         /// <summary>
-        /// Takes a free, activated, unbound view of the archetype, growing the pool
-        /// (and warning) when none is left. Returns null only at the
-        /// <see cref="MaximumViews"/> ceiling.
+        /// Takes a free, activated, unbound view of the archetype. Returns null when
+        /// the archetype is exhausted and growth is not permitted — which is the
+        /// default, because instantiating mid-combat is what OD-26 forbids
+        /// (<see cref="AllowCombatGrowth"/>) — or when the
+        /// <see cref="MaximumViews"/> ceiling has been reached.
         /// </summary>
         public UnitView Acquire(byte kind)
         {
@@ -240,6 +288,9 @@ namespace GlobalFront.Client.Presentation
                     view = candidate;
                     break;
                 }
+
+                Debug.LogWarning(
+                    $"{nameof(UnitViewPool)}: dropped a pooled view of unit kind {kind} that was destroyed outside the pool ({nameof(UnityEngine.Object.Destroy)} in combat is banned by OD-26).");
             }
 
             view.ViewObject.SetActive(true);
@@ -260,25 +311,40 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         public bool Release(UnitView view)
         {
-            if (view == null)
+            if (ReferenceEquals(view, null))
             {
                 return false;
             }
 
             if (!_inUse.Remove(view))
             {
+                var isPooled = !view.WasDestroyedExternally && view.IsPooledView;
                 Debug.LogWarning(
-                    view.IsPooledView
+                    isPooled
                         ? $"{nameof(UnitViewPool)}: ignored a repeated release of {view.name}."
-                        : $"{nameof(UnitViewPool)}: ignored a release of {view.name}, which this pool never created.");
+                        : $"{nameof(UnitViewPool)}: ignored a release of a view which this pool never created or already dropped.");
                 return false;
             }
 
             var index = KindIndex(view.UnitKind);
-            view.Release();
-            view.ViewObject.SetActive(false);
             _activeByKind[index]--;
             _inUseCount--;
+
+            // A view whose GameObject was destroyed from outside the pool (a stray
+            // Destroy, an editor reload) cannot be re-queued: touching its transform
+            // would throw and pushing it would hand the next Acquire a hole. Drop it
+            // from ownership instead, so InUseCount and TotalCreated stay honest after
+            // a bug elsewhere rather than leaking a slot for the rest of the match.
+            if (view.WasDestroyedExternally)
+            {
+                _created.Remove(view);
+                Debug.LogWarning(
+                    $"{nameof(UnitViewPool)}: a view of unit kind {view.UnitKind} was destroyed outside the pool ({nameof(UnityEngine.Object.Destroy)} in combat is banned by OD-26); it was dropped instead of recycled.");
+                return true;
+            }
+
+            view.Release();
+            view.ViewObject.SetActive(false);
             _freeByKind[index].Push(view);
             return true;
         }
@@ -288,10 +354,10 @@ namespace GlobalFront.Client.Presentation
         public int ReleaseAll()
         {
             var released = 0;
-            for (var i = 0; i < _created.Count; i++)
+            for (var i = _created.Count - 1; i >= 0; i--)
             {
                 var view = _created[i];
-                if (view != null && _inUse.Contains(view) && Release(view))
+                if (!ReferenceEquals(view, null) && _inUse.Contains(view) && Release(view))
                 {
                     released++;
                 }
@@ -353,24 +419,39 @@ namespace GlobalFront.Client.Presentation
 
         /// <summary>
         /// Allocates one block of views for an archetype that outgrew its warm-up.
-        /// Returns false, and counts the rejection, at the ceiling.
+        /// Returns false, and counts the rejection, when growth is disallowed by
+        /// <see cref="AllowCombatGrowth"/> or the ceiling has been reached.
         /// </summary>
         private bool Grow(int index, byte kind)
         {
+            if (!AllowCombatGrowth)
+            {
+                // The OD-26 path: no instantiation in combat. Warn once rather than
+                // every frame — a rejected unit asks again on the next one — and let
+                // RejectedCount keep the total.
+                _rejectedCount++;
+                if (!_combatGrowthRefusalLogged)
+                {
+                    _combatGrowthRefusalLogged = true;
+                    Debug.LogWarning(
+                        $"{nameof(UnitViewPool)}: unit kind {kind} exhausted its warm-up and combat growth is disabled ({nameof(AllowCombatGrowth)}), so {nameof(UnityEngine.Object.Instantiate)} is refused and the unit stays un-presented. Raise the {nameof(Warmup)}: {nameof(UnitViewBinder.PeakViewCount)} says by how much.");
+                }
+
+                return false;
+            }
+
             var room = _maximumViews - _created.Count;
             if (room <= 0)
             {
-                // Once, not per request: an un-presentable unit asks again on every
-                // frame of the match, and a per-frame error buries the console — and
-                // the log line that actually mattered — under duplicates.
-                // <see cref="RejectedCount"/> keeps the total for telemetry.
-                if (_rejectedCount == 0)
+                // Once, not per request, for the same reason.
+                _rejectedCount++;
+                if (!_ceilingLogged)
                 {
+                    _ceilingLogged = true;
                     Debug.LogError(
                         $"{nameof(UnitViewPool)}: ceiling of {_maximumViews} views reached, unit kind {kind} cannot be presented. Raise the warm-up or look for leaked views.");
                 }
 
-                _rejectedCount++;
                 return false;
             }
 
