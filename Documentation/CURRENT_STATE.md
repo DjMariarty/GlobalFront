@@ -8,22 +8,21 @@
 
 ## Current Task
 
-**Phase 3.3: UnitViewBinder & Object Pooling — [IN PROGRESS]** (ADR-012, OD-26)
+**Phase 3.4: Instanced Selection Rings & HP Bars — [READY / NEXT]** (ADR-012, OD-25)
 
-Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Phases 1.0 — 2.8) — **[APPROVED: ZERO DEFECTS]** на `a37f53d` (отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Phase 3.1 (RTS Camera & Input) — **[COMPLETE]** (`59ef38a`). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[COMPLETE]** (`6ab12ad`). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[COMPLETE]** (`be03002`, `212740a`). 687/687 EditMode тестов green, 6/6 PlayMode тестов green. Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
+Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Phases 1.0 — 2.8) — **[APPROVED: ZERO DEFECTS]** на `a37f53d` (отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Phase 3.1 (RTS Camera & Input) — **[COMPLETE]** (`59ef38a`). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[COMPLETE]** (`6ab12ad`). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[COMPLETE]** (`be03002`, `212740a`). Phase 3.3 (UnitViewBinder & Object Pooling) — **[COMPLETE]** (711 tests green). 711/711 EditMode тестов green, 6/6 PlayMode тестов green. Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
 
 ## Last Commit
 
-`212740a` (`docs: certify OD-29 UnitKind completion and Step 3.3 UnitViewBinder as current (687 tests green)`)
+`432d467` (`docs: synchronize project documentation to Phase 3 Step 3.3 baseline (687 tests green)`)
 
 ## Tests
 
-- EditMode: **687/687 passed** (`Artifacts/TestResults/EditMode-od29-unitkind.xml`)
-- PlayMode: **6/6 passed** (2026-09-23)
-- Unity: `6000.5.6f1`
+- EditMode: **711/711 passed** (100% green, 2026-09-23)
+- PlayMode: **6/6 passed** (100% green, 2026-09-23)
+- Unity: `6000.6.2f1`
 
 ## Completed Milestones
-
 - M0 Technical Foundation — COMPLETE
 - Phase 1 Simulation Foundation — COMPLETE
 - Phase 2.1 Server-Owned Match State — COMPLETE (`8178110`)
@@ -47,10 +46,11 @@ Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Ph
 - Phase 3.1 RTS Camera & Input — COMPLETE (`59ef38a`, 665 тестов)
 - Phase 3.2 UnitViewTickBuffer & Interpolation — COMPLETE (`6ab12ad`, 673 теста)
 - OD-29 UnitKind Replication & UnitCatalog — COMPLETE (`be03002`, `212740a`, 687 тестов)
+- Phase 3.3 UnitViewBinder & Object Pooling — COMPLETE (711 тестов green, Zero-GC доказан, ADR-012/OD-26)
 
 ## Next Step
 
-Phase 3.3 (UnitViewBinder & Object Pooling по ADR-012/OD-26) — [IN PROGRESS]: привязка серверных снапшотов к пулированным UnitView поверх принятого фундамента Фаз 1.0–2.8 и завершённых Шагов 3.1, 3.2 и OD-29.
+Phase 3.4 (Instanced Selection Rings & HP Bars via URP RenderPass - OD-25): инстансированный рендеринг колец выделения и полосок здоровья за 1 Draw Call поверх `UnitViewBinder`.
 
 ## Backlog
 
