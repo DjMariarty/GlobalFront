@@ -24,11 +24,20 @@
 - Phase 2.4 Session / Player Identity — реализована и принята (ADR-008), commit `73d1276`: opaque `SessionId`/`MatchId` в Core; `SessionManager` в `GlobalFront.Server` — единственный источник `PlayerId` (монотонное назначение по порядку join, без повторного использования); session gate перед неизменным `MatchServer`; `LocalCommandChannel` session-attributed; клиент получает `PlayerId` от сервера (`ClientSession`); match lifecycle завершается на `MatchPhase.Finished` — `Closed` зарезервирован для будущего server lifecycle/teardown.
 - Phase 2.5 Network Transport — COMPLETE, `feat: implement network transport (Phase 2.5)`, по ADR-009 (OD-1 = LiteNetLib); финальный независимый review = **APPROVE** (P0=0/P1=0/P2=0): контракт `INetworkCarrier`; собственный детерминированный `OwnDatagramCarrier` (конверт `CarrierVersion`, единое reliable-пространство C0/C1, separate sequenced C2 без ACK, serial arithmetic, receive/reorder windows, cumulative+selective ACK, EWMA RTO, keepalive/idle на `ITransportClock`, per-peer rate limiting, bounded reassembly: ≤2 MB/peer, ≤4 группы, ≤2048 фрагментов, lifetime 2000 ms) поверх `VirtualNetworkPipe` (seeded loss/dup/reorder/latency/corruption/partition); `LiteNetLibCarrier` — LiteNetLib 1.3.5 (precompiled netstandard2.0 DLL в `Assets/_GlobalFront/ThirdParty/LiteNetLib`, интеграция через `precompiledReferences`) с worker-потоком, bounded event queue, app-level C2 fragmentation по MTU пира и carrier-level admission control (bounded `MaxConnections`, per-peer admission reservations); `ServerTransportHost`/`ClientTransportEndpoint` — host-thread orchestration и атрибуция токен → `ConnectionHandle` → `SessionId` → session gate; `CommandWireCodec` (versioned, little-endian, additive, `CommandHeader` не изменён); `NetworkCommandChannel` реализует `ICommandChannel`: `TrySubmit*` — только local pre-flight, авторитетный результат асинхронно через `CommandResultReceived` (`CommandAckPayload` с `SessionRejection` и `MatchCommandRejection`); Snapshot Protocol v1 передаётся как opaque C2 payload (latest-wins по `SnapshotTick`); retransmission semantics: per-packet `MaxRetransmits`, per-item экспоненциальный backoff, Karn RTT sampling, reorder-span throttle против амплификации; полный жизненный цикл соединения, обработка malformed-пакетов, протокольные версии разделены (Carrier/Message/SnapshotProtocol); large C2 (~117 КБ, 3000+ сущностей) доставляется byte-identical через оба носителя.
 
+- Phase 2.6 Snapshot Networking — COMPLETE (ADR-010; delta compression, history ring, keyframe slicing).
+- Phase 2.7 Reconnect & Resync — COMPLETE (session reattachment, full state resync, tactical pause sync).
+- Phase 2.8 Network Prototype Playtest (2v2) — COMPLETE (2v2 topology, abandonment unpause, HUD overlay).
+- Grand Adversarial Audit (Phases 1.0 — 2.8) — [APPROVED: ZERO DEFECTS] на `a37f53d` (661/661 EditMode, 6/6 PlayMode).
+- Phase 3.1 RTS Camera & Input — COMPLETE (`59ef38a`, 665 тестов).
+- Phase 3.2 UnitViewTickBuffer & Interpolation — COMPLETE (`6ab12ad`, 673 теста).
+- OD-29 UnitKind Replication & UnitCatalog — COMPLETE (`be03002`, `212740a`, 687 тестов).
+- Phase 3.3 UnitViewBinder & Object Pooling — COMPLETE (`bcb1e78`, 711 тестов): `UnitView`, `UnitViewPool` (преаллокация, без Instantiate/Destroy в бою, OD-26), `UnitViewBinder` (Zero-GC связывание слотов репликации с представлениями).
+
 ### Verified
 
-- Unity `6000.5.6f1`.
-- **301/301 EditMode** passed по `Artifacts/TestResults/editmode-phase25-r4.xml`, 2026-08-29 (223 baseline + 78 Phase 2.5: codec/reliability/clock/fragmentation/security/integration/performance baseline + real-UDP LiteNetLib loopback + oversized snapshot + retransmission bound + lifecycle/cleanup/spoof soak + admission churn).
-- **6/6 PlayMode** passed по `Artifacts/TestResults/playmode-phase25-r4.xml`, 2026-08-29.
+- Unity `6000.6.2f1`, URP `17.6.0`.
+- **711/711 EditMode** passed (100%), 2026-09-23.
+- **6/6 PlayMode** passed (100%), 2026-09-23.
 
 ## Confirmed Foundation History
 

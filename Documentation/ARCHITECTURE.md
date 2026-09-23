@@ -97,12 +97,19 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 
 Изменение deterministic contract, snapshot layout или protocol-significant constants требует compatibility review и соответствующего ADR.
 
+## Presentation Architecture — Phase 3 (ADR-012, OD-23..OD-29)
+
+Презентационный слой полностью изолирован от серверной детерминированной симуляции:
+- **`UnitViewTickBuffer` (OD-23):** кольцевой буфер (32 слота) с плавающим окном интерполяции тиков, демпфированием микро-джиттера поворота (`HeadingDeadzoneDegrees`), клампированной экстраполяцией к `MoveTarget` и защитой от деления на ноль.
+- **`UnitCatalog` (OD-29):** клиентский справочник архетипов юнитов (`UnitDefinition`), сопоставляющий `UnitKind` с физическими характеристиками, мешами и базовыми параметрами.
+- **`UnitViewPool` & `UnitViewBinder` (OD-26):** преаллоцированный пул физических представлений (`UnitView`) без вызовов `Instantiate`/`Destroy` во время боя. Корпус юнита представляет собой статичный меш (движение гусениц через UV-скролл в шейдере, без Mecanim `Animator`), поворот башни управляется дочерним узлом (`TurretYawDegrees`). Привязка слотов `ClientReplicationWorld` к представлениям выполняется за $O(1)$ через плоский массив без хеширования и без аллокаций памяти в кадре.
+
 ## Verification Baseline
 
-- Unity `6000.5.6f1`, URP `17.5.0`
-- 687/687 EditMode passed (100%) (`Artifacts/TestResults/EditMode-od29-unitkind.xml`)
+- Unity `6000.6.2f1`, URP `17.6.0`
+- 711/711 EditMode passed (100%)
 - 6/6 PlayMode passed (100%)
-- last committed milestone: `212740a` (OD-29 UnitKind Replication & UnitCatalog)
+- last committed milestone: `bcb1e78` (Phase 3.3 UnitViewBinder & Object Pooling, ADR-012/OD-26)
 - Фазы 1.0–2.8 заморожены как сертифицированный бейзлайн (`a37f53d`, Grand Audit APPROVED: ZERO DEFECTS)
 
 ## Связанные документы
