@@ -30,6 +30,13 @@ namespace GlobalFront.Client.Presentation
     /// </summary>
     public sealed class UnitViewBinder
     {
+        /// <summary>
+        /// How many destroyed-view recoveries get a console line. The recovery itself
+        /// runs and is counted for ever; only the log is budgeted, because a view
+        /// destroyed every frame would otherwise drown the rest of the log.
+        /// </summary>
+        private const int DestroyedViewLogBudget = 16;
+
         private readonly UnitViewPool _pool;
         private readonly ClientReplicationWorld _world;
         private readonly UnitViewTickBuffer _buffer;
@@ -141,8 +148,19 @@ namespace GlobalFront.Client.Presentation
         /// <summary>Times a slot came back holding another entity and had to rebind.</summary>
         public long RebindCount => _rebindCount;
 
-        /// <summary>Units that could not be presented because the pool was at its ceiling.</summary>
+        /// <summary>
+        /// Units that could not be presented because the pool had no view for them:
+        /// exhausted with <see cref="UnitViewPool.AllowCombatGrowth"/> off (the OD-26
+        /// default), or at its ceiling.
+        /// </summary>
         public long UnpresentedCount => _unpresentedCount;
+
+        /// <summary>
+        /// Times a slot held a view whose GameObject was destroyed outside the pool.
+        /// Any non-zero value is a bug in the destroyer — OD-26 bans <c>Destroy</c> in
+        /// combat — recorded here so it is countable without reading the console.
+        /// </summary>
+        public long DestroyedViewCount => _destroyedViewCount;
 
         /// <summary>The view bound to one replication slot, if any.</summary>
         public bool TryGetView(int slot, out UnitView view)
@@ -186,7 +204,7 @@ namespace GlobalFront.Client.Presentation
                 if (!ReferenceEquals(view, null) && view == null)
                 {
                     _destroyedViewCount++;
-                    if (_destroyedViewCount <= 16)
+                    if (_destroyedViewCount <= DestroyedViewLogBudget)
                     {
                         Debug.LogWarning(
                             $"{nameof(UnitViewBinder)}: replication slot {slot} held a view destroyed outside the pool ({nameof(UnityEngine.Object.Destroy)} in combat is banned by OD-26); it has been dropped and the unit rebound. Find and fix whatever destroyed it.");
@@ -285,8 +303,10 @@ namespace GlobalFront.Client.Presentation
         {
             if (!_pool.TryAcquire(state.UnitKind, out var view))
             {
-                // Pool at its ceiling: the unit stays un-presented rather than
-                // allocating past the match's warm-up budget.
+                // The pool could not serve the archetype: it is exhausted with combat
+                // growth disabled (the OD-26 default), or already at its ceiling. Either
+                // way the unit stays un-presented rather than allocating past the match's
+                // warm-up budget, and the pool has logged why once.
                 _unpresentedCount++;
                 return false;
             }
