@@ -14,8 +14,21 @@ namespace GlobalFront.Client
     {
         public static RtsInputManager Instance { get; private set; }
 
-        [Header("Mock / Testing Mode")]
-        [SerializeField] private bool isMockMode;
+        /// <summary>
+        /// Headless/EditMode input injection. Deliberately not serialized: a
+        /// <c>[SerializeField]</c> here is a loaded gun — tick it while debugging, save
+        /// the scene, and the release build stops reading keyboard and mouse entirely,
+        /// with nothing in the code to explain why. Set it from a test or a debug build.
+        /// </summary>
+        [NonSerialized] private bool isMockMode;
+
+        /// <summary>
+        /// The one ground plane the client raycasts against: the playfield is flat at
+        /// Y = 0 by contract (OD-27), so it never changes and is allocated once.
+        /// Constructing it per pointer query would put a heap allocation in the code
+        /// path every click and hover runs through.
+        /// </summary>
+        private static readonly Plane GroundPlane = new Plane(Vector3.up, Vector3.zero);
 
         // Mock state
         private Vector2 _mockMoveInput;
@@ -47,6 +60,9 @@ namespace GlobalFront.Client
 
         [Header("Target Camera")]
         [SerializeField] private Camera targetCamera;
+
+        private Camera _cachedActiveCamera;
+        private bool _cameraSearchWarningLogged;
 
         public bool IsMockMode
         {
@@ -146,10 +162,15 @@ namespace GlobalFront.Client
                 var scroll = mouse.scroll.ReadValue().y;
                 _zoomInput = Mathf.Abs(scroll) > 0.001f ? Mathf.Sign(scroll) : 0f;
 
-                // Rotation: Middle mouse button or Alt + horizontal mouse delta
-                var altPressed = keyboard != null && (keyboard.leftAltKey.isPressed || keyboard.rightAltKey.isPressed);
+                // Rotation: middle mouse button, or Alt held together with the right
+                // button. Alt alone used to grab the camera, which turned any Alt-tab
+                // away from the game (or a stray Alt keypress during a move) into a
+                // spin of the whole view — see IsRotationCombination.
                 var mmbPressed = mouse.middleButton.isPressed;
-                _isRotating = mmbPressed || altPressed;
+                var rmbPressed = mouse.rightButton.isPressed;
+                var altPressed = keyboard != null &&
+                                 (keyboard.leftAltKey.isPressed || keyboard.rightAltKey.isPressed);
+                _isRotating = IsRotationCombination(mmbPressed, rmbPressed, altPressed);
                 _rotationInput = _isRotating ? mouse.delta.ReadValue().x : 0f;
 
                 // Mouse buttons
@@ -187,6 +208,25 @@ namespace GlobalFront.Client
         }
 
         /// <summary>
+        /// The whole rotation gesture rule, as data rather than as hardware state.
+        ///
+        /// Alt used to be enough on its own, so an Alt press — the modifier a player
+        /// hits when tabbing out — rotated the battlefield while the cursor travelled
+        /// across the screen. Middle button alone still rotates; Alt is now only a
+        /// fallback and needs the right button held with it.
+        ///
+        /// Exposed as a pure function because the hardware path cannot be exercised in
+        /// EditMode (mock mode short-circuits it, and the test assembly does not
+        /// reference the Input System): this is the rule the failing case is about, and
+        /// it is testable exactly where it is written.
+        /// </summary>
+        public static bool IsRotationCombination(
+            bool middleButtonPressed,
+            bool rightButtonPressed,
+            bool altPressed) =>
+            middleButtonPressed || (altPressed && rightButtonPressed);
+
+        /// <summary>
         /// Projects a ray from the given camera through the current mouse position onto the ground plane (Y = 0).
         /// </summary>
         public bool TryGetMouseWorldPosition(Camera cam, out Vector3 worldPosition)
@@ -203,9 +243,8 @@ namespace GlobalFront.Client
 
             var screenPos = MousePosition;
             var ray = cam.ScreenPointToRay(screenPos);
-            var groundPlane = new Plane(Vector3.up, Vector3.zero);
 
-            if (groundPlane.Raycast(ray, out var enterDistance))
+            if (GroundPlane.Raycast(ray, out var enterDistance))
             {
                 worldPosition = ray.GetPoint(enterDistance);
                 return true;
@@ -220,16 +259,50 @@ namespace GlobalFront.Client
             return worldPos;
         }
 
+        /// <summary>
+        /// Resolves the camera pointer queries fall back to, and remembers it. The old
+        /// version asked <c>Camera.main</c> twice and then ran
+        /// <c>FindAnyObjectByType</c> — a full scene scan on every hover and
+        /// every click, whenever the tag lookup came up empty. A destroyed camera reads
+        /// as null to Unity's comparison, so the cache refreshes itself on the next call.
+        /// </summary>
         private Camera GetActiveCamera()
         {
-            if (targetCamera != null) return targetCamera;
-            if (Camera.main != null) return Camera.main;
-            return FindAnyObjectByType<Camera>();
+            if (targetCamera != null)
+            {
+                return targetCamera;
+            }
+
+            if (_cachedActiveCamera != null)
+            {
+                return _cachedActiveCamera;
+            }
+
+            if (Camera.main != null)
+            {
+                _cachedActiveCamera = Camera.main;
+                return _cachedActiveCamera;
+            }
+
+            _cachedActiveCamera = FindAnyObjectByType<Camera>();
+            if (_cachedActiveCamera == null && !_cameraSearchWarningLogged)
+            {
+                _cameraSearchWarningLogged = true;
+                Debug.LogWarning($"{nameof(RtsInputManager)}: no active camera found in scene.");
+            }
+
+            return _cachedActiveCamera;
         }
 
+        /// <summary>
+        /// Overrides the camera pointer queries project through. Clears the fallback
+        /// cache with it: a stale camera kept past a target or scene change would go on
+        /// raycasting from the view the caller just replaced.
+        /// </summary>
         public void SetTargetCamera(Camera cam)
         {
             targetCamera = cam;
+            _cachedActiveCamera = cam;
         }
 
         #region Mock Configuration Methods

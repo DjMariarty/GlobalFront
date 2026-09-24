@@ -2,6 +2,8 @@ using System.Collections.Generic;
 using GlobalFront.Client;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools.Constraints;
+using Is = NUnit.Framework.Is;
 
 namespace GlobalFront.Tests.EditMode.Client
 {
@@ -179,7 +181,6 @@ namespace GlobalFront.Tests.EditMode.Client
 
             var rayCamera = rayTestObj.AddComponent<Camera>();
             var rt = new RenderTexture(800, 600, 24);
-            _createdObjects.Add(rayTestObj); // camera obj
             rayCamera.targetTexture = rt;
             rayCamera.fieldOfView = 60f;
             rayCamera.nearClipPlane = 0.3f;
@@ -187,31 +188,172 @@ namespace GlobalFront.Tests.EditMode.Client
             rayCamera.transform.position = new Vector3(0f, 10f, -10f);
             rayCamera.transform.rotation = Quaternion.Euler(45f, 0f, 0f);
 
-            // Screen center is (pixelWidth * 0.5, pixelHeight * 0.5) = (400, 300)
-            var screenCenter = new Vector2(rayCamera.pixelWidth * 0.5f, rayCamera.pixelHeight * 0.5f);
-            _inputManager.SetMockMousePosition(screenCenter);
+            try
+            {
+                // Screen center is (pixelWidth * 0.5, pixelHeight * 0.5) = (400, 300)
+                var screenCenter = new Vector2(rayCamera.pixelWidth * 0.5f, rayCamera.pixelHeight * 0.5f);
+                _inputManager.SetMockMousePosition(screenCenter);
 
-            var success = _inputManager.TryGetMouseWorldPosition(rayCamera, out var hitPoint);
+                var success = _inputManager.TryGetMouseWorldPosition(rayCamera, out var hitPoint);
 
-            Assert.IsTrue(success, "Ray from camera must intersect ground plane Y = 0");
-            Assert.AreEqual(0f, hitPoint.x, 0.01f, "Center ray X must be 0");
-            Assert.AreEqual(0f, hitPoint.y, 0.01f, "Center ray Y must be 0");
-            Assert.AreEqual(0f, hitPoint.z, 0.01f, "Center ray Z must be 0");
+                Assert.IsTrue(success, "Ray from camera must intersect ground plane Y = 0");
+                Assert.AreEqual(0f, hitPoint.x, 0.01f, "Center ray X must be 0");
+                Assert.AreEqual(0f, hitPoint.y, 0.01f, "Center ray Y must be 0");
+                Assert.AreEqual(0f, hitPoint.z, 0.01f, "Center ray Z must be 0");
 
-            // Second case: Camera directly overhead at (30, 50, 40), looking straight down (pitch 90)
-            rayCamera.transform.position = new Vector3(30f, 50f, 40f);
-            rayCamera.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+                // Second case: Camera directly overhead at (30, 50, 40), looking straight down (pitch 90)
+                rayCamera.transform.position = new Vector3(30f, 50f, 40f);
+                rayCamera.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
 
-            success = _inputManager.TryGetMouseWorldPosition(rayCamera, out var overheadHit);
+                success = _inputManager.TryGetMouseWorldPosition(rayCamera, out var overheadHit);
 
-            Assert.IsTrue(success, "Overhead ray must intersect ground plane Y = 0");
-            Assert.AreEqual(30f, overheadHit.x, 0.01f, "Overhead ray X must match camera X");
-            Assert.AreEqual(0f, overheadHit.y, 0.01f, "Overhead ray Y must be ground Y = 0");
-            Assert.AreEqual(40f, overheadHit.z, 0.01f, "Overhead ray Z must match camera Z");
+                Assert.IsTrue(success, "Overhead ray must intersect ground plane Y = 0");
+                Assert.AreEqual(30f, overheadHit.x, 0.01f, "Overhead ray X must match camera X");
+                Assert.AreEqual(0f, overheadHit.y, 0.01f, "Overhead ray Y must be ground Y = 0");
+                Assert.AreEqual(40f, overheadHit.z, 0.01f, "Overhead ray Z must match camera Z");
+            }
+            finally
+            {
+                // A render texture is native memory and is not covered by the GameObject
+                // teardown, so it goes on a finally path: an assertion failing above
+                // must not leak one per run.
+                rayCamera.targetTexture = null;
+                rt.Release();
+                Object.DestroyImmediate(rt);
+            }
+        }
 
-            rayCamera.targetTexture = null;
-            rt.Release();
-            Object.DestroyImmediate(rt);
+        // ---------------------------------------------------------------- audit remediation (P1-1, P2-1..P2-5)
+
+        [Test]
+        public void Camera_ZeroPitch_DoesNotProduceNaN()
+        {
+            // The [Range] attributes on these fields constrain the inspector slider
+            // only, so assign the range the slider forbids: at pitch 0 the ground
+            // distance is height / tan(0) = Infinity, which reaches the transform as
+            // NaN and takes the camera out of the world.
+            _cameraController.MinPitch = 0f;
+            _cameraController.MaxPitch = 0f;
+            _cameraController.SetHeight(45f, immediate: true);
+
+            for (var frame = 0; frame < 10; frame++)
+            {
+                _cameraController.ManualUpdate(0.016f);
+            }
+
+            Assert.That(_cameraController.MinPitch, Is.GreaterThanOrEqualTo(10f), "pitch range refuses 0");
+            Assert.That(_cameraController.MaxPitch, Is.GreaterThanOrEqualTo(10f));
+            Assert.That(_cameraController.CurrentPitch, Is.InRange(10f, 85f));
+
+            var position = _camera.transform.position;
+            Assert.That(float.IsNaN(position.x) || float.IsInfinity(position.x), Is.False, "camera X");
+            Assert.That(float.IsNaN(position.y) || float.IsInfinity(position.y), Is.False, "camera Y");
+            Assert.That(float.IsNaN(position.z) || float.IsInfinity(position.z), Is.False, "camera Z");
+            Assert.That(position.y, Is.GreaterThan(0f), "the camera must stay above the map");
+
+            // Same family of division: an inverted or zero-width height range would put
+            // a 0/0 straight into the pitch.
+            _cameraController.MinHeight = 0f;
+            _cameraController.MaxHeight = 0f;
+            _cameraController.ManualUpdate(0.016f);
+            Assert.That(_cameraController.CurrentHeight, Is.GreaterThan(0f));
+
+            var afterHeightAbuse = _camera.transform.position;
+            Assert.That(
+                float.IsNaN(afterHeightAbuse.x) || float.IsNaN(afterHeightAbuse.y) || float.IsNaN(afterHeightAbuse.z),
+                Is.False,
+                "a collapsed height range must not poison the transform either");
+        }
+
+        [Test]
+        public void Camera_NaNInput_IsRejected()
+        {
+            _cameraController.SetFocusPoint(new Vector3(12f, 0f, -8f), immediate: true);
+            _cameraController.SetYaw(25f, immediate: true);
+            var focusX = _cameraController.FocusPoint.x;
+            var height = _cameraController.CurrentHeight;
+            var yaw = _cameraController.CurrentYaw;
+
+            // One NaN in the target is permanent: every later Lerp towards it returns
+            // NaN, so the guard has to be on the way in.
+            _cameraController.SetFocusPoint(new Vector3(float.NaN, 0f, float.NaN), immediate: true);
+            Assert.That(_cameraController.TargetFocusPoint.x, Is.EqualTo(12f).Within(0.01f), "NaN focus refused");
+            Assert.That(_cameraController.FocusPoint.x, Is.EqualTo(focusX).Within(0.01f));
+
+            _cameraController.SetHeight(float.NaN, immediate: true);
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(height).Within(1e-3f), "NaN height refused");
+
+            _cameraController.SetYaw(float.NaN, immediate: true);
+            Assert.That(_cameraController.TargetYaw, Is.EqualTo(yaw).Within(1e-3f), "NaN yaw refused");
+
+            // Infinity is refused for the same reason: it survives one Lerp as NaN.
+            _cameraController.SetHeight(float.PositiveInfinity);
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(height).Within(1e-3f), "infinite height refused");
+
+            _cameraController.SetYaw(float.NegativeInfinity);
+            Assert.That(_cameraController.TargetYaw, Is.EqualTo(yaw).Within(1e-3f), "infinite yaw refused");
+
+            _cameraController.ManualUpdate(0.016f);
+            var position = _camera.transform.position;
+            Assert.That(
+                float.IsNaN(position.x) || float.IsNaN(position.y) || float.IsNaN(position.z),
+                Is.False,
+                "the transform must stay finite after rejected input");
+        }
+
+        [Test]
+        public void Camera_ManualUpdate_DoesNotAllocate()
+        {
+            // Control first: the project measures allocations with Unity's GC.Alloc
+            // recorder, because the editor's Mono runtime reports 0 from
+            // GC.GetAllocatedBytesForCurrentThread().
+            byte[] ballast = null;
+            Assert.That(
+                () => { ballast = new byte[1024]; },
+                UnityEngine.TestTools.Constraints.Is.AllocatingGCMemory());
+            Assert.That(ballast, Is.Not.Null);
+
+            void Drive(int frames)
+            {
+                for (var frame = 0; frame < frames; frame++)
+                {
+                    _cameraController.ManualUpdate(0.016f);
+                }
+            }
+
+            Drive(20);
+            Assert.That(
+                () => Drive(200),
+                UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory(),
+                "the camera step runs every frame and must not touch the heap");
+        }
+
+        [Test]
+        public void InputManager_AltWithoutMouseButton_DoesNotRotate()
+        {
+            // Alt alone used to grab the camera, so the modifier a player presses when
+            // tabbing out spun the whole battlefield while the cursor crossed the screen.
+            //
+            // The rule is asserted as a pure function: mock mode short-circuits the
+            // hardware path by design, and the EditMode assembly does not reference the
+            // Input System, so no test can press a virtual Alt. The gesture table is
+            // what the defect was about, and it is tested where it is written.
+            Assert.That(RtsInputManager.IsRotationCombination(false, false, true), Is.False,
+                "Alt alone must never rotate");
+            Assert.That(RtsInputManager.IsRotationCombination(false, false, false), Is.False,
+                "nothing held must never rotate");
+            Assert.That(RtsInputManager.IsRotationCombination(true, false, false), Is.True,
+                "the middle button still rotates on its own");
+            Assert.That(RtsInputManager.IsRotationCombination(false, true, true), Is.True,
+                "Alt plus right button is the documented fallback gesture");
+            Assert.That(RtsInputManager.IsRotationCombination(false, true, false), Is.False,
+                "the right button alone is a command input, not a camera grab");
+
+            // The mock seam is the test surface for the rest of the suite and stays intact.
+            _inputManager.SetMockIsRotating(false);
+            Assert.That(_inputManager.IsRotating, Is.False);
+            _inputManager.SetMockIsRotating(true);
+            Assert.That(_inputManager.IsRotating, Is.True);
         }
     }
 }

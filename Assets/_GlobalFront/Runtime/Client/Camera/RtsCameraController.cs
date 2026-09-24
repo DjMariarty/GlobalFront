@@ -63,12 +63,66 @@ namespace GlobalFront.Client
         public bool EnableEdgePan { get => enableEdgePan; set => enableEdgePan = value; }
         public float EdgePanThickness { get => edgePanThickness; set => edgePanThickness = value; }
 
-        public float MinHeight { get => minHeight; set => minHeight = value; }
-        public float MaxHeight { get => maxHeight; set => maxHeight = value; }
+        /// <summary>
+        /// Lowest usable zoom height. Off zero because the ground distance is
+        /// <c>height / tan(pitch)</c>, and a zero-width range would also make the
+        /// <c>InverseLerp</c> in <see cref="ApplyTransform"/> divide by zero.
+        /// </summary>
+        private const float HeightFloor = 1f;
+
+        /// <summary>
+        /// Pitch floor. <see cref="RangeAttribute"/> on the serialized field only
+        /// constrains the inspector slider, so a script or a hand-edited scene can
+        /// still assign 0 — and at pitch 0 the ground distance is
+        /// <c>height / tan(0) = Infinity</c>, which lands on the transform as NaN and
+        /// takes the camera out of the world. 10 degrees keeps tan() far from zero
+        /// while still reading as an almost horizontal view.
+        /// </summary>
+        private const float PitchFloorDegrees = 10f;
+
+        /// <summary>Pitch ceiling. At 90 degrees tan() diverges, so the range stops short.</summary>
+        private const float PitchCeilingDegrees = 85f;
+
+        /// <summary>
+        /// Smallest tan() the ground distance may divide by. A pure belt-and-braces
+        /// floor: the pitch clamp above already keeps the real value near 0.18.
+        /// </summary>
+        private const float MinTanPitch = 0.01f;
+
+        /// <summary>
+        /// Lowest zoom height. Clamped through the setter because the pitch is derived
+        /// from the height fraction, so an inverted or zero-width range is a NaN
+        /// generator, not just a cosmetic mistake.
+        /// </summary>
+        public float MinHeight
+        {
+            get => minHeight;
+            set => minHeight = Mathf.Min(Mathf.Max(HeightFloor, value), maxHeight);
+        }
+
+        /// <summary>Highest zoom height; see <see cref="MinHeight"/> for the ordering rule.</summary>
+        public float MaxHeight
+        {
+            get => maxHeight;
+            set => maxHeight = Mathf.Max(value, minHeight);
+        }
+
         public float ZoomStep { get => zoomStep; set => zoomStep = value; }
         public float ZoomSmoothing { get => zoomSmoothing; set => zoomSmoothing = value; }
-        public float MinPitch { get => minPitch; set => minPitch = value; }
-        public float MaxPitch { get => maxPitch; set => maxPitch = value; }
+
+        /// <summary>Pitch at the lowest zoom; the clamp is here rather than in the inspector because <see cref="RangeAttribute"/> does not bind code.</summary>
+        public float MinPitch
+        {
+            get => minPitch;
+            set => minPitch = Mathf.Clamp(value, PitchFloorDegrees, maxPitch);
+        }
+
+        /// <summary>Pitch at the highest zoom; see <see cref="MinPitch"/>.</summary>
+        public float MaxPitch
+        {
+            get => maxPitch;
+            set => maxPitch = Mathf.Clamp(value, minPitch, PitchCeilingDegrees);
+        }
 
         public float RotationSensitivity { get => rotationSensitivity; set => rotationSensitivity = value; }
         public float RotationSmoothing { get => rotationSmoothing; set => rotationSmoothing = value; }
@@ -151,21 +205,38 @@ namespace GlobalFront.Client
             {
                 var yawRot = Quaternion.Euler(0f, _targetYaw, 0f);
                 var moveDir = yawRot * new Vector3(move.x, 0f, move.y);
-                _targetFocusPoint += moveDir * (moveSpeed * deltaTime);
-                ClampToBounds(ref _targetFocusPoint);
+                var advanced = _targetFocusPoint + moveDir * (moveSpeed * deltaTime);
+
+                // Commit only a finite result, silently: moveSpeed is a serialized
+                // tuning field, and one NaN through it would otherwise stick in the
+                // focus forever. The setter paths log; this does not, because it is
+                // reached every frame of a held key.
+                if (IsFinite(advanced))
+                {
+                    _targetFocusPoint = advanced;
+                    ClampToBounds(ref _targetFocusPoint);
+                }
             }
 
             // Zoom input
             var zoom = inputManager.ZoomInput;
             if (Mathf.Abs(zoom) > 0.0001f)
             {
-                _targetHeight = Mathf.Clamp(_targetHeight - zoom * zoomStep, minHeight, maxHeight);
+                var height = _targetHeight - zoom * zoomStep;
+                if (IsFinite(height))
+                {
+                    _targetHeight = Mathf.Clamp(height, minHeight, maxHeight);
+                }
             }
 
             // Rotation input
             if (inputManager.IsRotating)
             {
-                _targetYaw += inputManager.RotationInput * rotationSensitivity;
+                var yaw = _targetYaw + inputManager.RotationInput * rotationSensitivity;
+                if (IsFinite(yaw))
+                {
+                    _targetYaw = yaw;
+                }
             }
 
             // Reset rotation
@@ -219,12 +290,30 @@ namespace GlobalFront.Client
                 _currentYaw = _targetYaw;
             }
 
-            _currentHeight = Mathf.Clamp(_currentHeight, minHeight, maxHeight);
-            var heightFraction = Mathf.InverseLerp(minHeight, maxHeight, _currentHeight);
-            _currentPitch = Mathf.Lerp(minPitch, maxPitch, heightFraction);
+            // The last line of defence, deliberately independent of the setters: a scene
+            // asset can serialize a pitch or a height range no setter ever saw, and both
+            // feed a division. Everything below is bounded before it divides, and the
+            // serialized fields are read through locals rather than rewritten in place.
+            var heightFloor = Mathf.Max(HeightFloor, minHeight);
+            var heightCeiling = Mathf.Max(maxHeight, heightFloor);
+            _currentHeight = Mathf.Clamp(_currentHeight, heightFloor, heightCeiling);
+
+            // A bounded InverseLerp: heightCeiling == heightFloor would otherwise return
+            // NaN and hand it straight to the pitch.
+            var heightFraction = heightCeiling > heightFloor
+                ? (_currentHeight - heightFloor) / (heightCeiling - heightFloor)
+                : 0f;
+
+            var pitchFloor = Mathf.Clamp(minPitch, PitchFloorDegrees, maxPitch);
+            var pitchCeiling = Mathf.Max(maxPitch, pitchFloor);
+            _currentPitch = Mathf.Clamp(
+                Mathf.Lerp(pitchFloor, pitchCeiling, heightFraction),
+                PitchFloorDegrees,
+                PitchCeilingDegrees);
 
             var pitchRad = _currentPitch * Mathf.Deg2Rad;
-            var groundDist = _currentHeight / Mathf.Tan(pitchRad);
+            var tanPitch = Mathf.Max(MinTanPitch, Mathf.Tan(pitchRad));
+            var groundDist = _currentHeight / tanPitch;
             var yawRotation = Quaternion.Euler(0f, _currentYaw, 0f);
             var offset = yawRotation * new Vector3(0f, _currentHeight, -groundDist);
 
@@ -237,8 +326,21 @@ namespace GlobalFront.Client
             ApplyTransform(true);
         }
 
+        /// <summary>
+        /// Moves the focus. A NaN or infinite point is refused rather than clamped:
+        /// <c>Mathf.Clamp(NaN, min, max)</c> is NaN, so a clamp would not repair it, and
+        /// one poisoned <c>_targetFocusPoint</c> is permanent — every later
+        /// <c>Lerp</c> towards it returns NaN and the camera freezes for the rest of the
+        /// session. The door is the only place that can still refuse it.
+        /// </summary>
         public void SetFocusPoint(Vector3 point, bool immediate = false)
         {
+            if (!IsFinite(point))
+            {
+                Debug.LogWarning($"{nameof(RtsCameraController)}: ignored a non-finite focus point.");
+                return;
+            }
+
             _targetFocusPoint = point;
             ClampToBounds(ref _targetFocusPoint);
             if (immediate)
@@ -248,8 +350,15 @@ namespace GlobalFront.Client
             }
         }
 
+        /// <summary>Sets the zoom target. See <see cref="SetFocusPoint"/> for why a non-finite value is refused instead of clamped.</summary>
         public void SetHeight(float height, bool immediate = false)
         {
+            if (!IsFinite(height))
+            {
+                Debug.LogWarning($"{nameof(RtsCameraController)}: ignored a non-finite height.");
+                return;
+            }
+
             _targetHeight = Mathf.Clamp(height, minHeight, maxHeight);
             if (immediate)
             {
@@ -258,8 +367,15 @@ namespace GlobalFront.Client
             }
         }
 
+        /// <summary>Sets the yaw target. See <see cref="SetFocusPoint"/> for why a non-finite value is refused instead of clamped.</summary>
         public void SetYaw(float yaw, bool immediate = false)
         {
+            if (!IsFinite(yaw))
+            {
+                Debug.LogWarning($"{nameof(RtsCameraController)}: ignored a non-finite yaw.");
+                return;
+            }
+
             _targetYaw = yaw;
             if (immediate)
             {
@@ -268,6 +384,15 @@ namespace GlobalFront.Client
             }
         }
 
+        /// <summary>
+        /// Unity's numeric guards spelled once. <c>float.IsNaN</c> alone would let an
+        /// infinity through, and an infinity survives <c>Lerp</c> as NaN one frame later.
+        /// </summary>
+        private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+
+        private static bool IsFinite(in Vector3 value) =>
+            IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+
         public void SetInputManager(RtsInputManager manager)
         {
             inputManager = manager;
@@ -275,8 +400,21 @@ namespace GlobalFront.Client
 
         private void ClampToBounds(ref Vector3 point)
         {
-            point.x = Mathf.Clamp(point.x, mapBounds.xMin, mapBounds.xMax);
-            point.z = Mathf.Clamp(point.z, mapBounds.yMin, mapBounds.yMax);
+            // Commit only finite results. mapBounds is serialized, so a hand-edited
+            // scene can carry NaN bounds, and Mathf.Clamp(NaN, a, b) is NaN — writing
+            // that back would poison the focus through the one method every path calls.
+            var x = Mathf.Clamp(point.x, mapBounds.xMin, mapBounds.xMax);
+            var z = Mathf.Clamp(point.z, mapBounds.yMin, mapBounds.yMax);
+            if (IsFinite(x))
+            {
+                point.x = x;
+            }
+
+            if (IsFinite(z))
+            {
+                point.z = z;
+            }
+
             point.y = 0f;
         }
     }
