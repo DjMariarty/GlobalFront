@@ -88,6 +88,15 @@ namespace GlobalFront.Client
         /// <summary>
         /// Raycast world position of the mouse on the ground plane (Y = 0).
         /// </summary>
+        /// <remarks>
+        /// Safe fallback, not a hit: when the camera ray is parallel to the plane or aimed
+        /// away from it — a horizontal pitch, or a camera flown above the map looking up —
+        /// there is no intersection with <see cref="GroundPlane"/> and the property returns
+        /// <see cref="Vector3.zero"/>. The client pitch is clamped below 90 degrees, so this
+        /// needs an unusual camera, but the value is indistinguishable from a real hit on the
+        /// world origin. Callers that must tell the two apart use
+        /// <see cref="TryGetMouseWorldPosition"/>, which reports the miss as false.
+        /// </remarks>
         public Vector3 MouseWorldPosition
         {
             get
@@ -317,9 +326,20 @@ namespace GlobalFront.Client
             _mockMoveInput = moveInput.sqrMagnitude > 1f ? moveInput.normalized : moveInput;
         }
 
+        /// <summary>
+        /// Injects zoom input on the same scale and with the same sign as the hardware scroll:
+        /// positive zooms in (<see cref="RtsCameraController"/> subtracts it from the height
+        /// target, so the camera descends), negative zooms out and lifts the camera, zero holds.
+        /// The magnitude is clamped to <c>[-1, 1]</c> because the hardware path quantizes the
+        /// wheel with <see cref="Mathf.Sign"/> and never reports more than a unit step — an
+        /// unclamped mock value would move the camera further per step than any physical wheel
+        /// can (a mock of 3 drove 24 m against the 8 m a real scroll produces). Like the
+        /// hardware path, zoom is a discrete step and is deliberately not scaled by deltaTime;
+        /// both paths stay identical in that respect.
+        /// </summary>
         public void SetMockZoomInput(float zoomInput)
         {
-            _mockZoomInput = zoomInput;
+            _mockZoomInput = Mathf.Clamp(zoomInput, -1f, 1f);
         }
 
         public void SetMockRotationInput(float rotationInput)

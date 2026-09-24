@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Reflection;
 using GlobalFront.Client;
 using NUnit.Framework;
 using UnityEngine;
@@ -326,6 +327,31 @@ namespace GlobalFront.Tests.EditMode.Client
                 () => Drive(200),
                 UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory(),
                 "the camera step runs every frame and must not touch the heap");
+
+            // The run above is the idle branch: SetUp leaves every mock input at zero, so it
+            // proves nothing about the code a player actually exercises, and an allocation in
+            // the movement path would sail through it. Drive every input branch and measure
+            // the same way — same recorder, because the editor's Mono runtime still reports 0
+            // bytes from GC.GetAllocatedBytesForCurrentThread().
+            _inputManager.SetMockMoveInput(new Vector2(1f, 0f));
+            _inputManager.SetMockZoomInput(1f);
+            _inputManager.SetMockRotationInput(12f);
+            _inputManager.SetMockIsRotating(true);
+            _inputManager.SetMockResetRotation(true);
+            _inputManager.SetMockMousePosition(new Vector2(2f, 2f));
+
+            Drive(20);
+            Assert.That(_cameraController.TargetFocusPoint.x, Is.GreaterThan(0f),
+                "the pan branch must actually be running, or this measures the idle path again");
+            Assert.That(_cameraController.TargetYaw, Is.EqualTo(0f),
+                "the North reset must win over the rotation input");
+
+            Drive(200);
+            Assert.That(
+                () => Drive(200),
+                UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory(),
+                "the hot path under live pan, zoom and rotation input allocates zero bytes");
+            _inputManager.ResetMockInputs();
         }
 
         [Test]
@@ -354,6 +380,124 @@ namespace GlobalFront.Tests.EditMode.Client
             Assert.That(_inputManager.IsRotating, Is.False);
             _inputManager.SetMockIsRotating(true);
             Assert.That(_inputManager.IsRotating, Is.True);
+        }
+
+        [Test]
+        public void InputManager_MockZoomInput_MatchesHardwareScrollScaleAndSign()
+        {
+            // R-1: the wheel is quantized to Sign(scroll), so a real mouse can never ask for
+            // more than one zoom step per frame. The mock path used to forward its argument
+            // verbatim, which let a test drive 24 m where hardware drives 8 m — the two models
+            // of the same gesture disagreed, and every zoom assertion inherited that.
+            var zoomStep = _cameraController.ZoomStep;
+
+            _inputManager.SetMockZoomInput(3f);
+            Assert.That(_inputManager.ZoomInput, Is.EqualTo(1f).Within(1e-5f),
+                "an over-range mock is quantized to the hardware unit step");
+
+            _inputManager.SetMockZoomInput(-3f);
+            Assert.That(_inputManager.ZoomInput, Is.EqualTo(-1f).Within(1e-5f), "same in the other direction");
+
+            _inputManager.SetMockZoomInput(0.25f);
+            Assert.That(_inputManager.ZoomInput, Is.EqualTo(0.25f).Within(1e-5f),
+                "a partial wheel stays partial; only the range is bounded");
+
+            _inputManager.SetMockZoomInput(3f);
+            _cameraController.SetHeight(45f, immediate: true);
+            _cameraController.ManualUpdate(0.016f);
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - zoomStep).Within(1e-3f),
+                "positive zoom means the camera descends, by exactly one step");
+
+            _cameraController.ManualUpdate(0.016f);
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - 2f * zoomStep).Within(1e-3f),
+                "one step per frame, not one scaled by the injected magnitude");
+
+            _inputManager.SetMockZoomInput(-1f);
+            _cameraController.ManualUpdate(0.016f);
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - zoomStep).Within(1e-3f),
+                "negative zoom means the camera climbs");
+
+            _inputManager.SetMockZoomInput(0f);
+            _cameraController.ManualUpdate(0.016f);
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - zoomStep).Within(1e-3f),
+                "zero holds");
+        }
+
+        [Test]
+        public void Camera_BrokenSceneRange_IsSanitizedBeforeFirstApplyTransform()
+        {
+            // R-4: a scene file writes into the serialized fields without passing a setter,
+            // Unity round-trips a hand-edited NaN or infinity back out of the YAML, and the
+            // [Range] attributes only ever constrained the inspector slider. Reproduce that
+            // order — fields poisoned, then Awake — because every one of them feeds a division
+            // and a NaN there is the original P1-1 defect: a transform assignment of
+            // { NaN, NaN, NaN }.
+            var brokenRig = new GameObject("RtsCameraTest_BrokenSceneRig");
+            _createdObjects.Add(brokenRig);
+            brokenRig.AddComponent<Camera>();
+            var brokenController = brokenRig.AddComponent<RtsCameraController>();
+
+            WriteSerializedField(brokenController, "minPitch", float.NaN);
+            WriteSerializedField(brokenController, "maxPitch", float.PositiveInfinity);
+            WriteSerializedField(brokenController, "minHeight", float.NaN);
+            WriteSerializedField(brokenController, "startHeight", float.NegativeInfinity);
+            // Finite but inverted: a clamp on one field alone leaves the range unusable.
+            WriteSerializedField(brokenController, "maxHeight", 2f);
+            InvokeAwake(brokenController);
+
+            Assert.That(brokenController.MinPitch, Is.EqualTo(40f).Within(1e-4f), "NaN pitch falls back");
+            Assert.That(brokenController.MaxPitch, Is.InRange(brokenController.MinPitch, 85f),
+                "an infinite pitch ceiling falls back inside the range");
+            Assert.That(brokenController.MinHeight, Is.GreaterThanOrEqualTo(1f), "NaN height falls back");
+            Assert.That(brokenController.MaxHeight, Is.GreaterThanOrEqualTo(brokenController.MinHeight),
+                "the height range stays ordered whatever the scene claimed");
+            Assert.That(brokenController.CurrentHeight, Is.InRange(brokenController.MinHeight, brokenController.MaxHeight));
+            Assert.That(brokenController.CurrentPitch, Is.InRange(10f, 85f));
+
+            var position = brokenController.transform.position;
+            Assert.That(
+                float.IsNaN(position.x) || float.IsNaN(position.y) || float.IsNaN(position.z)
+                || float.IsInfinity(position.x) || float.IsInfinity(position.y) || float.IsInfinity(position.z),
+                Is.False,
+                "the transform must be finite after Awake rebuilds it");
+            Assert.That(position.y, Is.GreaterThan(0f), "the camera must stay above the map");
+
+            // The same poison through the public door: clamping a NaN stores a NaN, so the
+            // setters refuse it instead.
+            var minPitch = _cameraController.MinPitch;
+            var maxHeight = _cameraController.MaxHeight;
+            _cameraController.MinPitch = float.NaN;
+            _cameraController.MaxPitch = float.NaN;
+            _cameraController.MinHeight = float.NaN;
+            _cameraController.MaxHeight = float.PositiveInfinity;
+            Assert.That(_cameraController.MinPitch, Is.EqualTo(minPitch).Within(1e-4f), "pitch setter refuses NaN");
+            Assert.That(_cameraController.MaxPitch, Is.InRange(_cameraController.MinPitch, 85f));
+            Assert.That(_cameraController.MaxHeight, Is.EqualTo(maxHeight).Within(1e-4f), "height setter refuses NaN");
+
+            _cameraController.ManualUpdate(0.016f);
+            var livePosition = _cameraController.transform.position;
+            Assert.That(
+                float.IsNaN(livePosition.x) || float.IsNaN(livePosition.y) || float.IsNaN(livePosition.z),
+                Is.False,
+                "and the step after it must still be finite");
+        }
+
+        /// <summary>
+        /// Writes a serialized field directly, the way scene deserialization does: no setter,
+        /// no attribute, no validation. Awake is invoked separately for the same reason.
+        /// </summary>
+        private static void WriteSerializedField(RtsCameraController controller, string fieldName, float value)
+        {
+            typeof(RtsCameraController)
+                .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
+                .SetValue(controller, value);
+        }
+
+        private static void InvokeAwake(RtsCameraController controller)
+        {
+            typeof(RtsCameraController)
+                .GetMethod("Awake", BindingFlags.NonPublic | BindingFlags.Instance)
+                .Invoke(controller, null);
         }
     }
 }

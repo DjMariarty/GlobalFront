@@ -26,13 +26,13 @@ namespace GlobalFront.Client
         [SerializeField] private float edgePanThickness = 12f;
 
         [Header("Zoom & Dynamic Pitch")]
-        [SerializeField] private float minHeight = 15f;
-        [SerializeField] private float maxHeight = 80f;
+        [SerializeField] private float minHeight = DefaultMinHeight;
+        [SerializeField] private float maxHeight = DefaultMaxHeight;
         [SerializeField] private float startHeight = 45f;
         [SerializeField] private float zoomStep = 8f;
         [SerializeField] private float zoomSmoothing = 12f;
-        [SerializeField, Range(30f, 60f)] private float minPitch = 40f;
-        [SerializeField, Range(60f, 85f)] private float maxPitch = 70f;
+        [SerializeField, Range(30f, 60f)] private float minPitch = DefaultMinPitch;
+        [SerializeField, Range(60f, 85f)] private float maxPitch = DefaultMaxPitch;
 
         [Header("Rotation")]
         [SerializeField] private float rotationSensitivity = 0.5f;
@@ -89,39 +89,48 @@ namespace GlobalFront.Client
         /// </summary>
         private const float MinTanPitch = 0.01f;
 
+        // Tuning defaults, named so the Awake sanitizer can fall back to the same value the
+        // field initializer uses instead of inventing a second one.
+        private const float DefaultMinHeight = 15f;
+        private const float DefaultMaxHeight = 80f;
+        private const float DefaultMinPitch = 40f;
+        private const float DefaultMaxPitch = 70f;
+
         /// <summary>
         /// Lowest zoom height. Clamped through the setter because the pitch is derived
         /// from the height fraction, so an inverted or zero-width range is a NaN
-        /// generator, not just a cosmetic mistake.
+        /// generator, not just a cosmetic mistake. A non-finite write is dropped rather
+        /// than clamped: <c>Mathf.Clamp</c> returns NaN for NaN, so clamping would store
+        /// the very value this clamp exists to keep out.
         /// </summary>
         public float MinHeight
         {
             get => minHeight;
-            set => minHeight = Mathf.Min(Mathf.Max(HeightFloor, value), maxHeight);
+            set => minHeight = Mathf.Min(Mathf.Max(HeightFloor, FiniteOr(value, minHeight)), maxHeight);
         }
 
         /// <summary>Highest zoom height; see <see cref="MinHeight"/> for the ordering rule.</summary>
         public float MaxHeight
         {
             get => maxHeight;
-            set => maxHeight = Mathf.Max(value, minHeight);
+            set => maxHeight = Mathf.Max(FiniteOr(value, maxHeight), minHeight);
         }
 
         public float ZoomStep { get => zoomStep; set => zoomStep = value; }
         public float ZoomSmoothing { get => zoomSmoothing; set => zoomSmoothing = value; }
 
-        /// <summary>Pitch at the lowest zoom; the clamp is here rather than in the inspector because <see cref="RangeAttribute"/> does not bind code.</summary>
+        /// <summary>Pitch at the lowest zoom; the clamp is here rather than in the inspector because <see cref="RangeAttribute"/> does not bind code. See <see cref="MinHeight"/> for why a non-finite write is dropped.</summary>
         public float MinPitch
         {
             get => minPitch;
-            set => minPitch = Mathf.Clamp(value, PitchFloorDegrees, maxPitch);
+            set => minPitch = Mathf.Clamp(FiniteOr(value, minPitch), PitchFloorDegrees, maxPitch);
         }
 
         /// <summary>Pitch at the highest zoom; see <see cref="MinPitch"/>.</summary>
         public float MaxPitch
         {
             get => maxPitch;
-            set => maxPitch = Mathf.Clamp(value, minPitch, PitchCeilingDegrees);
+            set => maxPitch = Mathf.Clamp(FiniteOr(value, maxPitch), minPitch, PitchCeilingDegrees);
         }
 
         public float RotationSensitivity { get => rotationSensitivity; set => rotationSensitivity = value; }
@@ -131,7 +140,27 @@ namespace GlobalFront.Client
 
         private void Awake()
         {
+            SanitizeSerializedRanges();
             InitializeState();
+        }
+
+        /// <summary>
+        /// Forces the serialized pitch/height fields into a finite, ordered range before the
+        /// first <see cref="ApplyTransform"/>. Every one of them feeds a division, and a scene
+        /// asset reaches them without passing a setter: Unity round-trips a hand-edited
+        /// <c>NaN</c> in the YAML back into the field, and <see cref="RangeAttribute"/> only
+        /// constrains the inspector slider. Doing it here rather than only inside
+        /// <see cref="ApplyTransform"/> is what makes the whole object trustworthy from the
+        /// first frame — properties, <see cref="InitializeState"/> and the height clamp in
+        /// <see cref="SetHeight"/> all read these fields as already valid.
+        /// </summary>
+        private void SanitizeSerializedRanges()
+        {
+            minPitch = Mathf.Clamp(FiniteOr(minPitch, DefaultMinPitch), PitchFloorDegrees, PitchCeilingDegrees);
+            maxPitch = Mathf.Clamp(FiniteOr(maxPitch, DefaultMaxPitch), minPitch, PitchCeilingDegrees);
+            minHeight = Mathf.Max(HeightFloor, FiniteOr(minHeight, DefaultMinHeight));
+            maxHeight = Mathf.Max(minHeight, FiniteOr(maxHeight, DefaultMaxHeight));
+            startHeight = Mathf.Clamp(FiniteOr(startHeight, minHeight), minHeight, maxHeight);
         }
 
         public void InitializeState()
@@ -290,10 +319,11 @@ namespace GlobalFront.Client
                 _currentYaw = _targetYaw;
             }
 
-            // The last line of defence, deliberately independent of the setters: a scene
-            // asset can serialize a pitch or a height range no setter ever saw, and both
-            // feed a division. Everything below is bounded before it divides, and the
-            // serialized fields are read through locals rather than rewritten in place.
+            // The last line of defence, deliberately independent of the Awake sanitizer and of
+            // the setters: the two ranges can still be collapsed to a zero width by a legitimate
+            // call (MinHeight(60) then MaxHeight(20) lands on 60..60), and both feed a division.
+            // Everything below is bounded before it divides, and the serialized fields are read
+            // through locals rather than rewritten in place.
             var heightFloor = Mathf.Max(HeightFloor, minHeight);
             var heightCeiling = Mathf.Max(maxHeight, heightFloor);
             _currentHeight = Mathf.Clamp(_currentHeight, heightFloor, heightCeiling);
@@ -389,6 +419,14 @@ namespace GlobalFront.Client
         /// infinity through, and an infinity survives <c>Lerp</c> as NaN one frame later.
         /// </summary>
         private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+
+        /// <summary>
+        /// The number, or <paramref name="fallback"/> when it is not one. Needed because
+        /// <c>Mathf.Clamp</c> and <c>Mathf.Max</c> propagate a non-finite value instead of
+        /// repairing it — clamping NaN still yields NaN — so a range that must stay usable
+        /// needs a fallback, not a clamp.
+        /// </summary>
+        private static float FiniteOr(float value, float fallback) => IsFinite(value) ? value : fallback;
 
         private static bool IsFinite(in Vector3 value) =>
             IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
