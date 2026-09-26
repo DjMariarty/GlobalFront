@@ -4,7 +4,7 @@ GlobalFront — современная реализация фундамента
 
 Техническая цель — перенести эту формулу на современную архитектуру: authoritative server, deterministic simulation, улучшенные pathfinding, multiplayer, производительность, стабильность, UX, reconnect/resync, replay и диагностика desync.
 
-> Unity: `6000.6.2f1` • рендер: URP • текущий статус: Фазы 1.0–2.8 полностью завершены и приняты (Grand Audit [APPROVED: ZERO DEFECTS]); в активной разработке Фаза 3 (завершены шаги 3.1, 3.2, OD-29, 3.3 — 711 тестов green)
+> Unity: `6000.6.2f1` • рендер: URP `17.6.0` • текущий статус: Фазы 1.0–2.8 полностью завершены и приняты (Grand Audit [APPROVED: ZERO DEFECTS]); в активной разработке Фаза 3 (завершены шаги 3.1, 3.2, OD-29, 3.3 и 3.4 — 763 теста green)
 
 ## Product 1.0
 
@@ -24,7 +24,7 @@ GlobalFront — современная реализация фундамента
 
 ## Текущее состояние
 
-Фазы 1.0–2.8 полностью завершены и приняты: **661/661 EditMode** и **6/6 PlayMode** тестов пройдены (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`, отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). В Фазе 3 (RTS Camera, Controls, Visuals) завершены Шаги 3.1, 3.2, OD-29 и 3.3 (**711/711 EditMode** и **6/6 PlayMode** тестов пройдены).
+Фазы 1.0–2.8 полностью завершены и приняты: **661/661 EditMode** и **6/6 PlayMode** тестов пройдены (Grand Adversarial Audit **[APPROVED: ZERO DEFECTS]** на `a37f53d`, отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). В Фазе 3 (RTS Camera, Controls, Visuals) завершены Шаги 3.1, 3.2, OD-29, 3.3 и 3.4 (инстансированные кольца выделения и полоски здоровья) — **763/763 EditMode** и **6/6 PlayMode** тестов пройдены.
 
 Краткая сводка для человека или AI-агента: [CURRENT_STATE.md](Documentation/CURRENT_STATE.md).
 

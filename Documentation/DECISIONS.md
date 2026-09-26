@@ -384,9 +384,9 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - Изменение certified baseline требует нового ADR и повторного gate-прогона (EditMode + PlayMode + чистая консоль).
 
 ## ADR-012: Phase 3 Client Presentation Stack & Tick Interpolation Architecture
-*Status:* ACCEPTED (Consensus: DeepSeek R&D + Qwen Peer-Review)  
-*Date:* 2026-09-22  
-*Target:* Unity 6000.5.6f1 / URP 17.5.0 / uGUI 2.5.0  
+*Status:* ACCEPTED (Consensus: DeepSeek R&D + Qwen Peer-Review); OD-25 и OD-26 реализованы в Phase 3.3–3.4  
+*Date:* 2026-09-22 (target-окружение уточнено 2026-09-26)  
+*Target:* Unity 6000.6.2f1 / URP 17.6.0 / uGUI 2.6.0  
 ### Context & Problem Statement
 Симуляция работает на 20 Гц (целочисленные миллиметры WorldPointMm, Y=0), а сетевая репликация дельт работает с адаптивной частотой 10 Гц (с падением до 5 Гц при потерях пакетов согласно ADR-010/OD-12). Клиентский рендеринг работает с частотой 60–144+ FPS. Требуется исключить джиттер, предотвратить деление на 0 (0/0 = NaN), устранить устаревший прототип PrototypeUnit (делавший new Material и CreatePrimitive в рантайме) и обеспечить 60+ FPS на 400 юнитах при Zero-GC.
 ### Owner Decisions (OD-23 — OD-29):
@@ -397,19 +397,25 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - **Безопасная математика:** При единственном сэмпле или `newerTick == olderTick` выполняется мгновенный snap (деление на 0 в alpha исключено).
 - **Поворот (Yaw):** Приоритет отдается наведению на `MoveTarget`/`AttackTarget`. Смещение используется как fallback с мертвой зоной ($|\Delta p| < 10\text{ mm}$ — угол сохраняется), сглаживание через `SlewDegrees`.
 - **Сброс:** Публичные методы `Flush()` и `Resync()` для корректной обработки тактической паузы (OD-18) и сетевого ресинка (OD-20).
+- **Реализовано:** Phase 3.2, commit `6ab12ad`; ремедиация аудита — `eac0e1d` (P1-1, P1-2/F-1, P2-1/F-2, P2-2, P2-3/F-5, N-1/F-1, F-4, F-2), **[APPROVED: ZERO DEFECTS]**, 735 тестов.
 #### [OD-24] UI & HUD Framework
 - **Runtime HUD:** Строго на **uGUI (Canvas)**. Изоляция на 3 канваса: постоянный HUD, динамическая выборка, transient-канвас для рамки выделения (1 `Image` типа Sliced, 0 аллокаций).
 - **Миникарта:** Статический террейн запекается в текстуру 1 раз при загрузке карты. В рантайме на 30 Гц рисуется только оверлей инстансированных точек юнитов поверх нее (без второй постоянной камеры URP).
 - **UI Toolkit:** Зарезервирован исключительно для Editor-тулов.
+- **Статус:** **[READY / NEXT]** — Phase 3.5 «Selection System, Screen-Space Drag-Box & RTS Command Issuing». Transient-канвас рамки выделения из этого OD потребляет `UnitView.IsSelected` (OD-25) и `UnitViewBinder` (OD-26); выдача команд идёт через существующий `ICommandChannel` и не меняет детерминированный Core.
 #### [OD-25] Instanced Overlay Batches (Rings & HP Bars)
-- Полоски здоровья и кольца выделения рендерятся через `Graphics.RenderMeshInstanced` (1 draw call на бары, 1 на кольца).
-- Отрисовка заворачивается в URP `ScriptableRenderPass` (через `RasterCommandBuffer`) в событие `AfterRenderingOpaques` для полной совместимости с RenderGraph.
+- Полоски здоровья и кольца выделения рендерятся инстансированными батчами (1 draw call на бары, 1 на кольца) из предвыделенных плоских массивов; заполнение выполняет `UnitOverlayBatcher.BuildBatches(UnitViewBinder, Quaternion)` с **0 B GC Alloc** и детерминированным порядком.
+- Отрисовка заворачивается в URP `ScriptableRenderPass` (через `RasterCommandBuffer`) в событие `AfterRenderingOpaques` для полной совместимости с RenderGraph: `UnitOverlayRendererFeature` регистрирует `UnitOverlayRenderPass`, который в `RecordRenderGraph` вызывает `DrawMeshInstanced`.
+- Батчи чанкуются по 250 инстансов — лимит константного буфера `UNITY_INSTANCED_ARRAY_SIZE` — с отдельным `MaterialPropertyBlock` на каждый вид оверлея.
 - Запрет per-unit Canvas и URP Decal Projector для подвижных колец.
-- Защита от NaN: `InvMaxHealth` предвычисляется при спавне, расчет доли здоровья ведется умножением (`health * invMaxHealth`).
+- Защита от NaN: `InvMaxHealth` предвычисляется при спавне, расчет доли здоровья ведется умножением (`health * invMaxHealth`); позиции, масштабы и входной кватернион камеры дополнительно фильтруются на `NaN`/`Infinity` и вырожденность.
+- Геометрия генерируется процедурно (`UnitOverlayGeometry`: ground-quad в XZ для колец, billboard-quad в XY для HP-баров), материал включает `enableInstancing`; шейдер `GlobalFront/Unit Overlay` — двухпроходный instanced HLSL (`UnitOverlayRing` с `fwidth`-антиалиасингом, `UnitOverlayHealthBar` с рамкой и заливкой по доле здоровья).
+- **Реализовано:** Phase 3.4, commit `27a10f6` (`UnitOverlayBatcher`, `UnitOverlayGeometry`, `UnitOverlayRenderPass`, `UnitOverlayRendererFeature`, `UnitOverlay.shader`); покрыто `UnitOverlayTests` (25 кейсов), baseline **763/763 EditMode passed**.
 #### [OD-26] Crowd Rendering & Animation Hierarchy
 - URP **GPU Resident Drawer (GRD)** в Forward+ режиме с `MeshRenderer` + обязательный `ObjectPool` (без Instantiate/Destroy в бою).
 - Иерархия юнита: статичный корпус (движение гусениц через UV-scroll в шейдере) + дочерний меш башни со сглаженным доворотом к цели.
 - Отказ от `Animator` (Mecanim) для массовых юнитов (только статический меш + шейдерная анимация).
+- **Реализовано:** Phase 3.3, commit `bcb1e78` (`UnitView`, `UnitViewPool`, `UnitViewBinder`; O(1)-биндинг, Zero-GC), сертифицировано аудитом — `0243971`, `e69bed1` (719 тестов).
 #### [OD-27] Terrain & Coordinate Convention
 - Модульный Mesh-террейн с абсолютно плоскими проходимыми зонами строго на $Y = 0$.
 - Отказ от runtime Unity Terrain во избежание рассинхрона между плоской сеткой пути и визуальной высотой.
@@ -419,6 +425,7 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 #### [OD-29] Protocol Extension: UnitKind & UnitCatalog
 - Добавление поля `byte UnitKind` в запись добавления юнита (`DeltaAddRecord`) с бампом `DeltaProtocolVersion`.
 - Создание клиентского справочника `UnitCatalog` (статы, меши, радиусы, MaxHealth по `UnitKind`).
+- **Реализовано:** commit `be03002` (protocol v2, 40-байтовый `DeltaAddRecord`, паритет `KeyframeSliceCodec` v2 и FNV-1a `StateChecksum`, O(1) Zero-GC `UnitCatalog`), сертифицировано аудитом — **[APPROVE: ZERO DEFECTS]**; P3 F-1 (`targetDelta > long.MaxValue - id` в `DeltaSnapshotWireCodec.ReadUpdates`) и P3 F-2 (валидация `IsResolved` / `DisplayName != null` в конструкторе `UnitCatalog`) закрыты в `27a10f6`.
 
 ## Open Decision Queue
 

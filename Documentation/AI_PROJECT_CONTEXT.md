@@ -9,7 +9,7 @@
 ## 1. Project Identity
 
 **Project:** GlobalFront  
-**Engine:** Unity 6000.5.6f1  
+**Engine:** Unity 6000.6.2f1 (URP 17.6.0, uGUI 2.6.0)  
 **Repository:** `https://github.com/DjMariarty/GlobalFront.git`  
 **Repository / Unity root:** `C:\UnityProjects\GlobalFront`
 
@@ -246,15 +246,23 @@ Remediation commits `c3cce4d` and `a37f53d`. Certification commit `872d0b2` (`Ar
 
 ### Phase 3.1 — RTS Camera & Input — COMPLETE
 
-Commit `59ef38a`. `RtsCameraController` and `RtsInputManager` implemented in `GlobalFront.Client`. **665/665 EditMode passed**.
+Commits `59ef38a`, `8144541`, `2b71414`. `RtsCameraController` and `RtsInputManager` implemented in `GlobalFront.Client`. Retrospective adversarial audit (DeepSeek v4.1 Flash + GLM 5.3 Flash) closed P1-1, P2-1..P2-5 and R-1..R-4 (NaN-resilient serialized ranges via `FiniteOr`, clamped mock zoom input, divide-by-zero guard in unproject, Zero-GC active input) — **[APPROVED: ZERO DEFECTS]**. **725/725 EditMode passed**.
 
 ### Phase 3.2 — UnitViewTickBuffer & Interpolation — COMPLETE
 
-Commit `6ab12ad`. `UnitViewTickBuffer` with adaptive 10/5 Hz delay and Zero-GC interpolation implemented in `GlobalFront.Client`. **673/673 EditMode passed**.
+Commits `6ab12ad`, `eac0e1d`. `UnitViewTickBuffer` with adaptive 10/5 Hz delay and Zero-GC interpolation implemented in `GlobalFront.Client`. Retrospective adversarial audit (DeepSeek v4.1 Flash + GLM 5.3 Flash) remediated P1-1, P1-2/F-1, P2-1/F-2, P2-2, P2-3/F-5, N-1/F-1, F-4, F-2 — **[APPROVED: ZERO DEFECTS]**. **735/735 EditMode passed**.
 
 ### OD-29 — UnitKind Replication, Protocol v2 & UnitCatalog — COMPLETE
 
-Commits `be03002` and `212740a`. Protocol v2 and `UnitCatalog` implemented. **687/687 EditMode passed** (`Artifacts/TestResults/EditMode-od29-unitkind.xml`), **6/6 PlayMode passed**. Current HEAD: `212740a`.
+Commits `be03002`, `212740a`, `27a10f6`. Protocol v2 (40-byte `DeltaAddRecord`) and O(1) Zero-GC `UnitCatalog` implemented. Retrospective audit (DeepSeek v4.1 Flash / Gemini 3.8 Flash + GLM 5.3 Flash) — **[APPROVE: ZERO DEFECTS]**; P3 notes F-1 (overflow guard in `DeltaSnapshotWireCodec.ReadUpdates`) and F-2 (`UnitCatalog` constructor validation) closed in `27a10f6`. **6/6 PlayMode passed**.
+
+### Phase 3.3 — UnitViewBinder & Object Pooling — COMPLETE
+
+Commits `bcb1e78`, `0243971`, `e69bed1`. `UnitView`, `UnitViewPool` and O(1) Zero-GC `UnitViewBinder` (OD-26) implemented in `GlobalFront.Client`. Retrospective adversarial audit (DeepSeek v4.1 Flash + Qwen 3.8 Max) remediated P1-1..P1-3, P2-1..P2-7 and added `DestroyedViewCount` telemetry plus a log budget — **[APPROVED: ZERO DEFECTS]**. **719/719 EditMode passed**.
+
+### Phase 3.4 — Instanced Selection Rings & HP Bars — COMPLETE
+
+Commit `27a10f6`. `UnitOverlayBatcher`, `UnitOverlayGeometry`, `UnitOverlayRenderPass`, `UnitOverlayRendererFeature` and the two-pass instanced `UnitOverlay.shader` implemented in `GlobalFront.Client.Presentation` (OD-25); `UnitView`/`UnitViewBinder` extended with selection and radius/health data. Zero-GC instanced rendering at `RenderPassEvent.AfterRenderingOpaques` in URP 17.6 RenderGraph. **[IMPLEMENTED / 763 TESTS GREEN]**.
 
 ---
 
@@ -262,9 +270,9 @@ Commits `be03002` and `212740a`. Protocol v2 and `UnitCatalog` implemented. **68
 
 ### Phase 3 (Visual Presentation & RTS Controls) — [CURRENT / IN PROGRESS]
 
-**Step 3.3: UnitViewBinder & Object Pooling — [IN PROGRESS]** (ADR-012, OD-26).
+**Step 3.5: Selection System, Screen-Space Drag-Box & RTS Command Issuing — [READY / NEXT]** (ADR-012, OD-24).
 
-Phases 1.0–2.8 are **[100% COMPLETED / AUDITED]** (Grand Audit APPROVED: ZERO DEFECTS on `a37f53d`). Phase 3.1 (RTS Camera & Input) — **[COMPLETE]** (`59ef38a`, 665 tests). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[COMPLETE]** (`6ab12ad`, 673 tests). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[COMPLETE]** (`be03002`, `212740a`, 687 tests). Current HEAD: `212740a`. Confirmed tests: **687/687 EditMode passed** (`Artifacts/TestResults/EditMode-od29-unitkind.xml`), **6/6 PlayMode passed**.
+Phases 1.0–2.8 are **[100% COMPLETED / AUDITED]** (Grand Audit APPROVED: ZERO DEFECTS on `a37f53d`). Phase 3.1 (RTS Camera & Input) — **[APPROVED: ZERO DEFECTS]** (`59ef38a` → `8144541`, `2b71414`, 725 tests). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[APPROVED: ZERO DEFECTS]** (`6ab12ad` → `eac0e1d`, 735 tests). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[APPROVE: ZERO DEFECTS]** (`be03002`, `212740a`, 687 tests; P3 F-1/F-2 closed in `27a10f6`). Phase 3.3 (UnitViewBinder & Object Pooling) — **[APPROVED: ZERO DEFECTS]** (`bcb1e78` → `0243971`, `e69bed1`, 719 tests). Phase 3.4 (Instanced Selection Rings & HP Bars) — **[IMPLEMENTED / 763 TESTS GREEN]** (`27a10f6`). Last code commit: `27a10f6`. Confirmed tests: **763/763 EditMode passed** (`Artifacts/TestResults/EditMode-step34.xml`), **6/6 PlayMode passed**. Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`.
 
 ### Phase 2.6 — Snapshot Networking — COMPLETE (historical note)
 

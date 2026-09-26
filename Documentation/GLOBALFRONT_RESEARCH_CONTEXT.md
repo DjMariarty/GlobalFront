@@ -16,13 +16,13 @@
 
 | Area | Current fact |
 |---|---|
-| Engine | Unity `6000.5.6f1`, URP |
+| Engine | Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0` |
 | Simulation | deterministic Core, 20 Hz |
 | Server | `MatchServer`, server-owned state, `MatchConfig`; `TickDriver` (ADR-007); `SessionManager` — session/player identity (ADR-008) |
 | Local host | `LocalMatchHost` in Client process (owns `MatchServer`, `TickDriver`, `SessionManager`) |
 | Protocol | Snapshot Protocol v1 |
 | Commands | `ICommandChannel` + session-attributed `LocalCommandChannel`, Phase 2.2 complete; ingress через session gate (Phase 2.4) |
-| Verification | 223 EditMode + 5 PlayMode passed 2026-08-21 |
+| Verification | 763 EditMode + 6 PlayMode passed 2026-09-26 (baseline 223 + 5 on 2026-08-21) |
 
 ## Current Research Priority
 

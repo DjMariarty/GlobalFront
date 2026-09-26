@@ -14,7 +14,7 @@ GlobalFront строится вокруг authoritative server и deterministic 
 |---|---|---|
 | `GlobalFront.Core` | детерминированные identifiers (`EntityId`, `PlayerId`, opaque `SessionId`/`MatchId`), commands, coordinates, movement, combat, formation, `MatchConfig`, constants | none; Unity API запрещён |
 | `GlobalFront.Server` | authoritative `MatchServer`, state, validation, tick phases, `TickDriver` (server tick scheduling), snapshots и Snapshot Protocol v1, session/player identity (`SessionManager`, Phase 2.4) | `GlobalFront.Core`; Unity API запрещён |
-| `GlobalFront.Client` | Unity input/presentation, selection, `RtsCameraController`, `RtsInputManager`, `UnitViewTickBuffer`, `UnitCatalog`, HUD, bootstrap, `LocalMatchHost` (ServerHost: владеет `MatchServer`, `TickDriver` и `SessionManager`), command channel adapter, `ClientSession` | Core, Server, Unity/Input System |
+| `GlobalFront.Client` | Unity input/presentation, selection, `RtsCameraController`, `RtsInputManager`, `UnitViewTickBuffer`, `UnitView`, `UnitViewPool`, `UnitViewBinder`, `UnitCatalog`, `UnitOverlayBatcher`, `UnitOverlayGeometry`, `UnitOverlayRenderPass`, `UnitOverlayRendererFeature`, HUD, bootstrap, `LocalMatchHost` (ServerHost: владеет `MatchServer`, `TickDriver` и `SessionManager`), command channel adapter, `ClientSession` | Core, Server, Unity/Input System, URP (`Unity.RenderPipelines.Core.Runtime`, `Unity.RenderPipelines.Universal.Runtime`) |
 
 ```text
 GlobalFront.Core  ←  GlobalFront.Server
@@ -103,14 +103,17 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 - **`UnitViewTickBuffer` (OD-23):** кольцевой буфер (32 слота) с плавающим окном интерполяции тиков, демпфированием микро-джиттера поворота (`HeadingDeadzoneDegrees`), клампированной экстраполяцией к `MoveTarget` и защитой от деления на ноль.
 - **`UnitCatalog` (OD-29):** клиентский справочник архетипов юнитов (`UnitDefinition`), сопоставляющий `UnitKind` с физическими характеристиками, мешами и базовыми параметрами.
 - **`UnitViewPool` & `UnitViewBinder` (OD-26):** преаллоцированный пул физических представлений (`UnitView`) без вызовов `Instantiate`/`Destroy` во время боя. Корпус юнита представляет собой статичный меш (движение гусениц через UV-скролл в шейдере, без Mecanim `Animator`), поворот башни управляется дочерним узлом (`TurretYawDegrees`). Привязка слотов `ClientReplicationWorld` к представлениям выполняется за $O(1)$ через плоский массив без хеширования и без аллокаций памяти в кадре.
+- **Инстансированные оверлеи `UnitOverlayBatcher` / `UnitOverlayGeometry` / `UnitOverlayRenderPass` / `UnitOverlayRendererFeature` / `UnitOverlay.shader` (OD-25):** кольца выделения и полоски здоровья — единственные «объёмные» элементы презентации вне корпуса юнита, поэтому они рисуются батчами, а не объектами. `UnitOverlayBatcher` переводит представления в два плоских массива матриц за $O(n)$ с **0 B GC Alloc** в превыделенных буферах (`DefaultCapacity = 512`, `MaxCapacity = 4096`); `UnitView.IsSelected` / `MaximumHealth` / `RadiusMillimetres` — единственный источник данных для оверлея. `UnitOverlayGeometry` генерирует процедурные quad-меши без запечённых ассетов (ground-quad в XZ для колец, billboard-quad в XY для HP-баров) и instancing-совместимый материал. `UnitOverlayRenderPass` встраивается в URP 17.6 RenderGraph через `RecordRenderGraph` и `RasterCommandBuffer.DrawMeshInstanced` на `RenderPassEvent.AfterRenderingOpaques`, чанкуя батчи по 250 инстансов (лимит константного буфера `UNITY_INSTANCED_ARRAY_SIZE`) и используя отдельные `MaterialPropertyBlock` на вид оверлея. Двухпроходный шейдер `GlobalFront/Unit Overlay` (`UnitOverlayRing` с `fwidth`-антиалиасингом, `UnitOverlayHealthBar` с рамкой и заливкой по доле здоровья) не требует per-unit `Canvas` и не трогает детерминированный Core.
 
 ## Verification Baseline
 
-- Unity `6000.6.2f1`, URP `17.6.0`
-- 711/711 EditMode passed (100%)
+- Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
+- 763/763 EditMode passed (100%), 0 failed, 0 skipped
 - 6/6 PlayMode passed (100%)
-- last committed milestone: `bcb1e78` (Phase 3.3 UnitViewBinder & Object Pooling, ADR-012/OD-26)
+- last committed milestone: `27a10f6` (Phase 3.4 Instanced Selection Rings & HP Bars, ADR-012/OD-25; 763/763 EditMode)
 - Фазы 1.0–2.8 заморожены как сертифицированный бейзлайн (`a37f53d`, Grand Audit APPROVED: ZERO DEFECTS)
+- Фазы 3.1–3.3 сертифицированы двойным независимым adversarial-аудитом ([APPROVED: ZERO DEFECTS]); Phase 3.4 — [IMPLEMENTED / 763 TESTS GREEN], ретроспективный аудит запланирован
+- next: Phase 3.5 Selection System, Screen-Space Drag-Box & RTS Command Issuing (ADR-012/OD-24)
 
 ## Связанные документы
 

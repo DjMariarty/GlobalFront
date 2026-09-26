@@ -28,16 +28,23 @@
 - Phase 2.7 Reconnect & Resync — COMPLETE (session reattachment, full state resync, tactical pause sync).
 - Phase 2.8 Network Prototype Playtest (2v2) — COMPLETE (2v2 topology, abandonment unpause, HUD overlay).
 - Grand Adversarial Audit (Phases 1.0 — 2.8) — [APPROVED: ZERO DEFECTS] на `a37f53d` (661/661 EditMode, 6/6 PlayMode).
-- Phase 3.1 RTS Camera & Input — COMPLETE (`59ef38a`, 665 тестов).
-- Phase 3.2 UnitViewTickBuffer & Interpolation — COMPLETE (`6ab12ad`, 673 теста).
-- OD-29 UnitKind Replication & UnitCatalog — COMPLETE (`be03002`, `212740a`, 687 тестов).
-- Phase 3.3 UnitViewBinder & Object Pooling — COMPLETE (`bcb1e78`, 711 тестов): `UnitView`, `UnitViewPool` (преаллокация, без Instantiate/Destroy в бою, OD-26), `UnitViewBinder` (Zero-GC связывание слотов репликации с представлениями).
+- Phase 3.1 RTS Camera & Input — COMPLETE (`59ef38a`, 665 тестов). Ретроспективный adversarial-аудит (DeepSeek v4.1 Flash + GLM 5.3 Flash) → **[APPROVED: ZERO DEFECTS]**; закрыты P1-1 и P2-1..P2-5 (NaN-safe сериализованные диапазоны через `FiniteOr`, защита от невалидных значений камеры) в `8144541` (**723 теста**), затем остатки R-1..R-4 (кламп mock zoom input, защита от деления на ноль в unproject, Zero-GC active input) в `2b71414` (**725 тестов**).
+- Phase 3.2 UnitViewTickBuffer & Interpolation — COMPLETE (`6ab12ad`, 673 теста). Ретроспективный adversarial-аудит (DeepSeek v4.1 Flash + GLM 5.3 Flash) → **[APPROVED: ZERO DEFECTS]**; двухэтапная ремедиация в `eac0e1d` (**735 тестов**): P1-1 — slew clock freeze и `MaxAdvanceTicksPerCall` clamp; P1-2/F-1 — снятие drift-snap; P2-1/F-2 — `IsFinite`-guards в `SlewDegrees`/`ShortestArcDegrees`; P2-2 — `DriftCorrectionPerSecond = 0.25`; P2-3/F-5 — `_slotHealthOverridden`; N-1/F-1 — сброс override при смерти юнита и сохранение при тактической паузе через `Flush`; F-4 — `MaxIntervalSampleTicks = 8.0`; F-2 — `DriftSnapTicks = MaxRenderDelayTicks + MaxExtrapolationTicks + 2.0`.
+- OD-29 UnitKind Replication & UnitCatalog — COMPLETE (`be03002`, `212740a`, 687 тестов). Ретроспективный аудит (DeepSeek v4.1 Flash / Gemini 3.8 Flash + GLM 5.3 Flash) → **[APPROVE: ZERO DEFECTS]** (40-байтовый `DeltaAddRecord` v2, паритет `KeyframeSliceCodec` v2 и FNV-1a `StateChecksum`, O(1) Zero-GC `UnitCatalog`). Две P3-заметки закрыты в `27a10f6`: F-1 — защита от переполнения `targetDelta > long.MaxValue - id` в `DeltaSnapshotWireCodec.ReadUpdates`; F-2 — валидация `IsResolved` и `DisplayName != null` в конструкторе `UnitCatalog`.
+- Phase 3.3 UnitViewBinder & Object Pooling — COMPLETE (`bcb1e78`, 711 тестов): `UnitView`, `UnitViewPool` (преаллокация, без Instantiate/Destroy в бою, OD-26), `UnitViewBinder` (Zero-GC связывание слотов репликации с представлениями). Ретроспективный аудит (DeepSeek v4.1 Flash + Qwen 3.8 Max) → **[APPROVED: ZERO DEFECTS]**; ремедиация P1-1..P1-3 и P2-1..P2-7 в `0243971` (**719 тестов**), телеметрия `DestroyedViewCount` и лог-бюджет — в `e69bed1`.
+- Phase 3.4 Instanced Selection Rings & HP Bars — IMPLEMENTED (`27a10f6`, **763/763 EditMode passed**, 0 failed, 0 skipped; 6/6 PlayMode passed; ADR-012, OD-25). В `GlobalFront.Client.Presentation`:
+  - `UnitOverlayBatcher` — предвыделенные плоские массивы (`DefaultCapacity = 512`, `MaxCapacity = 4096`, `MaxInstancesPerDraw = 250` под лимит константного буфера `UNITY_INSTANCED_ARRAY_SIZE`), детерминированный `BuildBatches(UnitViewBinder, Quaternion)` с **0 B GC Alloc**, правила видимости (кольца для выделенных живых юнитов; HP-бары для выделенных, раненых или при `AlwaysShowHealthBars = true`), защита от `NaN`/`Infinity` и вырожденных кватернионов.
+  - `UnitOverlayGeometry` — генерация процедурных quad-мешей (`CreateGroundQuad` в XZ для колец, `CreateBillboardQuad` в XY для HP-баров) и материала с `enableInstancing = true`.
+  - `UnitOverlayRenderPass` и `UnitOverlayRendererFeature` — интеграция в Unity 6 URP 17.6 RenderGraph (`RecordRenderGraph` + `RasterCommandBuffer.DrawMeshInstanced` на `RenderPassEvent.AfterRenderingOpaques`) с чанкингом по 250 инстансов и раздельными `MaterialPropertyBlock`.
+  - `UnitOverlay.shader` (`GlobalFront/Unit Overlay`) — двухпроходный instanced HLSL-шейдер (`UnitOverlayRing` с антиалиасингом через `fwidth`, `UnitOverlayHealthBar` с рамкой и заливкой по доле здоровья).
+  - Расширены `UnitView` (`IsSelected`, `SetSelected`, `MaximumHealth`, `RadiusMillimetres` со строгим сбросом при `Bind`/`Release`) и `UnitViewBinder` (`SlotCount`, кэширование `UnitDefinition` по `UnitKind`, гарантированный сброс `SetSelected(false)` в `ReleaseSlot`); `GlobalFront.Client` и EditMode-тестовый asmdef подключили URP Runtime-сборки.
+  - Тесты: `UnitOverlayTests.cs` (25 кейсов) плюс покрытие F-1/F-2 (+28 тестов суммарно).
 
 ### Verified
 
-- Unity `6000.6.2f1`, URP `17.6.0`.
-- **711/711 EditMode** passed (100%), 2026-09-23.
-- **6/6 PlayMode** passed (100%), 2026-09-23.
+- Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`.
+- **763/763 EditMode** passed (100%), 0 failed, 0 skipped, 2026-09-26 (gate: `Artifacts/TestResults/EditMode-step34.xml`).
+- **6/6 PlayMode** passed (100%), 0 failed, 0 skipped, 2026-09-26.
 
 ## Confirmed Foundation History
 
