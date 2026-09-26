@@ -10,15 +10,15 @@
 
 **Phase 3.5: Selection System, Screen-Space Drag-Box & RTS Command Issuing — [READY / NEXT]** (ADR-012, OD-24)
 
-Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Phases 1.0 — 2.8) — **[APPROVED: ZERO DEFECTS]** на `a37f53d` (отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Phase 3.1 (RTS Camera & Input) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`59ef38a` → `8144541`, `2b71414`). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`6ab12ad` → `eac0e1d`). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`be03002`, P3 F-1/F-2 закрыты в `27a10f6`). Phase 3.3 (UnitViewBinder & Object Pooling) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`bcb1e78` → `0243971`, `e69bed1`). Phase 3.4 (Instanced Selection Rings & HP Bars) — **[IMPLEMENTED / 763 TESTS GREEN]** (`27a10f6`). 763/763 EditMode тестов green, 6/6 PlayMode тестов green. Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
+Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Phases 1.0 — 2.8) — **[APPROVED: ZERO DEFECTS]** на `a37f53d` (отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Phase 3.1 (RTS Camera & Input) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`59ef38a` → `8144541`, `2b71414`). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`6ab12ad` → `eac0e1d`). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`be03002`, P3 F-1/F-2 закрыты в `27a10f6`). Phase 3.3 (UnitViewBinder & Object Pooling) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`bcb1e78` → `0243971`, `e69bed1`). Phase 3.4 (Instanced Selection Rings & HP Bars) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`27a10f6` → `b897eea`, двойной независимый adversarial-аудит, P0-1/P1-1/P1-2/P2-1/P2-4/P2-5/P3-1/P3-2/P3-3 закрыты). 770/770 EditMode тестов green, 6/6 PlayMode тестов green. Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
 
 ## Last Commit
 
-`27a10f6` (`feat(client): implement Step 3.4 instanced selection rings and HP bars + OD-29 P3 fixes (763 tests green)`)
+`b897eea` (`fix(client): remediate Step 3.4 overlay pass, resource lifecycle, and batcher edge cases (770 tests green)`)
 
 ## Tests
 
-- EditMode: **763/763 passed** (100% green, 0 failed, 0 skipped, 2026-09-26; gate: `Artifacts/TestResults/EditMode-step34.xml`)
+- EditMode: **770/770 passed** (100% green, 0 failed, 0 skipped, 5.42 s, 2026-09-26; gate: `Artifacts/TestResults/EditMode-step34-remediation.xml`; 776 автоматизированных тестов вместе с PlayMode)
 - PlayMode: **6/6 passed** (100% green, 0 failed, 0 skipped, 2026-09-26)
 - Unity: `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
 
@@ -47,7 +47,7 @@ Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Ph
 - Phase 3.2 UnitViewTickBuffer & Interpolation — COMPLETE (`6ab12ad`, 673 теста); ремедиация аудита (`eac0e1d`, 735 тестов) — [APPROVED: ZERO DEFECTS]
 - OD-29 UnitKind Replication & UnitCatalog — COMPLETE (`be03002`, `212740a`, 687 тестов); P3 F-1/F-2 закрыты в `27a10f6` — [APPROVED: ZERO DEFECTS]
 - Phase 3.3 UnitViewBinder & Object Pooling — COMPLETE (`bcb1e78`, 711 тестов green, Zero-GC доказан, ADR-012/OD-26); ремедиация аудита (`0243971`, 719 тестов; `e69bed1` — телеметрия `DestroyedViewCount` и лог-бюджет) — [APPROVED: ZERO DEFECTS]
-- Phase 3.4 Instanced Selection Rings & HP Bars — COMPLETE (`27a10f6`, 763 теста green, 0 B GC, ADR-012/OD-25)
+- Phase 3.4 Instanced Selection Rings & HP Bars — COMPLETE (`27a10f6`, 763 теста green, 0 B GC, ADR-012/OD-25); ремедиация двойного независимого adversarial-аудита (`b897eea`, 770 тестов; P0-1, P1-1, P1-2, P2-1, P2-4, P2-5, P3-1, P3-2, P3-3) — **[APPROVED: ZERO DEFECTS]**
 
 ## Next Step
 
