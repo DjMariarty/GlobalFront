@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Reflection;
 using GlobalFront.Client.Catalog;
 using GlobalFront.Client.Presentation;
 using GlobalFront.Client.Replication;
@@ -803,6 +805,462 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
 
             Assert.That(_binder.BoundViewCount, Is.EqualTo(MatchUnits));
             Assert.That(_pool.GrowCount, Is.EqualTo(0), "the measured window must be steady state");
+        }
+
+        // ---------------------------------------------------------------- step 3.4 remediation
+        //
+        // The audit closed one defect per test below, and each of them is written to
+        // fail for that defect alone: readiness of the renderer feature (the first
+        // Create() used to skip itself), per-chunk instance buffers, ownership of the
+        // procedural material and meshes, the colour and rotation inputs a player or a
+        // corrupted packet can still reach these buffers with.
+        //
+        // The meshes and materials the feature builds are native objects that a dropped
+        // reference does not free, so these tests count them through
+        // Resources.FindObjectsOfTypeAll rather than asking the feature what it thinks
+        // it holds — the question the defect is about.
+
+        private const string RingMeshName = "GlobalFront Selection Ring";
+        private const string BarMeshName = "GlobalFront Health Bar";
+        private const string ProceduralMaterialName = "Unit Overlay";
+
+        /// <summary>
+        /// A shader that is always loaded in the editor and definitely has neither
+        /// overlay pass: the stand-in for a content author pointing the feature at a
+        /// generic material.
+        /// </summary>
+        private const string ForeignShaderName = "Hidden/InternalErrorShader";
+
+        private static void EnsureOverlayShaderResident()
+        {
+            Assert.That(
+                Shader.Find(UnitOverlayGeometry.ShaderName) == null,
+                Is.False,
+                $"'{UnitOverlayGeometry.ShaderName}' must be resolvable by name for the procedural resource path to be testable.");
+        }
+
+        private static int CountOverlayMeshes()
+        {
+            var meshes = Resources.FindObjectsOfTypeAll<Mesh>();
+            var found = 0;
+            for (var index = 0; index < meshes.Length; index++)
+            {
+                var name = meshes[index].name;
+                if (name == RingMeshName || name == BarMeshName)
+                {
+                    found++;
+                }
+            }
+
+            return found;
+        }
+
+        private static Mesh FindOverlayMesh(string name)
+        {
+            var meshes = Resources.FindObjectsOfTypeAll<Mesh>();
+            for (var index = 0; index < meshes.Length; index++)
+            {
+                if (meshes[index].name == name)
+                {
+                    return meshes[index];
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>The material the renderer feature built for itself, or null.</summary>
+        private static Material FindProceduralOverlayMaterial()
+        {
+            var materials = Resources.FindObjectsOfTypeAll<Material>();
+            for (var index = 0; index < materials.Length; index++)
+            {
+                var candidate = materials[index];
+                if (candidate.name == ProceduralMaterialName && candidate.hideFlags == HideFlags.DontSave)
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Writes the feature's serialized assignment. Through the private field rather
+        /// than a <c>SerializedObject</c> on purpose: applying a serialized property runs
+        /// <c>OnValidate</c>, which would call <c>Create()</c> behind the test's back and
+        /// leave it unable to tell its own rebuild from the pipeline's.
+        /// </summary>
+        private static void SetOverlayMaterial(UnitOverlayRendererFeature feature, Material material)
+        {
+            var field = typeof(UnitOverlayRendererFeature)
+                .GetField("overlayMaterial", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(field == null, Is.False, "the feature must still own its serialized material");
+            field.SetValue(feature, material);
+        }
+
+        [Test]
+        public void RendererFeature_Create_WithNullMaterial_BuildsProceduralResourcesAndBecomesReadyWhenAttached()
+        {
+            EnsureOverlayShaderResident();
+            Assert.That(CountOverlayMeshes(), Is.EqualTo(0), "no overlay mesh should exist before a feature is created");
+
+            var feature = ScriptableObject.CreateInstance<UnitOverlayRendererFeature>();
+            try
+            {
+                Assert.That(feature.IsReady, Is.False, "a feature with nothing built yet cannot draw");
+
+                feature.Create();
+
+                Assert.That(feature.Batcher == null, Is.False, "the feature owns the batcher it draws from");
+
+                // P0-1: Create used to test whether it had built the pass rather than
+                // whether it had built the resources, and the pass is always there, so the
+                // first call — and every later one with no material assigned — took the
+                // early exit and the overlays never existed.
+                Assert.That(CountOverlayMeshes(), Is.EqualTo(2),
+                    "with no material assigned, the first Create() has to build the procedural pair");
+                var material = FindProceduralOverlayMaterial();
+                Assert.That(material == null, Is.False, "and the material with it");
+                Assert.That(material.enableInstancing, Is.True,
+                    "URP refuses DrawMeshInstanced for a material that is not instanced");
+
+                Assert.That(feature.IsReady, Is.False, "resources without a match are still nothing to draw");
+                feature.Attach(_binder);
+                Assert.That(feature.IsReady, Is.True, "resources plus a binder is the whole readiness rule");
+                Assert.That(UnitOverlayRendererFeature.Active, Is.SameAs(feature));
+            }
+            finally
+            {
+                feature.Dispose();
+            }
+
+            Assert.That(feature.IsReady, Is.False, "dispose takes the pass away");
+            Assert.That(UnitOverlayRendererFeature.Active, Is.Null, "and uninstalls the feature");
+            Assert.That(CountOverlayMeshes(), Is.EqualTo(0),
+                "the meshes it built are native objects and must not outlive it");
+            Assert.That(FindProceduralOverlayMaterial() == null, Is.True,
+                "and so must the material");
+        }
+
+        [Test]
+        public void RendererFeature_Create_IsIdempotentAndReleasesOldResourcesOnMaterialChange()
+        {
+            EnsureOverlayShaderResident();
+            var feature = ScriptableObject.CreateInstance<UnitOverlayRendererFeature>();
+            var callerMaterial = new Material(Shader.Find(UnitOverlayGeometry.ShaderName))
+            {
+                name = "Caller Overlay Material",
+            };
+            try
+            {
+                feature.Create();
+                var ringBefore = FindOverlayMesh(RingMeshName);
+                var procedural = FindProceduralOverlayMaterial();
+                Assert.That(ringBefore == null, Is.False, "the first build produced a ring mesh");
+                Assert.That(procedural == null, Is.False, "and its own material");
+                Assert.That(CountOverlayMeshes(), Is.EqualTo(2));
+
+                feature.Create();
+                feature.Create();
+
+                // Re-running Create is the normal case (script reload, inspector edit), so
+                // it must neither rebuild nor strand the previous pair.
+                Assert.That(CountOverlayMeshes(), Is.EqualTo(2),
+                    "repeating Create with the same assignment must not build a second pair");
+                Assert.That(FindOverlayMesh(RingMeshName), Is.SameAs(ringBefore),
+                    "and not replace the pair it already has");
+
+                // Now change the assignment to a material somebody else owns. The previous
+                // build's objects go with it — including the material the feature created
+                // for itself, which is exactly the one it may destroy — and the new ones
+                // are built from the caller's material, which is not.
+                SetOverlayMaterial(feature, callerMaterial);
+                feature.Create();
+
+                Assert.That(ringBefore == null, Is.True,
+                    "the ring mesh the superseded build created was destroyed, not just dropped");
+                Assert.That(procedural == null, Is.True,
+                    "and the material it owned with it");
+                Assert.That(CountOverlayMeshes(), Is.EqualTo(2),
+                    "and replaced by exactly one new pair");
+                Assert.That(callerMaterial == null, Is.False,
+                    "an assigned material belongs to the caller: the feature must not destroy it");
+                Assert.That(FindProceduralOverlayMaterial() == null, Is.True,
+                    "and rebuilding must not quietly create a second one of its own");
+            }
+            finally
+            {
+                feature.Dispose();
+            }
+
+            Assert.That(callerMaterial == null, Is.False,
+                "Dispose drops what it drew with, but never a material it was only handed");
+            Assert.That(CountOverlayMeshes(), Is.EqualTo(0), "and it does release the pair it built");
+            Assert.That(FindProceduralOverlayMaterial() == null, Is.True,
+                "so no overlay material of the feature's own is left for the next test");
+            Object.DestroyImmediate(callerMaterial);
+        }
+
+        [Test]
+        public void Geometry_TryCreateResources_EnablesInstancingOnAssignedMaterial_AndCleansUpOnPassMismatch()
+        {
+            EnsureOverlayShaderResident();
+            var overlayShader = Shader.Find(UnitOverlayGeometry.ShaderName);
+            var assigned = new Material(overlayShader) { name = "Test Overlay Material" };
+            Mesh ring = null;
+            Mesh bar = null;
+            var owns = true;
+            try
+            {
+                Assert.That(assigned.enableInstancing, Is.False, "a freshly created material is not instanced");
+                Assert.That(
+                    UnitOverlayGeometry.TryCreateResources(
+                        assigned,
+                        out var material,
+                        out owns,
+                        out ring,
+                        out bar,
+                        out var ringPassIndex,
+                        out var barPassIndex),
+                    Is.True,
+                    "the overlay shader carries both passes");
+
+                // P1-2: the flag used to be set only on the procedural branch, so a
+                // material assigned on the feature reached DrawMeshInstanced uninstanced.
+                Assert.That(assigned.enableInstancing, Is.True,
+                    "an assigned material is made instanced too, or nothing can draw with it");
+                Assert.That(owns, Is.False, "handed in, so handed out: the factory does not own it");
+                Assert.That(material, Is.SameAs(assigned));
+                Assert.That(ringPassIndex, Is.GreaterThanOrEqualTo(0));
+                Assert.That(barPassIndex, Is.GreaterThanOrEqualTo(0));
+                Assert.That(ring == null, Is.False);
+                Assert.That(bar == null, Is.False);
+            }
+            finally
+            {
+                if (ring != null)
+                {
+                    Object.DestroyImmediate(ring);
+                }
+
+                if (bar != null)
+                {
+                    Object.DestroyImmediate(bar);
+                }
+            }
+
+            // The mismatch case: both out indices report unusable, nothing is emitted, and
+            // the caller's material survives the failure.
+            Assert.That(Shader.Find(ForeignShaderName) == null, Is.False, "the foreign shader must be resolvable");
+            var foreign = new Material(Shader.Find(ForeignShaderName));
+            Assert.That(
+                UnitOverlayGeometry.TryCreateResources(
+                    foreign,
+                    out var failedMaterial,
+                    out var failedOwns,
+                    out var failedRing,
+                    out var failedBar,
+                    out var failedRingPass,
+                    out var failedBarPass),
+                Is.False,
+                "a material without the overlay passes cannot draw overlays");
+            Assert.That(failedMaterial == null, Is.True, "and says so with empty outputs");
+            Assert.That(failedOwns, Is.False);
+            Assert.That(failedRing == null, Is.True);
+            Assert.That(failedBar == null, Is.True);
+            Assert.That(failedRingPass, Is.EqualTo(-1));
+            Assert.That(failedBarPass, Is.EqualTo(-1));
+            Assert.That(foreign == null, Is.False, "the caller's material is not the factory's to destroy");
+
+            Object.DestroyImmediate(foreign);
+            Object.DestroyImmediate(assigned);
+        }
+
+        [Test]
+        public void RenderPass_MultiChunk_HasIsolatedChunkBuffersUpToMaxCapacity()
+        {
+            CreateMatch(LargeMatchCapacity);
+            Assert.That(_pool.Warmup(UnitKinds.Scout, MatchUnits), Is.EqualTo(MatchUnits));
+            for (var entity = 1; entity <= MatchUnits; entity++)
+            {
+                // Distinct in X: the whole point is telling the two chunks' instances apart.
+                AddUnit((ulong)entity, posX: entity * 10, health: DamagedHealth);
+            }
+
+            Step();
+            _batcher = new UnitOverlayBatcher(LargeMatchCapacity);
+            Build();
+
+            Assert.That(_batcher.HealthBarCount, Is.EqualTo(MatchUnits));
+            Assert.That(
+                UnitOverlayRenderPass.GetChunkCount(MatchUnits),
+                Is.EqualTo(2),
+                "four hundred bars is a full first chunk and a part second one");
+            Assert.That(
+                UnitOverlayRenderPass.GetChunkCount(UnitOverlayBatcher.MaxCapacity),
+                Is.EqualTo(UnitOverlayRenderPass.MaxChunksPerBatch),
+                "the declared ceiling is the one a maximally sized batcher reaches");
+
+            var pass = new UnitOverlayRenderPass(_batcher);
+            Assert.That(
+                pass.BarChunks.Length,
+                Is.EqualTo(UnitOverlayRenderPass.GetChunkCount(_batcher.Capacity)),
+                "a batcher cannot emit past its capacity, so that is the exact number of chunks needed");
+            Assert.That(pass.RingChunks.Length, Is.EqualTo(pass.BarChunks.Length));
+
+            var first = pass.BarChunks[0];
+            var second = pass.BarChunks[1];
+            Assert.That(ReferenceEquals(first, second), Is.False);
+            Assert.That(ReferenceEquals(first.Matrices, second.Matrices), Is.False, "P1-1: one array for two draws");
+            Assert.That(ReferenceEquals(first.Block, second.Block), Is.False, "P1-1: one block for two draws");
+
+            var sourceMatrices = _batcher.HealthBarMatrixBuffer;
+            var sourceProperties = _batcher.HealthBarPropertyBuffer;
+            Assert.That(
+                UnitOverlayRenderPass.PrepareChunks(
+                    sourceMatrices,
+                    sourceProperties,
+                    MatchUnits,
+                    UnitOverlayGeometry.HealthBarParamsProperty,
+                    pass.BarChunks),
+                Is.EqualTo(2));
+
+            // A command buffer resolves a MaterialPropertyBlock at playback, so the state
+            // that matters is what each chunk holds *after the whole batch* has been
+            // prepared: the first draw must still read the first 250 instances.
+            Assert.That(first.Count, Is.EqualTo(UnitOverlayBatcher.MaxInstancesPerDraw));
+            Assert.That(second.Count, Is.EqualTo(MatchUnits - UnitOverlayBatcher.MaxInstancesPerDraw));
+            Assert.That(first.Matrices[0].m03, Is.EqualTo(sourceMatrices[0].m03));
+            Assert.That(first.Matrices[249].m03, Is.EqualTo(sourceMatrices[249].m03));
+            Assert.That(second.Matrices[0].m03, Is.EqualTo(sourceMatrices[250].m03));
+            Assert.That(second.Matrices[149].m03, Is.EqualTo(sourceMatrices[399].m03));
+
+            // The block is what the recorded draw resolves at playback, so read it back
+            // rather than trusting the copy. GetVectorArray fills a list the caller owns
+            // and sized, so it has to be primed first.
+            var probe = new List<Vector4>();
+            for (var index = 0; index < UnitOverlayBatcher.MaxInstancesPerDraw; index++)
+            {
+                probe.Add(Vector4.zero);
+            }
+
+            first.Block.GetVectorArray(UnitOverlayGeometry.HealthBarParamsProperty, probe);
+            Assert.That(probe[0].x, Is.EqualTo(sourceProperties[0].x));
+            Assert.That(probe[249].x, Is.EqualTo(sourceProperties[249].x));
+            second.Block.GetVectorArray(UnitOverlayGeometry.HealthBarParamsProperty, probe);
+            Assert.That(probe[0].x, Is.EqualTo(sourceProperties[250].x), "the second chunk carries its own data");
+            Assert.That(first.Matrices[0].m03, Is.Not.EqualTo(sourceMatrices[250].m03),
+                "and neither shares its scratch with the other");
+        }
+
+        [Test]
+        public void Batcher_NonUnitCameraQuaternion_NormalizesRotationBeforeTrs()
+        {
+            SpawnUnit(1, health: DamagedHealth);
+            var inflated = new Quaternion(2f, 0f, 0f, 2f);
+            Assert.That(
+                inflated.x * inflated.x + inflated.y * inflated.y + inflated.z * inflated.z + inflated.w * inflated.w,
+                Is.EqualTo(8f),
+                "a valid 90-degree turn that is not of unit length");
+
+            _batcher.BuildBatches(_binder, inflated);
+            Assert.That(_batcher.HealthBarCount, Is.EqualTo(1), "the unit is still there and still hurt");
+            var bar = _batcher.HealthBarMatrices[0];
+
+            _batcher.BuildBatches(_binder, inflated.normalized);
+            var reference = _batcher.HealthBarMatrices[0];
+
+            // P3-1: Matrix4x4.TRS does not normalize its quaternion, so the length used
+            // to ride into the instance matrix as extra scale — a bar thicker than
+            // HealthBarThicknessMetres says, by the square of the quaternion's length.
+            AssertAllFinite(bar, "a non-unit camera rotation");
+            Assert.That(
+                bar.MultiplyVector(Vector3.up).magnitude,
+                Is.EqualTo(UnitOverlayBatcher.HealthBarThicknessMetres).Within(1e-5f),
+                "the thickness the batcher configured, not a multiple of it");
+            Assert.That(
+                bar.MultiplyVector(Vector3.right).magnitude,
+                Is.EqualTo(PrototypeDiameter * UnitOverlayBatcher.HealthBarWidthInDiameters).Within(1e-5f));
+            Assert.That(
+                Vector3.Distance(
+                    bar.MultiplyVector(Vector3.forward).normalized,
+                    (inflated.normalized * Vector3.forward).normalized),
+                Is.LessThan(1e-4f),
+                "and it still turns the bar the same way the quaternion turns the camera");
+
+            Assert.That(bar.m00, Is.EqualTo(reference.m00).Within(1e-5f));
+            Assert.That(bar.m11, Is.EqualTo(reference.m11).Within(1e-5f));
+            Assert.That(bar.m22, Is.EqualTo(reference.m22).Within(1e-5f));
+            Assert.That(bar.m12, Is.EqualTo(reference.m12).Within(1e-5f));
+            Assert.That(bar.m21, Is.EqualTo(reference.m21).Within(1e-5f));
+            Assert.That(bar.m13, Is.EqualTo(reference.m13).Within(1e-6f), "the billboard height is not scaled either");
+        }
+
+        [Test]
+        public void Batcher_NonFiniteColors_FallbackToFiniteDefaults()
+        {
+            SpawnUnit(1).SetSelected(true);
+            SpawnUnit(2, health: DamagedHealth);
+
+            foreach (var poison in new[] { float.NaN, float.PositiveInfinity, float.NegativeInfinity })
+            {
+                // One poisoned channel in each of the three configurable colours, in a
+                // different slot each time so the guard cannot pass on a lucky field.
+                _batcher.SelectionRingColor = new Color(poison, 1f, 1f, 1f);
+                _batcher.LowHealthBarColor = new Color(0f, poison, 0f, 1f);
+                _batcher.FullHealthBarColor = new Color(1f, 1f, 1f, poison);
+
+                Assert.That(_batcher.SelectionRingColor.r, Is.EqualTo(UnitOverlayBatcher.DefaultSelectionRingColor.r),
+                    "a non-finite channel is refused, not half applied");
+                Assert.That(_batcher.LowHealthBarColor.g, Is.EqualTo(UnitOverlayBatcher.DefaultLowHealthBarColor.g));
+                Assert.That(_batcher.FullHealthBarColor.a, Is.EqualTo(UnitOverlayBatcher.DefaultFullHealthBarColor.a));
+
+                Build();
+
+                Assert.That(_batcher.SelectionRingCount, Is.EqualTo(1));
+                Assert.That(_batcher.HealthBarCount, Is.EqualTo(2));
+                AssertAllFinite(_batcher.SelectionRingProperties, $"after a poisoned ring colour ({poison})");
+                AssertAllFinite(_batcher.HealthBarProperties, $"after a poisoned bar colour ({poison})");
+            }
+
+            // Finite channels are still not free to be anything: the shader alpha-blends
+            // what it is given, and negative zero would reach the buffer as a sign bit.
+            _batcher.SelectionRingColor = new Color(4f, -0.0f, 0.5f, 9f);
+            Assert.That(_batcher.SelectionRingColor.r, Is.EqualTo(1f), "over-range clamps to the bound");
+            Assert.That(BitConverter.SingleToInt32Bits(_batcher.SelectionRingColor.g), Is.EqualTo(0),
+                "and negative zero is stored as positive zero");
+            Assert.That(_batcher.SelectionRingColor.b, Is.EqualTo(0.5f), "a channel in range is left alone");
+            Assert.That(BitConverter.SingleToInt32Bits(_batcher.SelectionRingColor.a), Is.EqualTo(0x3f800000));
+
+            Build();
+            AssertAllFinite(_batcher.SelectionRingProperties, "after an out-of-range ring colour");
+        }
+
+        [Test]
+        public void Batcher_NegativeZeroHealthFraction_CanonicalizesToPositiveZero()
+        {
+            var view = SpawnUnit(1);
+            view.SetSelected(true);
+            view.SnapHealth(DamagedHealth, -0.0f);
+
+            // The precondition the defect needs: Mathf.Clamp01 tests `value < 0`, which
+            // negative zero fails, so the view hands the batcher a -0.0 fraction. Were it
+            // already canonical here there would be nothing for the batcher to fix, and
+            // the assertion below would be passing for the wrong reason.
+            Assert.That(
+                BitConverter.SingleToInt32Bits(view.HealthFraction),
+                Is.EqualTo(unchecked((int)0x80000000)),
+                "the view must still be carrying negative zero for this to test anything");
+
+            Build();
+
+            Assert.That(_batcher.HealthBarCount, Is.EqualTo(1));
+            var properties = _batcher.HealthBarProperties;
+            Assert.That(
+                BitConverter.SingleToInt32Bits(properties[0].x),
+                Is.EqualTo(0),
+                "P3-2: the instance buffer gets +0.0, never the sign-bit form of the same number");
         }
     }
 }

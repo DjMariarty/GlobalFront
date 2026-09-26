@@ -86,13 +86,30 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         public const float HealthBarWidthInDiameters = 1.25f;
 
-        /// <summary>Squared norm below which a quaternion cannot orient anything.</summary>
+        /// <summary>
+        /// Squared norm below which a quaternion cannot orient anything, and how far from
+        /// unit length a rotation may be before <see cref="SanitizeRotation"/> pays a sqrt
+        /// to bring it back.
+        /// </summary>
         private const float RotationEpsilon = 1e-6f;
+
+        /// <summary>Default of <see cref="SelectionRingColor"/>.</summary>
+        public static readonly Color DefaultSelectionRingColor = new Color(0.20f, 1.00f, 0.38f, 1.00f);
+
+        /// <summary>Default of <see cref="LowHealthBarColor"/>.</summary>
+        public static readonly Color DefaultLowHealthBarColor = new Color(0.90f, 0.12f, 0.08f, 1.00f);
+
+        /// <summary>Default of <see cref="FullHealthBarColor"/>.</summary>
+        public static readonly Color DefaultFullHealthBarColor = new Color(0.15f, 0.90f, 0.25f, 1.00f);
 
         private readonly Matrix4x4[] _ringMatrices;
         private readonly Vector4[] _ringProperties;
         private readonly Matrix4x4[] _barMatrices;
         private readonly Vector4[] _barProperties;
+
+        private Color _selectionRingColor;
+        private Color _lowHealthBarColor;
+        private Color _fullHealthBarColor;
 
         private int _ringCount;
         private int _barCount;
@@ -112,9 +129,11 @@ namespace GlobalFront.Client.Presentation
             _barProperties = new Vector4[capacity];
             Capacity = capacity;
 
-            SelectionRingColor = new Color(0.20f, 1.00f, 0.38f, 1.00f);
-            LowHealthBarColor = new Color(0.90f, 0.12f, 0.08f, 1.00f);
-            FullHealthBarColor = new Color(0.15f, 0.90f, 0.25f, 1.00f);
+            // Through the properties, so the stored colours are sanitised exactly like
+            // a later assignment from the options screen is.
+            SelectionRingColor = DefaultSelectionRingColor;
+            LowHealthBarColor = DefaultLowHealthBarColor;
+            FullHealthBarColor = DefaultFullHealthBarColor;
         }
 
         /// <summary>Instances per overlay kind this batcher can ever emit.</summary>
@@ -140,14 +159,29 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         public bool AlwaysShowHealthBars { get; set; }
 
-        /// <summary>Colour of every selection ring, per instance in batch order.</summary>
-        public Color SelectionRingColor { get; set; }
+        /// <summary>
+        /// Colour of every selection ring, per instance in batch order. Never takes a
+        /// non-finite channel (see <see cref="SanitizeColor"/>).
+        /// </summary>
+        public Color SelectionRingColor
+        {
+            get => _selectionRingColor;
+            set => _selectionRingColor = SanitizeColor(value, DefaultSelectionRingColor);
+        }
 
         /// <summary>Bar colour at zero health; the fill ramps to <see cref="FullHealthBarColor"/>.</summary>
-        public Color LowHealthBarColor { get; set; }
+        public Color LowHealthBarColor
+        {
+            get => _lowHealthBarColor;
+            set => _lowHealthBarColor = SanitizeColor(value, DefaultLowHealthBarColor);
+        }
 
         /// <summary>Bar colour at full health.</summary>
-        public Color FullHealthBarColor { get; set; }
+        public Color FullHealthBarColor
+        {
+            get => _fullHealthBarColor;
+            set => _fullHealthBarColor = SanitizeColor(value, DefaultFullHealthBarColor);
+        }
 
         /// <summary>Rings of the last build, in emission order.</summary>
         public ReadOnlySpan<Matrix4x4> SelectionRingMatrices => _ringMatrices.AsSpan(0, _ringCount);
@@ -201,8 +235,9 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         /// <param name="binder">Slot table to read bound views from.</param>
         /// <param name="cameraRotation">
-        /// World rotation of the camera the bars face. A degenerate or non-finite
-        /// value falls back to <see cref="Quaternion.identity"/>.
+        /// World rotation of the camera the bars face. A degenerate or non-finite value
+        /// falls back to <see cref="Quaternion.identity"/>; an otherwise valid one that
+        /// is not of unit length is normalised, because <c>Matrix4x4.TRS</c> is not.
         /// </param>
         public void BuildBatches(UnitViewBinder binder, Quaternion cameraRotation)
         {
@@ -215,7 +250,9 @@ namespace GlobalFront.Client.Presentation
             _barCount = 0;
             ClippedInstanceCount = 0;
 
-            var barRotation = IsRotationUsable(cameraRotation) ? cameraRotation : Quaternion.identity;
+            // Once per frame, not per instance: the sqrt and the division below are the
+            // only float work the rotation ever costs.
+            var barRotation = SanitizeRotation(cameraRotation);
             var slotCount = binder.SlotCount;
 
             for (var slot = 0; slot < slotCount; slot++)
@@ -302,8 +339,12 @@ namespace GlobalFront.Client.Presentation
                 return;
             }
 
-            if (healthFraction < 0f)
+            if (healthFraction <= 0f)
             {
+                // Also the negative-zero case: -0.0f is not less than 0f, so a bare
+                // lower-bound test would store 0x80000000 in the instance buffer. Same
+                // value to the shader, different bits to anything that hashes or
+                // compares what it was sent.
                 healthFraction = 0f;
             }
             else if (healthFraction > 1f)
@@ -333,17 +374,68 @@ namespace GlobalFront.Client.Presentation
         private static bool IsFinite(float value) =>
             !float.IsNaN(value) && !float.IsInfinity(value);
 
-        private static bool IsRotationUsable(Quaternion rotation)
+        /// <summary>
+        /// Brings a camera rotation into the form <c>Matrix4x4.TRS</c> expects.
+        ///
+        /// A zero-length or non-finite quaternion cannot orient anything and would put
+        /// a NaN into every bar matrix of the frame, so it becomes
+        /// <see cref="Quaternion.identity"/>. An inflated one is subtler and is not a
+        /// garbage input at all: <c>Matrix4x4.TRS</c> does not normalise its rotation, so
+        /// <c>(2, 0, 0, 2)</c> is a valid 90-degree turn that also scales the basis it
+        /// builds — a bar would come out many times thicker than
+        /// <see cref="HealthBarThicknessMetres"/> says. Normalising here is one sqrt per
+        /// frame instead of a wrong quad per unit.
+        /// </summary>
+        private static Quaternion SanitizeRotation(Quaternion rotation)
         {
             var squared = rotation.x * rotation.x +
                 rotation.y * rotation.y +
                 rotation.z * rotation.z +
                 rotation.w * rotation.w;
 
-            // An infinity squared stays infinite and would pass a bare threshold
-            // test, and NaN would pass nothing but is stated here so the next reader
-            // does not "simplify" the check into one comparison.
-            return IsFinite(squared) && squared > RotationEpsilon;
+            // An infinity squared stays infinite and would pass a bare threshold test,
+            // and NaN would pass nothing but is stated here so the next reader does not
+            // "simplify" the check into one comparison.
+            if (!IsFinite(squared) || squared <= RotationEpsilon)
+            {
+                return Quaternion.identity;
+            }
+
+            if (Mathf.Abs(squared - 1f) > RotationEpsilon)
+            {
+                var inverseLength = 1f / Mathf.Sqrt(squared);
+                rotation.x *= inverseLength;
+                rotation.y *= inverseLength;
+                rotation.z *= inverseLength;
+                rotation.w *= inverseLength;
+            }
+
+            return rotation;
         }
+
+        /// <summary>
+        /// Keeps a configurable colour usable as instance data. The colours come from the
+        /// options screen, and a single NaN channel would otherwise be written into every
+        /// instance of the batch and reach the GPU, where one poisoned instance can take
+        /// an instanced draw apart on some APIs. A non-finite channel is not a colour the
+        /// player can have meant, so the whole value falls back to the documented default
+        /// rather than half-applying; finite channels are pulled into 0..1, the range the
+        /// shader's alpha blend assumes, with negative zero canonicalised to positive.
+        /// </summary>
+        private static Color SanitizeColor(Color value, Color fallback)
+        {
+            if (!IsFinite(value.r) || !IsFinite(value.g) || !IsFinite(value.b) || !IsFinite(value.a))
+            {
+                return fallback;
+            }
+
+            return new Color(
+                ClampToUnit(value.r),
+                ClampToUnit(value.g),
+                ClampToUnit(value.b),
+                ClampToUnit(value.a));
+        }
+
+        private static float ClampToUnit(float value) => value <= 0f ? 0f : value >= 1f ? 1f : value;
     }
 }

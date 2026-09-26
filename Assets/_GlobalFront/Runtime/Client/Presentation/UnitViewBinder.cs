@@ -110,7 +110,7 @@ namespace GlobalFront.Client.Presentation
             _definitionByKind = new UnitDefinition[UnitKinds.Count];
             for (var kind = 1; kind < _definitionByKind.Length; kind++)
             {
-                if (source.TryGet((byte)kind, out var definition))
+                if (UnitKinds.IsDefined((byte)kind) && source.TryGet((byte)kind, out var definition))
                 {
                     _definitionByKind[kind] = definition;
                 }

@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Rendering;
 
 
 namespace GlobalFront.Client.Presentation
@@ -60,20 +61,25 @@ namespace GlobalFront.Client.Presentation
         /// it the blend state and the ring thickness) instead of this class guessing;
         /// null falls back to an instance created from <see cref="ShaderName"/>, which
         /// is what keeps the overlays alive in a build that has no material asset yet
-        /// and in a headless run where the shader may not be importable at all.
-        /// Returns false, having logged once, when there is nothing to draw with: a
-        /// missing overlay shader is a missing ring, not an exception in the render
-        /// loop.
+        /// and in a headless run where the shader may not be importable at all. Which
+        /// of the two happened is reported through <paramref name="ownsMaterial"/>:
+        /// only a material this method created may this method destroy, and the caller
+        /// has to know the difference to release correctly.
+        /// Returns false, having logged once and left every out parameter empty, when
+        /// there is nothing to draw with: a missing overlay shader is a missing ring,
+        /// not an exception in the render loop.
         /// </summary>
         public static bool TryCreateResources(
             Material assignMaterial,
             out Material material,
+            out bool ownsMaterial,
             out Mesh ringMesh,
             out Mesh barMesh,
             out int ringPassIndex,
             out int barPassIndex)
         {
             material = assignMaterial;
+            ownsMaterial = false;
             ringMesh = null;
             barMesh = null;
             ringPassIndex = -1;
@@ -96,31 +102,63 @@ namespace GlobalFront.Client.Presentation
                     // renderer, and a second copy of it appearing in the project would
                     // read as the asset the feature was supposed to reference.
                     hideFlags = HideFlags.DontSave,
-                    // DrawMeshInstanced is refused by URP without this, and the
-                    // instanced colour arrays below are the whole overlay design.
-                    enableInstancing = true,
                 };
+                ownsMaterial = true;
             }
 
-            if (material.shader == null)
+            // DrawMeshInstanced is refused by URP without this, and the instanced colour
+            // arrays the batches feed are the whole overlay design. Applied to whichever
+            // material ends up being used, not only to the one created above: the flag is
+            // a checkbox on a material asset, but a content author who points the feature
+            // at an existing overlay material can easily miss it, and the symptom (no
+            // overlays at all) is nowhere near the cause, so it is turned on here rather
+            // than warned about.
+            if (!material.enableInstancing)
+            {
+                material.enableInstancing = true;
+            }
+
+            var usable = material.shader != null;
+            if (!usable)
             {
                 Debug.LogWarning(
                     $"{nameof(UnitOverlayGeometry)}: the assigned overlay material has no shader, so rings and health bars are not drawn.");
-                return false;
             }
-
-            ringPassIndex = material.FindPass(RingPassName);
-            barPassIndex = material.FindPass(HealthBarPassName);
-            if (ringPassIndex < 0 || barPassIndex < 0)
+            else
             {
-                Debug.LogWarning(
-                    $"{nameof(UnitOverlayGeometry)}: material '{material.name}' is missing the '{RingPassName}' or '{HealthBarPassName}' pass, so rings and health bars are not drawn. Use the '{ShaderName}' shader rather than a generic unlit one.");
-                return false;
+                ringPassIndex = material.FindPass(RingPassName);
+                barPassIndex = material.FindPass(HealthBarPassName);
+                usable = ringPassIndex >= 0 && barPassIndex >= 0;
+                if (!usable)
+                {
+                    Debug.LogWarning(
+                        $"{nameof(UnitOverlayGeometry)}: material '{material.name}' is missing the '{RingPassName}' or '{HealthBarPassName}' pass, so rings and health bars are not drawn. Use the '{ShaderName}' shader rather than a generic unlit one.");
+                }
             }
 
-            ringMesh = CreateGroundQuad("GlobalFront Selection Ring");
-            barMesh = CreateBillboardQuad("GlobalFront Health Bar");
-            return true;
+            if (usable)
+            {
+                ringMesh = CreateGroundQuad("GlobalFront Selection Ring");
+                barMesh = CreateBillboardQuad("GlobalFront Health Bar");
+                return true;
+            }
+
+            // One tail for every failure, so a material created above can never be
+            // stranded: it is a native object, and dropping the managed reference does
+            // not free it. A headless run that finds the shader but cannot compile its
+            // passes lands here with the material already allocated.
+            if (ownsMaterial)
+            {
+                CoreUtils.Destroy(material);
+            }
+
+            material = null;
+            ownsMaterial = false;
+            ringMesh = null;
+            barMesh = null;
+            ringPassIndex = -1;
+            barPassIndex = -1;
+            return false;
         }
 
         private static Mesh CreateQuad(string name, Vector3 right, Vector3 up)

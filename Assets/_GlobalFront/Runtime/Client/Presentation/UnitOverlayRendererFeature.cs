@@ -37,6 +37,15 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         private Material _builtFrom;
 
+        /// <summary>
+        /// Whether the resources have already been built for <see cref="_builtFrom"/>.
+        /// <see cref="_pass"/> is not that question: it is constructed unconditionally
+        /// above, so testing it would make the very first <see cref="Create"/> — the one
+        /// that has to build the meshes — take the early exit and leave the pass with
+        /// nothing to draw for the rest of the session.
+        /// </summary>
+        private bool _resourcesBuilt;
+
         /// <summary>The installed instance whose overlays are currently drawn.</summary>
         public static UnitOverlayRendererFeature Active { get; private set; }
 
@@ -47,44 +56,70 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         public UnitOverlayBatcher Batcher => _batcher;
 
+        /// <summary>
+        /// False until the overlays can actually draw: a bound match (see
+        /// <see cref="Attach"/>) and the meshes and material. A bootstrap that finds the
+        /// feature installed but not ready has a shader or a material to chase, which is
+        /// a different diagnosis from "nobody attached a match", so it is worth being
+        /// able to ask.
+        /// </summary>
+        public bool IsReady => _pass != null && _pass.IsReady;
+
         /// <inheritdoc />
         public override void Create()
         {
             _batcher ??= new UnitOverlayBatcher();
             _pass ??= new UnitOverlayRenderPass(_batcher);
+            Active = this;
 
             // Re-running Create is normal (it happens on every script reload and on
             // inspector edits of the renderer), and rebuilding the meshes each time
             // would leak one pair per reload for the length of the editor session.
-            if (_pass != null && ReferenceEquals(_builtFrom, overlayMaterial))
+            if (_resourcesBuilt && ReferenceEquals(_builtFrom, overlayMaterial))
             {
-                Active = this;
                 return;
             }
 
+            // Either this is the first build or the assignment changed; in both cases
+            // whatever the previous build created is now unreachable, and the meshes and
+            // a procedural material are native objects that dropping a reference frees
+            // no more here than anywhere else.
+            _pass.ReleaseResources();
+
+            // Set before the attempt rather than only after it succeeds: a shader a build
+            // does not contain is not going to appear between script reloads, and
+            // re-attempting it would re-log the same warning on every one. A changed
+            // material still rebuilds, because the guard above compares the assignment.
+            _resourcesBuilt = true;
             _builtFrom = overlayMaterial;
 
             if (!UnitOverlayGeometry.TryCreateResources(
                     overlayMaterial,
                     out var material,
+                    out var ownsMaterial,
                     out var ringMesh,
                     out var barMesh,
                     out var ringPassIndex,
                     out var barPassIndex))
             {
-                _pass.SetResources(null, null, null, -1, -1);
-                Active = this;
+                _pass.SetResources(null, null, null, false, -1, -1);
                 return;
             }
 
-            _pass.SetResources(material, ringMesh, barMesh, ringPassIndex, barPassIndex);
-            Active = this;
+            _pass.SetResources(material, ringMesh, barMesh, ownsMaterial, ringPassIndex, barPassIndex);
         }
 
         /// <inheritdoc />
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
             if (renderer == null || _pass == null || !_pass.IsReady)
+            {
+                return;
+            }
+
+            // The same filter the pass records under, applied a step earlier so a scene
+            // view or a reflection probe does not even get a pass enqueued.
+            if (renderingData.cameraData.cameraType != CameraType.Game)
             {
                 return;
             }
@@ -107,8 +142,14 @@ namespace GlobalFront.Client.Presentation
                 Active = null;
             }
 
+            if (disposing)
+            {
+                _pass?.ReleaseResources();
+            }
+
             _pass = null;
             _builtFrom = null;
+            _resourcesBuilt = false;
             base.Dispose(disposing);
         }
     }
