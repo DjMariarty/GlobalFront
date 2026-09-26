@@ -941,7 +941,15 @@ namespace GlobalFront.Core.Snapshot
 
                 if ((mask & (byte)UnitDirtyMask.AttackTarget) != 0)
                 {
-                    if (!reader.TryReadVarint(out var targetDelta) || targetDelta < -id)
+                    // Both bounds, because the encoder writes the delta as a signed
+                    // difference of two unsigned ids and can therefore declare a value
+                    // this side cannot represent: the lower guard alone let a forged
+                    // delta of long.MaxValue wrap (id + delta) into a negative long,
+                    // which the cast then reinterpreted as an enormous entity id that
+                    // no peer ever sent.
+                    if (!reader.TryReadVarint(out var targetDelta) ||
+                        targetDelta < -id ||
+                        targetDelta > long.MaxValue - id)
                     {
                         return DeltaCodecResult.Malformed;
                     }

@@ -1,0 +1,1070 @@
+diff --git a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitViewTickBuffer.cs b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitViewTickBuffer.cs
+index 0cf4362..376a025 100644
+--- a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitViewTickBuffer.cs
++++ b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitViewTickBuffer.cs
+@@ -129,7 +129,10 @@ namespace GlobalFront.Client.Presentation
+     /// 4. Render delay is derived from the <b>observed packet interval</b>
+     ///    (<c>k x interval</c> plus a jitter allowance), so the 5 Hz floor gets
+     ///    ~8 ticks rather than the fixed 3 ticks that would leave the render clock
+-    ///    permanently past the newest sample and freeze the whole view.
++    ///    permanently past the newest sample and freeze the whole view. Each sample
++    ///    enters that estimate bounded by <see cref="MaxIntervalSampleTicks"/>, so a
++    ///    single stall wider than the supported cadences costs one packet of delay
++    ///    rather than setting the play-out ceiling for the next few seconds.
+     /// 5. Starvation clamps toward the authoritative move target
+     ///    (<see cref="MaxExtrapolationTicks"/> ticks at
+     ///    <see cref="UnitViewTickBuffer.MaxStepPerTickMm"/>) and then holds, which
+@@ -137,7 +140,9 @@ namespace GlobalFront.Client.Presentation
+     ///    plus a hold.
+     /// 6. The render clock is continuously re-anchored toward the leading edge of
+     ///    the ring, so a clamped catch-up cannot accumulate drift until the buffer
+-    ///    starves for the rest of the match.
++    ///    starves for the rest of the match. Only a clock that genuinely lags is
++    ///    snapped forward; one that runs ahead is parked at the extrapolation
++    ///    ceiling, because snapping it back is a reverse teleport.
+     /// 7. Hull and turret yaw prefer the authoritative destination over derived
+     ///    displacement, and hold the previous heading inside
+     ///    <see cref="YawDeadzoneMillimetres"/>, so formation micro-jitter of a
+@@ -216,11 +221,37 @@ namespace GlobalFront.Client.Presentation
+         /// </summary>
+         public const int MaxAdvanceTicksPerCall = SimulationConstants.MaxCatchUpTicksPerFrame;
+ 
+-        /// <summary>Above this skew the render clock is snapped rather than nudged.</summary>
+-        private const double DriftSnapTicks = HistoryTicks * 0.5;
++        /// <summary>
++        /// Above this skew the render clock is snapped rather than nudged.
++        /// <para>
++        /// Derived from the two bounds that decide what a legitimate skew can be,
++        /// not from <see cref="HistoryTicks"/>: a clock parked on the extrapolation
++        /// ceiling sits at most <see cref="MaxRenderDelayTicks"/> +
++        /// <see cref="MaxExtrapolationTicks"/> ticks ahead of the play-out target, so
++        /// the + 2.0 margin is what makes <see cref="Advance"/> unable to see a
++        /// starved clock as an overshoot and snap it backwards (audit P1-2).
++        /// <see cref="UnitViewTickBufferTests.Starvation_HighDelay_DoesNotSnapClockBackwards"/>
++        /// sits on exactly that boundary, and must be re-checked if either bound or
++        /// <see cref="HistoryTicks"/> changes.
++        /// </para>
++        /// </summary>
++        private const double DriftSnapTicks = MaxRenderDelayTicks + MaxExtrapolationTicks + 2.0;
++
++        /// <summary>
++        /// Largest single arrival interval the delay estimator may learn from: the
++        /// 5 Hz replication floor (4 ticks) with room for one lost packet. Anything
++        /// wider is an outage or a stall, not cadence, and a whole ring of it is
++        /// already a <see cref="Reprime"/>.
++        /// </summary>
++        private const double MaxIntervalSampleTicks = 8.0;
+ 
+-        /// <summary>Rate at which a bounded skew is bled off, fraction per second.</summary>
+-        private const double DriftCorrectionPerSecond = 0.05;
++        /// <summary>
++        /// Rate at which a bounded skew is bled off, fraction per second. A quarter
++        /// per second clears a play-out-delay-sized skew in a few seconds, which is
++        /// how long a cadence switch or one lost packet should take to settle; the
++        /// 0.05 this replaced needed twenty seconds and read as a permanent lag.
++        /// </summary>
++        private const double DriftCorrectionPerSecond = 0.25;
+ 
+         /// <summary>Smoothing factor of the arrival-interval and jitter estimates.</summary>
+         private const double ArrivalEmaAlpha = 0.25;
+@@ -246,6 +277,14 @@ namespace GlobalFront.Client.Presentation
+         private readonly double[] _slotLastRenderTick;
+         private readonly float[] _slotInvMaxHealth;
+ 
++        /// <summary>
++        /// True once <see cref="SetSlotMaximumHealth"/> named the denominator of the
++        /// slot. Kept apart from the value because 0 is both "unresolved" and a
++        /// deliberate override meaning "draw an empty bar", and the two cannot be
++        /// told apart from a float.
++        /// </summary>
++        private readonly bool[] _slotHealthOverridden;
++
+         private readonly int _capacity;
+         private readonly double _tickDurationSeconds;
+         private readonly IUnitCatalog _catalog;
+@@ -309,6 +348,7 @@ namespace GlobalFront.Client.Presentation
+             _slotTurretYaw = new float[capacity];
+             _slotLastRenderTick = new double[capacity];
+             _slotInvMaxHealth = new float[capacity];
++            _slotHealthOverridden = new bool[capacity];
+         }
+ 
+         /// <summary>Unit slots this buffer covers.</summary>
+@@ -360,10 +400,12 @@ namespace GlobalFront.Client.Presentation
+         /// through <see cref="IUnitCatalog"/>; this is the escape hatch for a caller
+         /// that knows better (a per-match stat override, or an
+         /// <see cref="GlobalFront.Core.Model.UnitKinds.Unknown"/> record from before
+-        /// OD-29 whose stats the binder resolved elsewhere). It wins over the
+-        /// catalog for that slot until the slot is recycled, and 0 is a legal input:
+-        /// it yields an empty bar rather than the <c>0/0 = NaN</c> that
+-        /// <c>PrototypeUnit.MaximumHealth</c> can produce today.
++        /// OD-29 whose stats the binder resolved elsewhere). It wins over the catalog
++        /// for that slot — including the 0 that asks for an empty bar — until the unit
++        /// it was named for leaves the client's view: destroyed, fog-hidden, or
++        /// replaced in the slot by another unit. A flush or resync of the same unit
++        /// keeps it. 0 is a legal input: it yields an empty bar rather than the
++        /// <c>0/0 = NaN</c> that <c>PrototypeUnit.MaximumHealth</c> can produce today.
+         /// </summary>
+         public void SetSlotMaximumHealth(int slot, int maximumHealth)
+         {
+@@ -373,6 +415,7 @@ namespace GlobalFront.Client.Presentation
+             }
+ 
+             _slotInvMaxHealth[slot] = maximumHealth > 0 ? 1f / maximumHealth : 0f;
++            _slotHealthOverridden[slot] = true;
+         }
+ 
+         /// <summary>
+@@ -425,10 +468,17 @@ namespace GlobalFront.Client.Presentation
+                 if (!world.TryGetSlotState(slot, out var state))
+                 {
+                     // A destroyed or fog-hidden unit leaves no view behind: the
+-                    // client world is authoritative over what may be presented.
++                    // client world is authoritative over what may be presented. The
++                    // health denominator leaves with it, whether it came from the
++                    // catalog or from SetSlotMaximumHealth: nothing identifies the
++                    // next occupant of this slot as the unit that denominator was
++                    // named for, so an override that survived the death would be
++                    // inherited by whoever spawns here next.
+                     if (_slotNewestTick[slot] != EmptyTick)
+                     {
+                         ClearSlot(slot);
++                        _slotInvMaxHealth[slot] = 0f;
++                        _slotHealthOverridden[slot] = false;
+                     }
+ 
+                     continue;
+@@ -439,19 +489,26 @@ namespace GlobalFront.Client.Presentation
+                 if (recycled)
+                 {
+                     // The table recycles freed slots, so a slot can start holding a
+-                    // different unit whose history is not this unit's at all.
++                    // different unit whose history is not this unit's at all. Only a
++                    // slot taken over from a unit this buffer still holds sheds that
++                    // unit's health state: a slot that names no unit at all is a first
++                    // assignment, and a binder that named its denominator before the
++                    // unit ever arrived named it for this unit.
++                    //
++                    // The witness has to be the identity, not the history.
++                    // ClearAllSamples wipes the newest tick on every flush and
++                    // re-prime while deliberately leaving both the identity and the
++                    // denominator, so a slot handed to a different unit across an
++                    // OD-20 resync would otherwise read as a first assignment and
++                    // inherit the override.
++                    var tookOverUnit = _slotEntity[slot] != 0;
+                     ClearSlot(slot);
+                     _slotEntity[slot] = state.Entity.Value;
+-                    _slotInvMaxHealth[slot] = 0f;
+-
+-                    // Presentation state is per slot, not per unit. Left alone, the
+-                    // replacement inherits the casualty's heading and slew clock, and
+-                    // a unit that took over a slot facing the other way spends up to
+-                    // three quarters of a second turning through the dead unit's turn
+-                    // — Mecanim-free presentation has nothing else to hide it with.
+-                    _slotBodyYaw[slot] = 0f;
+-                    _slotTurretYaw[slot] = 0f;
+-                    _slotLastRenderTick[slot] = 0.0;
++                    if (tookOverUnit)
++                    {
++                        _slotInvMaxHealth[slot] = 0f;
++                        _slotHealthOverridden[slot] = false;
++                    }
+                     _recycledSlotCount++;
+                 }
+ 
+@@ -462,25 +519,36 @@ namespace GlobalFront.Client.Presentation
+ 
+                 // OD-29: a slot that starts holding a unit resolves its health
+                 // denominator from the replicated archetype exactly once, here. Only
+-                // when the slot is unresolved, so a binder that already called
+-                // SetSlotMaximumHealth keeps its value, and an Unknown archetype
+-                // leaves the 0 that makes the bar read empty instead of dividing.
+-                if (!hadSample && _slotInvMaxHealth[slot] == 0f &&
++                // while nothing has named it, so a binder that already called
++                // SetSlotMaximumHealth keeps its value — including an explicit 0,
++                // which asks for an empty bar and is otherwise indistinguishable from
++                // "no stat resolved" — and an Unknown archetype leaves the 0 that
++                // makes the bar read empty instead of dividing.
++                if (!hadSample && !_slotHealthOverridden[slot] &&
+                     _catalog.TryGet(state.UnitKind, out var definition))
+                 {
+                     _slotInvMaxHealth[slot] = definition.InvMaxHealth;
+                 }
+ 
++                // Presentation state is per slot, not per unit. A recycled slot has no
++                // heading of its own and must not inherit the casualty's: without this
++                // the replacement spends up to three quarters of a second turning
++                // through the dead unit's turn, and Mecanim-free presentation has
++                // nothing else to hide it with. Any other empty history is the same
++                // unit across a resync or a fog gap, whose yaw Flush kept on purpose.
++                var fallbackBodyYaw = recycled ? 0f : _slotBodyYaw[slot];
++                var fallbackTurretYaw = recycled ? 0f : _slotTurretYaw[slot];
++
+                 // "Keep the previous heading" must read the last <b>captured</b>
+                 // yaw, not the slewed presentation yaw: the latter is owned by
+                 // TrySample, and overwriting it per packet would turn every
+                 // arrival into an instant snap and defeat the slew entirely.
+                 var heldBodyYaw = previousCell >= 0
+                     ? _bodyYawDegrees[previousCell]
+-                    : _slotBodyYaw[slot];
++                    : fallbackBodyYaw;
+                 var heldTurretYaw = previousCell >= 0
+                     ? _turretYawDegrees[previousCell]
+-                    : _slotTurretYaw[slot];
++                    : fallbackTurretYaw;
+ 
+                 var bodyYaw = ResolveBodyYaw(in state, previousCell, heldBodyYaw);
+                 var turretYaw = ResolveTurretYaw(in state, world, bodyYaw, heldTurretYaw);
+@@ -511,11 +579,11 @@ namespace GlobalFront.Client.Presentation
+                 if (recycled)
+                 {
+                     // Seed the reset state from the replacement's own captured heading
+-                    // so the first pose rendered for this slot is exact. Zeroing the yaw
+-                    // above is not enough on its own: the slew would still start there
+-                    // and crawl to the real heading at MaxBodyDegreesPerSecond, and the
+-                    // zeroed render-clock anchor only buys an instant turn in as much as
+-                    // the elapsed time happens to allow.
++                    // so the first pose rendered for this slot is exact. The fallback
++                    // reset above only decides what the heading derivation starts
++                    // from: without this seed the slew would still crawl there from
++                    // north at MaxBodyDegreesPerSecond, and a stale render-clock anchor
++                    // buys an instant turn only as far as the elapsed time allows.
+                     _slotBodyYaw[slot] = bodyYaw;
+                     _slotTurretYaw[slot] = turretYaw;
+                     _slotLastRenderTick[slot] = _renderTick;
+@@ -566,9 +634,24 @@ namespace GlobalFront.Client.Presentation
+                 target = 0.0;
+             }
+ 
+-            var skew = _renderTick - target;
+-            if (skew > DriftSnapTicks || skew < -DriftSnapTicks)
++            // Park instead of overshooting: while starved, the clock is capped at
++            // the extrapolation budget past the newest sample. The cap is what
++            // defines "ahead of authority", so the drift test below has to see the
++            // parked clock: one clamped frame on top of a parked clock used to read
++            // as a half-ring overshoot and snap the clock back to the play-out
++            // target, teleporting every unit up to MaxRenderDelayTicks +
++            // MaxExtrapolationTicks ticks (4.9 m at the step cap) in reverse, which
++            // is a worse artefact than the freeze this path replaced.
++            var ceiling = (double)_capturedTick + MaxExtrapolationTicks;
++            var parked = _renderTick > ceiling ? ceiling : _renderTick;
++
++            var skew = parked - target;
++            if (skew < -DriftSnapTicks)
+             {
++                // Genuinely stranded behind authority: recover the whole distance in
++                // one step instead of bleeding it off over seconds. Overshoot in the
++                // other direction is not snapped but parked by the cap below, so a
++                // snap can never move the clock backwards.
+                 _renderTick = target;
+             }
+             else
+@@ -577,13 +660,6 @@ namespace GlobalFront.Client.Presentation
+                 _renderTick -= skew * (correction < 1.0 ? correction : 1.0);
+             }
+ 
+-            // Park instead of overshooting: while starved, the clock is capped at
+-            // the extrapolation budget past the newest sample. Without the cap the
+-            // clock runs tens of ticks past authority, the drift snap then yanks it
+-            // back, and every yank teleports the unit from its clamped reach to the
+-            // last authoritative point and out again — a worse artefact than the
+-            // freeze this path replaced.
+-            var ceiling = (double)_capturedTick + MaxExtrapolationTicks;
+             if (_renderTick > ceiling)
+             {
+                 _renderTick = ceiling;
+@@ -771,6 +847,7 @@ namespace GlobalFront.Client.Presentation
+         public void Flush()
+         {
+             ClearAllSamples();
++            ResetSlotRenderClocks(0.0);
+             _capturedTick = EmptyTick;
+             _minimumAcceptableTick = EmptyTick;
+             _observedIntervalTicks = 0.0;
+@@ -796,6 +873,12 @@ namespace GlobalFront.Client.Presentation
+             var anchor = (double)snapshotTick - _renderDelayTicks;
+             _renderTick = anchor > 0.0 ? anchor : 0.0;
+             _needsRenderClockAnchor = false;
++
++            // Flush zeroed the per-slot clocks, which would read as the whole ring
++            // jumping forward by the new base on the first sampled frame. Re-anchor
++            // them on the base the match restarts at: the first pose after a resync
++            // is a snap, and the turn resumes from the next tick of the new clock.
++            ResetSlotRenderClocks(_renderTick);
+         }
+ 
+         /// <summary>
+@@ -805,19 +888,26 @@ namespace GlobalFront.Client.Presentation
+         /// Never emits NaN and never rotates without elapsed time, which keeps
+         /// <see cref="TrySample"/> idempotent inside one frame.
+         /// </summary>
++        /// <param name="deltaSeconds">Elapsed time this rotation may use.</param>
++        /// <remarks>
++        /// Never emits NaN or an infinity: a non-finite target holds the last finite
++        /// heading, and a non-finite current adopts the target outright. It also
++        /// never rotates without elapsed time, which keeps <see cref="TrySample"/>
++        /// idempotent inside one frame.
++        /// </remarks>
+         public static float SlewDegrees(
+             float current,
+             float target,
+             float maxDegreesPerSecond,
+             float deltaSeconds)
+         {
+-            if (float.IsNaN(target))
++            if (!IsFinite(target))
+             {
+                 // Hold the last good heading rather than poison the transform.
+-                return float.IsNaN(current) ? 0f : current;
++                return IsFinite(current) ? current : 0f;
+             }
+ 
+-            if (float.IsNaN(current))
++            if (!IsFinite(current))
+             {
+                 return NormalizeDegrees(target);
+             }
+@@ -840,6 +930,15 @@ namespace GlobalFront.Client.Presentation
+         /// <summary>Signed shortest rotation from <paramref name="from"/> to <paramref name="to"/>.</summary>
+         public static float ShortestArcDegrees(float from, float to)
+         {
++            if (!IsFinite(from) || !IsFinite(to))
++            {
++                // An infinity makes the modulo NaN, and a NaN arc is not merely a
++                // lost frame: it is written back as the slot heading and then turns
++                // every later rotation of that unit into NaN too. An unknown heading
++                // contributes no rotation instead.
++                return 0f;
++            }
++
+             var delta = (to - from) % 360f;
+             if (delta > 180f)
+             {
+@@ -856,9 +955,19 @@ namespace GlobalFront.Client.Presentation
+         private static float NormalizeDegrees(float degrees)
+         {
+             var wrapped = degrees % 360f;
++            if (wrapped == 0f)
++            {
++                // -360f wraps to -0.0f. It compares equal to zero but reads as "-0"
++                // in a debug HUD and signs a zero yaw delta, so hand back the real
++                // zero.
++                return 0.0f;
++            }
++
+             return wrapped < 0f ? wrapped + 360f : wrapped;
+         }
+ 
++        private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
++
+         /// <summary>
+         /// Heading in degrees for the <c>Quaternion.Euler(0, yaw, 0)</c> convention,
+         /// or <see cref="float.NaN"/> when the displacement is inside the deadzone
+@@ -946,6 +1055,20 @@ namespace GlobalFront.Client.Presentation
+             }
+ 
+             var interval = (double)(tick - previousTick);
++
++            // Bound the sample before anything reads it. One 31-tick hole is below the
++            // re-prime gate and so arrives here as if it were cadence: unbounded, the
++            // EMA takes a third of it and the delay it feeds slams the play-out
++            // ceiling for the next few packets, putting every unit on screen a
++            // play-out delay behind authority because of one stall. Clamped, the same
++            // spike costs less than one packet of extra delay, while the whole
++            // supported range — 10 Hz, 5 Hz, and one loss at either — passes through
++            // untouched.
++            if (interval > MaxIntervalSampleTicks)
++            {
++                interval = MaxIntervalSampleTicks;
++            }
++
+             if (_observedIntervalTicks <= 0.0)
+             {
+                 _observedIntervalTicks = interval;
+@@ -984,6 +1107,27 @@ namespace GlobalFront.Client.Presentation
+             var target = (double)_capturedTick - _renderDelayTicks;
+             _renderTick = target > 0.0 ? target : 0.0;
+             _needsRenderClockAnchor = false;
++
++            // The global clock just moved to a base the slots never saw, so their
++            // elapsed-time anchors move with it. Written on the re-prime path only.
++            ResetSlotRenderClocks(_renderTick);
++        }
++
++        /// <summary>
++        /// Re-bases every slot's elapsed-time anchor onto <paramref name="baseTick"/>.
++        /// A per-slot clock that outlives the render clock it was read from is both a
++        /// frozen turn (see <see cref="WritePose"/>) and a leak of the previous
++        /// match's timings into the next one, so each place that resets or re-anchors
++        /// the global clock resets these with it. Loop rather than fill: allocation
++        /// free on every supported runtime, and this runs on a discontinuity, never
++        /// per frame.
++        /// </summary>
++        private void ResetSlotRenderClocks(double baseTick)
++        {
++            for (var slot = 0; slot < _slotLastRenderTick.Length; slot++)
++            {
++                _slotLastRenderTick[slot] = baseTick;
++            }
+         }
+ 
+         private void Reprime()
+@@ -1030,12 +1174,30 @@ namespace GlobalFront.Client.Presentation
+             // dt: that makes it frame-rate independent and makes a repeated read
+             // inside one frame leave the yaw untouched.
+             var elapsedTicks = render - _slotLastRenderTick[slot];
+-            if (elapsedTicks <= 0.0)
++            if (!(elapsedTicks > 0.0))
+             {
++                // A resync or a drift re-anchor moved the clock backwards. Keeping
++                // the stale anchor here clamped dt to 0 on every later frame until
++                // the clock climbed back past it, which froze the turn for the rest
++                // of the match because the starvation ceiling parks the clock below
++                // the pre-resync reading for good. Re-anchor on the new base and turn
++                // from it; the equal case writes the same value, so the per-frame
++                // idempotence of TrySample survives.
++                _slotLastRenderTick[slot] = render;
+                 elapsedTicks = 0.0;
+             }
+             else
+             {
++                // Cap the elapsed time the slew may see. The render clock may jump
++                // forward by more than one clamped frame (a resync to a new base, a
++                // catch-up snap towards authority), and an uncapped dt buys the whole
++                // turn in one read, which is the instant 180 degree flip this limit
++                // exists to prevent.
++                if (elapsedTicks > MaxAdvanceTicksPerCall)
++                {
++                    elapsedTicks = MaxAdvanceTicksPerCall;
++                }
++
+                 _slotLastRenderTick[slot] = render;
+             }
+ 
+@@ -1049,13 +1211,15 @@ namespace GlobalFront.Client.Presentation
+ 
+             var health = _health[healthCell];
+             var fraction = health * _slotInvMaxHealth[slot];
+-            if (fraction > 1f)
++            // Ordered so NaN fails the first test and lands on 0: a two-sided
++            // comparison would let a poisoned denominator reach the bar.
++            if (!(fraction > 0f))
+             {
+-                fraction = 1f;
++                fraction = 0f;
+             }
+-            else if (fraction < 0f)
++            else if (fraction > 1f)
+             {
+-                fraction = 0f;
++                fraction = 1f;
+             }
+ 
+             pose = new UnitViewPose(
+diff --git a/Assets/_GlobalFront/Tests/EditMode/Client/Presentation/UnitViewTickBufferTests.cs b/Assets/_GlobalFront/Tests/EditMode/Client/Presentation/UnitViewTickBufferTests.cs
+index d84cfd3..af77ee2 100644
+--- a/Assets/_GlobalFront/Tests/EditMode/Client/Presentation/UnitViewTickBufferTests.cs
++++ b/Assets/_GlobalFront/Tests/EditMode/Client/Presentation/UnitViewTickBufferTests.cs
+@@ -75,6 +75,25 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
+                 false);
+         }
+ 
++        /// <summary>
++        /// Re-points the move target of the single entity without touching its
++        /// position, which is how a presentation test demands a turn without having
++        /// to walk the unit across the map first.
++        /// </summary>
++        private static DeltaUpdateRecord Retarget(int moveTargetX, int moveTargetZ)
++        {
++            return new DeltaUpdateRecord(
++                new EntityId(SingleEntity),
++                (byte)(UnitDirtyMask.HasMoveTarget | UnitDirtyMask.MoveTarget),
++                new PlayerId(1),
++                new WorldPointMm(0, 0),
++                0,
++                true,
++                new WorldPointMm(moveTargetX, moveTargetZ),
++                new EntityId(0),
++                false);
++        }
++
+         private static ClientReplicationWorld NewWorld(in DeltaAddRecord add)
+         {
+             var world = new ClientReplicationWorld(SlotCapacity);
+@@ -567,6 +586,576 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
+                 "a recycled slot must re-resolve from the new unit's archetype");
+         }
+ 
++        /// <summary>
++        /// Audit P1-1: <see cref="UnitViewTickBuffer.Resync"/> to an earlier snapshot
++        /// restarts the render clock below the reading each slot last took. A slot
++        /// clock left behind there sees dt = 0 on every frame — and because the
++        /// starvation ceiling parks the render clock below the stale reading for the
++        /// rest of the match, the turn never restarts.
++        /// </summary>
++        [Test]
++        public void Resync_Backward_DoesNotFreezeYaw()
++        {
++            const int EastX = 100_000;
++            var world = NewWorld(AddRecord(0, 0, hasMoveTarget: true, moveTargetX: EastX));
++            var buffer = new UnitViewTickBuffer(SlotCapacity);
++
++            // Settle a healthy 10 Hz feed high on the tick line so every slot's
++            // elapsed-time anchor ends up well above the base below.
++            for (var packet = 0; packet < 20; packet++)
++            {
++                Assert.That(
++                    world.ApplyUpdate(MoveTo(packet * 2 * StepPerTickMm, 0)),
++                    Is.EqualTo(ClientWorldApplyResult.Ok));
++                buffer.CaptureTick((ulong)(200 + packet * 2), world);
++                for (var frame = 0; frame < FramesPerPacket; frame++)
++                {
++                    buffer.Advance(FrameSeconds);
++                    Assert.That(buffer.TrySample(0, out var settled), Is.True);
++                    AssertFinite(in settled);
++                }
++            }
++
++            Assert.That(buffer.TrySample(0, out var beforeResync), Is.True);
++            Assert.That(beforeResync.BodyYawDegrees, Is.EqualTo(90f).Within(0.5f));
++            var staleAnchor = buffer.RenderTick;
++            Assert.That(staleAnchor, Is.GreaterThan(210d));
++
++            // Turn the unit around and re-base the match behind the stale anchor.
++            Assert.That(
++                world.ApplyUpdate(Retarget(-EastX, 0)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++            buffer.Resync(120);
++            Assert.That(buffer.RenderTick, Is.LessThan(staleAnchor));
++            Assert.That(
++                buffer.RenderTick + UnitViewTickBuffer.MaxExtrapolationTicks,
++                Is.LessThan(staleAnchor),
++                "the parked clock must stay under the stale anchor: that is what froze it");
++
++            var maxStepDegrees = buffer.MaxBodyDegreesPerSecond * (float)FrameSeconds;
++            var previousYaw = beforeResync.BodyYawDegrees;
++            var start = previousYaw;
++            var moved = 0f;
++            var previousRemaining = float.PositiveInfinity;
++            var capturedStart = false;
++
++            for (var packet = 0; packet < 12; packet++)
++            {
++                Assert.That(
++                    world.ApplyUpdate(MoveTo(14_000 + packet * 2 * StepPerTickMm, 0)),
++                    Is.EqualTo(ClientWorldApplyResult.Ok));
++                buffer.CaptureTick((ulong)(120 + packet * 2), world);
++                for (var frame = 0; frame < FramesPerPacket; frame++)
++                {
++                    buffer.Advance(FrameSeconds);
++                    Assert.That(buffer.TrySample(0, out var turning), Is.True);
++                    AssertFinite(in turning);
++
++                    if (!capturedStart)
++                    {
++                        start = turning.BodyYawDegrees;
++                        capturedStart = true;
++                    }
++
++                    Assert.That(
++                        Math.Abs(UnitViewTickBuffer.ShortestArcDegrees(previousYaw, turning.BodyYawDegrees)),
++                        Is.LessThanOrEqualTo(maxStepDegrees + 1e-3f),
++                        "a re-anchored clock must still slew the turn, not throw it");
++                    previousYaw = turning.BodyYawDegrees;
++
++                    var remaining = Math.Abs(
++                        UnitViewTickBuffer.ShortestArcDegrees(turning.BodyYawDegrees, 270f));
++                    Assert.That(
++                        remaining,
++                        Is.LessThanOrEqualTo(previousRemaining + 1e-3f),
++                        "the hull may not turn away from the order");
++                    previousRemaining = remaining;
++                    moved = Math.Max(
++                        moved,
++                        Math.Abs(UnitViewTickBuffer.ShortestArcDegrees(start, turning.BodyYawDegrees)));
++                }
++            }
++
++            Assert.That(
++                moved,
++                Is.GreaterThan(90f),
++                "a yaw frozen by a stale slot clock never moves at all");
++            Assert.That(previousRemaining, Is.LessThan(45f), "and it keeps closing on its target");
++        }
++
++        /// <summary>
++        /// Audit P1-1: the render clock may jump forward by more than one clamped
++        /// frame — a catch-up snap towards authority, or the first sample after a
++        /// <see cref="UnitViewTickBuffer.Flush"/> — and an uncapped elapsed time buys
++        /// the whole turn in that one read, which is the instant 180 degree flip
++        /// <see cref="UnitViewTickBuffer.MaxBodyDegreesPerSecond"/> exists to prevent.
++        ///
++        /// Named for the clock jump rather than for
++        /// <see cref="UnitViewTickBuffer.Resync"/>: a resync now re-bases the slot
++        /// clocks with the render clock, so the surviving way to get a multi-tick
++        /// forward step is the drift snap below, which this drives on purpose and
++        /// proves it happened.
++        /// </summary>
++        [Test]
++        public void CatchUpSnap_Forward_ClampsSlewDelta()
++        {
++            const int EastX = 100_000;
++            var world = NewWorld(AddRecord(0, 0, hasMoveTarget: true, moveTargetX: EastX));
++            var buffer = new UnitViewTickBuffer(SlotCapacity);
++
++            var nextTick = 400UL;
++            for (var packet = 0; packet < 4; packet++)
++            {
++                buffer.CaptureTick(nextTick, world);
++                nextTick += 2;
++                for (var frame = 0; frame < FramesPerPacket; frame++)
++                {
++                    buffer.Advance(FrameSeconds);
++                    Assert.That(buffer.TrySample(0, out _), Is.True);
++                }
++            }
++
++            Assert.That(buffer.TrySample(0, out var settled), Is.True);
++            Assert.That(settled.BodyYawDegrees, Is.EqualTo(90f).Within(0.5f));
++
++            // Order the opposite heading, then let packets land faster than the
++            // presentation clock is allowed to run: the tab-out / OD-18 resume case.
++            Assert.That(
++                world.ApplyUpdate(Retarget(-EastX, 0)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++
++            var maxStepDegrees = buffer.MaxBodyDegreesPerSecond
++                * UnitViewTickBuffer.MaxAdvanceTicksPerCall * (float)TickSeconds;
++            var previousYaw = settled.BodyYawDegrees;
++            var biggestClockJump = 0d;
++            var biggestYawJump = 0f;
++
++            for (var burst = 0; burst < 6; burst++)
++            {
++                for (var packet = 0; packet < 10; packet++)
++                {
++                    buffer.CaptureTick(nextTick, world);
++                    nextTick += 2;
++                }
++
++                var before = buffer.RenderTick;
++                buffer.Advance(0.25);
++                biggestClockJump = Math.Max(biggestClockJump, buffer.RenderTick - before);
++
++                Assert.That(buffer.TrySample(0, out var pose), Is.True);
++                AssertFinite(in pose);
++                biggestYawJump = Math.Max(
++                    biggestYawJump,
++                    Math.Abs(UnitViewTickBuffer.ShortestArcDegrees(previousYaw, pose.BodyYawDegrees)));
++                previousYaw = pose.BodyYawDegrees;
++            }
++
++            Assert.That(
++                biggestClockJump,
++                Is.GreaterThan(UnitViewTickBuffer.MaxAdvanceTicksPerCall),
++                "the test must actually have snapped the clock forward, or it proves nothing");
++            Assert.That(
++                biggestYawJump,
++                Is.LessThanOrEqualTo(maxStepDegrees + 0.01f),
++                "one read may not turn further than the slew limit allows for its dt");
++            Assert.That(
++                biggestYawJump,
++                Is.GreaterThan(0f),
++                "the clamp bounds the turn, it does not stop it");
++            Assert.That(previousYaw, Is.EqualTo(270f).Within(0.01f), "and the bounded turn still arrives");
++        }
++
++        /// <summary>
++        /// Audit P1-2: with the adaptive play-out delay near its ceiling, the clock is
++        /// parked MaxExtrapolationTicks past authority while the drift target sits a
++        /// whole delay behind it. The overshoot test used to run before the parking
++        /// clamp, so one frame at the catch-up budget read as a half-ring overshoot and
++        /// snapped the clock back to the play-out target — every starved unit
++        /// teleporting a dozen-plus ticks in reverse.
++        /// </summary>
++        [Test]
++        public void Starvation_HighDelay_DoesNotSnapClockBackwards()
++        {
++            const int EastX = 100_000;
++            const double BigFrameSeconds = 0.25;      // above the MaxAdvanceTicksPerCall budget
++            const int CadenceTicks = 6;               // 3.3 Hz: pushes the delay to its ceiling
++            var world = NewWorld(AddRecord(0, 0, hasMoveTarget: true, moveTargetX: EastX));
++            var buffer = new UnitViewTickBuffer(SlotCapacity);
++
++            var tick = 300UL;
++            for (var packet = 0; packet < 6; packet++)
++            {
++                Assert.That(
++                    world.ApplyUpdate(MoveTo(packet * CadenceTicks * StepPerTickMm, 0)),
++                    Is.EqualTo(ClientWorldApplyResult.Ok));
++                buffer.CaptureTick(tick, world);
++                tick += CadenceTicks;
++                for (var frame = 0; frame < 4; frame++)
++                {
++                    buffer.Advance(FrameSeconds * 2);
++                }
++            }
++
++            Assert.That(
++                buffer.RenderDelayTicks,
++                Is.GreaterThan(10d),
++                "the finding needs the long-delay window: 2 packets of this cadence");
++
++            // Starve: authority stops, so the clock runs out to the extrapolation
++            // ceiling and parks there.
++            for (var frame = 0; frame < 100; frame++)
++            {
++                buffer.Advance(FrameSeconds);
++            }
++
++            var newest = buffer.CapturedTick;
++            var ceiling = (double)newest + UnitViewTickBuffer.MaxExtrapolationTicks;
++            Assert.That(
++                buffer.RenderTick,
++                Is.EqualTo(ceiling).Within(1e-9),
++                "a starved clock parks exactly on the ceiling");
++
++            Assert.That(buffer.TrySample(0, out var parked), Is.True);
++            AssertFinite(in parked);
++            Assert.That(parked.Source, Is.EqualTo(UnitViewPoseSource.Held));
++            var lastX = parked.XMillimetres;
++
++            for (var frame = 0; frame < 5; frame++)
++            {
++                buffer.Advance(BigFrameSeconds);
++                Assert.That(
++                    buffer.RenderTick,
++                    Is.GreaterThanOrEqualTo(ceiling - 1e-9),
++                    "a starved clock may never be snapped backwards");
++                Assert.That(
++                    buffer.RenderTick,
++                    Is.EqualTo(ceiling).Within(1e-9),
++                    "and it stays parked instead of drifting off");
++
++                Assert.That(buffer.TrySample(0, out var held), Is.True);
++                AssertFinite(in held);
++                Assert.That(
++                    held.XMillimetres,
++                    Is.GreaterThanOrEqualTo(lastX - 0.001f),
++                    "the unit must not teleport back to the last authoritative point");
++                lastX = held.XMillimetres;
++            }
++        }
++
++        /// <summary>
++        /// Audit P2-1: an infinity reaching the yaw of a slot used to be turned into
++        /// NaN by the modulo inside <see cref="UnitViewTickBuffer.ShortestArcDegrees"/>,
++        /// and NaN written back as the slot heading poisons every later rotation of
++        /// that unit.
++        /// </summary>
++        [Test]
++        public void SlewDegrees_InfinityInput_DoesNotReturnNaN()
++        {
++            var notAHeading = new[] { float.PositiveInfinity, float.NegativeInfinity };
++            foreach (var bad in notAHeading)
++            {
++                var holdsLastHeading = UnitViewTickBuffer.SlewDegrees(37f, bad, 270f, 0.016f);
++                var adoptsTarget = UnitViewTickBuffer.SlewDegrees(bad, 90f, 270f, 0.016f);
++                var hasNothing = UnitViewTickBuffer.SlewDegrees(bad, bad, 270f, 0.016f);
++                var arcFromTarget = UnitViewTickBuffer.ShortestArcDegrees(37f, bad);
++                var arcFromCurrent = UnitViewTickBuffer.ShortestArcDegrees(bad, 37f);
++
++                Assert.That(
++                    float.IsNaN(holdsLastHeading) || float.IsNaN(adoptsTarget)
++                    || float.IsNaN(hasNothing) || float.IsNaN(arcFromTarget)
++                    || float.IsNaN(arcFromCurrent),
++                    Is.False,
++                    "no non-finite heading may leave the slew");
++
++                // An untrustworthy target is held, never chased into the dark; an
++                // untrustworthy current adopts the authority outright, and an empty
++                // transform starts at north.
++                Assert.That(holdsLastHeading, Is.EqualTo(37f));
++                Assert.That(adoptsTarget, Is.EqualTo(90f));
++                Assert.That(hasNothing, Is.EqualTo(0f));
++                Assert.That(arcFromTarget, Is.EqualTo(0f), "an unknown heading turns nothing");
++                Assert.That(arcFromCurrent, Is.EqualTo(0f));
++
++                // A good order after the poison still slews normally.
++                Assert.That(
++                    UnitViewTickBuffer.SlewDegrees(holdsLastHeading, 90f, 270f, 0.016f),
++                    Is.EqualTo(37f + 270f * 0.016f).Within(1e-3f));
++            }
++        }
++
++        /// <summary>
++        /// Audit P3: -360 degrees wraps to negative zero, which compares equal to 0 but
++        /// signs a zero yaw delta and prints as "-0" in a debug HUD.
++        /// </summary>
++        [Test]
++        public void SlewDegrees_FullTurnWrap_ReturnsPositiveZero()
++        {
++            var wrapped = UnitViewTickBuffer.SlewDegrees(-360f, -360f, 270f, 0.016f);
++            Assert.That(wrapped, Is.EqualTo(0f));
++
++            // The sign of the reciprocal distinguishes the two zeros exactly, without
++            // depending on a bit-cast helper or on number formatting.
++            Assert.That(1f / wrapped, Is.GreaterThan(0f), "must be +0.0, not -0.0");
++        }
++
++        /// <summary>
++        /// Audit P2-3: an explicit <c>SetSlotMaximumHealth(slot, 0)</c> asks for an
++        /// empty bar, but 0 stored as the reciprocal was indistinguishable from "no
++        /// denominator yet", so the first capture overwrote the override with the
++        /// catalog row.
++        /// </summary>
++        [Test]
++        public void SetSlotMaximumHealth_ExplicitZero_SurvivesCatalog()
++        {
++            var catalog = new UnitCatalog(new[]
++            {
++                new UnitDefinition(UnitKinds.Tank, "Tank", 400, 900),
++            });
++
++            var world = NewWorld(AddRecord(0, 0, health: 200, unitKind: UnitKinds.Tank));
++            var buffer = new UnitViewTickBuffer(SlotCapacity, catalog: catalog);
++
++            // The override is made before the first capture, which is exactly when the
++            // catalog used to win.
++            buffer.SetSlotMaximumHealth(0, 0);
++            buffer.CaptureTick(10, world);
++            buffer.Advance(TickSeconds);
++            Assert.That(buffer.TrySample(0, out var blanked), Is.True);
++            Assert.That(blanked.Health, Is.EqualTo(200), "raw authority survives");
++            Assert.That(
++                blanked.HealthFraction,
++                Is.EqualTo(0f),
++                "an explicit 0 is a request, not a missing stat");
++
++            // The override belongs to the unit that asked for it: a recycled slot must
++            // go back to resolving from the archetype.
++            Assert.That(
++                world.ApplyRemove(new DeltaRemoveRecord(
++                    new EntityId(SingleEntity), DeltaRemoveCause.Destroyed)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++            Assert.That(
++                world.ApplyAdd(new DeltaAddRecord(
++                    new EntityId(7),
++                    new PlayerId(1),
++                    new WorldPointMm(10, 10),
++                    200,
++                    false,
++                    new WorldPointMm(0, 0),
++                    new EntityId(0),
++                    false,
++                    UnitKinds.Tank)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++
++            buffer.CaptureTick(12, world);
++            buffer.Advance(TickSeconds);
++            Assert.That(buffer.TrySample(0, out var recycled), Is.True);
++            Assert.That(
++                recycled.HealthFraction,
++                Is.EqualTo(0.5f).Within(1e-6f),
++                "the override must not outlive the unit that set it");
++        }
++
++        /// <summary>
++        /// ADD for an explicit entity id and archetype, so a test can watch one unit
++        /// die and another take its slot.
++        /// </summary>
++        private static DeltaAddRecord Spawned(ulong entity, byte unitKind, int health)
++        {
++            return new DeltaAddRecord(
++                new EntityId(entity),
++                new PlayerId(1),
++                new WorldPointMm(0, 0),
++                health,
++                false,
++                new WorldPointMm(0, 0),
++                new EntityId(0),
++                false,
++                unitKind);
++        }
++
++        private static UnitCatalog HealthCatalog()
++        {
++            // Distinct maxima per archetype, and neither equal to the override the
++            // tests below name, so a wrong denominator cannot coincidentally match.
++            return new UnitCatalog(new[]
++            {
++                new UnitDefinition(UnitKinds.Scout, "Scout", 200, 500),
++                new UnitDefinition(UnitKinds.Tank, "Tank", 400, 900),
++            });
++        }
++
++        private static ClientReplicationWorld WorldWith(params DeltaAddRecord[] adds)
++        {
++            var world = new ClientReplicationWorld(SlotCapacity);
++            foreach (var add in adds)
++            {
++                Assert.That(world.ApplyAdd(add), Is.EqualTo(ClientWorldApplyResult.Ok));
++            }
++
++            return world;
++        }
++
++        /// <summary>
++        /// Audit N-1: an override belongs to the unit it was named for. When the
++        /// client watches that unit leave the table, the slot's health state has to
++        /// leave with it, or whoever spawns into the recycled slot inherits it.
++        /// </summary>
++        [Test]
++        public void SetSlotMaximumHealth_DeathFollowedByNewUnit_ResolvesFromCatalog()
++        {
++            var world = WorldWith(Spawned(1, UnitKinds.Tank, 50));
++            var buffer = new UnitViewTickBuffer(SlotCapacity, catalog: HealthCatalog());
++
++            // A per-match stat override for the tank: 50 of 123, not 50 of its
++            // archetype's 400.
++            buffer.SetSlotMaximumHealth(0, 123);
++            buffer.CaptureTick(10, world);
++            buffer.Advance(TickSeconds);
++            Assert.That(buffer.TrySample(0, out var overridden), Is.True);
++            Assert.That(overridden.HealthFraction, Is.EqualTo(50f / 123f).Within(1e-6f));
++
++            // The death is observable: a later packet finds the slot empty, which is
++            // also the moment the buffer stops knowing who the override was for.
++            Assert.That(
++                world.ApplyRemove(new DeltaRemoveRecord(
++                    new EntityId(1), DeltaRemoveCause.Destroyed)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++            buffer.CaptureTick(12, world);
++            Assert.That(buffer.HasHistory(0), Is.False);
++
++            // A scout takes the recycled slot with its archetype on the wire, so the
++            // bar is the catalog's 50/200. Inheriting 1/123 drew it at 41 percent.
++            Assert.That(
++                world.ApplyAdd(Spawned(2, UnitKinds.Scout, 50)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++            buffer.CaptureTick(14, world);
++            buffer.Advance(TickSeconds);
++            Assert.That(buffer.TrySample(0, out var successor), Is.True);
++            Assert.That(successor.Health, Is.EqualTo(50));
++            Assert.That(
++                successor.HealthFraction,
++                Is.EqualTo(0.25f).Within(1e-6f),
++                "a dead unit's override must not follow into its successor");
++        }
++
++        /// <summary>
++        /// Audit N-1, the variant the observed death cannot cover: an OD-20 resync
++        /// drops the ring but deliberately keeps the slot identity and the resolved
++        /// denominator, and the handover to another unit then happens with no empty
++        /// packet in between.
++        /// </summary>
++        [Test]
++        public void SetSlotMaximumHealth_ResyncHandover_ResolvesFromCatalog()
++        {
++            var world = WorldWith(Spawned(1, UnitKinds.Tank, 50));
++            var buffer = new UnitViewTickBuffer(SlotCapacity, catalog: HealthCatalog());
++
++            buffer.SetSlotMaximumHealth(0, 123);
++            buffer.CaptureTick(10, world);
++            buffer.Advance(TickSeconds);
++            Assert.That(buffer.TrySample(0, out var overridden), Is.True);
++            Assert.That(overridden.HealthFraction, Is.EqualTo(50f / 123f).Within(1e-6f));
++
++            // The resync clears every sample, so "did this slot have a view?" is no
++            // longer a usable witness for "did this slot have a unit?".
++            Assert.That(
++                world.ApplyRemove(new DeltaRemoveRecord(
++                    new EntityId(1), DeltaRemoveCause.Destroyed)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++            Assert.That(
++                world.ApplyAdd(Spawned(2, UnitKinds.Scout, 50)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++            buffer.Resync(400);
++            Assert.That(buffer.HasHistory(0), Is.False);
++
++            buffer.CaptureTick(402, world);
++            buffer.Advance(TickSeconds);
++            Assert.That(buffer.TrySample(0, out var successor), Is.True);
++            Assert.That(
++                successor.HealthFraction,
++                Is.EqualTo(0.25f).Within(1e-6f),
++                "the override must not survive a handover across the resync gap");
++        }
++
++        /// <summary>
++        /// The other side of N-1: a flush of the same unit is a pause, not a death.
++        /// Clearing the health state in <see cref="UnitViewTickBuffer.Flush"/> would
++        /// close the handover case too, but it would also blank the bar forever for
++        /// the pre-OD-29 records whose denominator only a binder knows — the override
++        /// is what that escape hatch is for, so it is kept across a pause and dropped
++        /// only when the unit itself is gone.
++        /// </summary>
++        [Test]
++        public void SetSlotMaximumHealth_SurvivesFlushOfTheSameUnit()
++        {
++            var world = WorldWith(Spawned(1, UnitKinds.Tank, 50));
++
++            // Tank is in the catalog at 400: if the override were dropped, the bar
++            // would silently come back as the archetype's instead of the unit's.
++            var buffer = new UnitViewTickBuffer(SlotCapacity, catalog: HealthCatalog());
++            buffer.SetSlotMaximumHealth(0, 123);
++            buffer.CaptureTick(10, world);
++            buffer.Advance(TickSeconds);
++            Assert.That(buffer.TrySample(0, out var before), Is.True);
++            Assert.That(before.HealthFraction, Is.EqualTo(50f / 123f).Within(1e-6f));
++
++            // The OD-18 tactical pause: history drops, the unit and its stats do not.
++            buffer.Flush();
++            Assert.That(buffer.TrySample(0, out _), Is.False);
++            buffer.CaptureTick(12, world);
++            buffer.Advance(TickSeconds);
++            Assert.That(buffer.TrySample(0, out var after), Is.True);
++            Assert.That(
++                after.HealthFraction,
++                Is.EqualTo(50f / 123f).Within(1e-6f),
++                "a pause must not silently replace a stat override with the archetype");
++        }
++
++        /// <summary>
++        /// Audit F-4: one 31-tick hole is below the re-prime gate, so it reaches the
++        /// arrival estimator as an ordinary cadence sample. Unbounded it puts a third
++        /// of the outage into the interval, and the delay built on top of that slams
++        /// the play-out ceiling — every unit on screen a play-out delay behind
++        /// authority because the transport stalled once.
++        /// </summary>
++        [Test]
++        public void ObserveArrival_LargeGap_DoesNotSpikeDelayToCeiling()
++        {
++            var world = NewWorld(AddRecord(0, 0));
++            var buffer = new UnitViewTickBuffer(SlotCapacity);
++
++            // Settle the estimator on a nominal 10 Hz cadence first, so what is
++            // measured below is the spike and not the cold start.
++            for (var packet = 0; packet < 8; packet++)
++            {
++                buffer.CaptureTick((ulong)(100 + packet * 2), world);
++            }
++
++            Assert.That(buffer.RenderDelayTicks, Is.EqualTo(4d).Within(1e-9), "2 packets of 2 ticks");
++            Assert.That(buffer.ObservedIntervalTicks, Is.EqualTo(2d).Within(1e-9));
++
++            Assert.That(buffer.CapturedTick, Is.EqualTo(114UL));
++            buffer.CaptureTick(145, world);
++            Assert.That(buffer.ReprimeCount, Is.EqualTo(0), "a 31-tick gap is under the ring depth");
++            Assert.That(
++                buffer.RenderDelayTicks,
++                Is.LessThanOrEqualTo(8.0d),
++                "one stall may not set the play-out ceiling");
++
++            // Three nominal packets later the estimate is back on the cadence, which
++            // is the difference between one packet of hiccup and seconds of lag.
++            for (var packet = 0; packet < 3; packet++)
++            {
++                buffer.CaptureTick((ulong)(147 + packet * 2), world);
++            }
++
++            Assert.That(
++                buffer.RenderDelayTicks,
++                Is.LessThan(6d),
++                "a bounded spike must not leave the play-out delay elevated");
++            Assert.That(buffer.ObservedIntervalTicks, Is.LessThan(2.7d));
++        }
++
+         [Test]
+         public void ZeroGC_SustainedOperation()
+         {

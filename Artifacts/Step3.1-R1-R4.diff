@@ -1,0 +1,346 @@
+diff --git a/Assets/_GlobalFront/Runtime/Client/Camera/RtsCameraController.cs b/Assets/_GlobalFront/Runtime/Client/Camera/RtsCameraController.cs
+index c9032e1..0985e13 100644
+--- a/Assets/_GlobalFront/Runtime/Client/Camera/RtsCameraController.cs
++++ b/Assets/_GlobalFront/Runtime/Client/Camera/RtsCameraController.cs
+@@ -26,13 +26,13 @@ namespace GlobalFront.Client
+         [SerializeField] private float edgePanThickness = 12f;
+ 
+         [Header("Zoom & Dynamic Pitch")]
+-        [SerializeField] private float minHeight = 15f;
+-        [SerializeField] private float maxHeight = 80f;
++        [SerializeField] private float minHeight = DefaultMinHeight;
++        [SerializeField] private float maxHeight = DefaultMaxHeight;
+         [SerializeField] private float startHeight = 45f;
+         [SerializeField] private float zoomStep = 8f;
+         [SerializeField] private float zoomSmoothing = 12f;
+-        [SerializeField, Range(30f, 60f)] private float minPitch = 40f;
+-        [SerializeField, Range(60f, 85f)] private float maxPitch = 70f;
++        [SerializeField, Range(30f, 60f)] private float minPitch = DefaultMinPitch;
++        [SerializeField, Range(60f, 85f)] private float maxPitch = DefaultMaxPitch;
+ 
+         [Header("Rotation")]
+         [SerializeField] private float rotationSensitivity = 0.5f;
+@@ -89,39 +89,48 @@ namespace GlobalFront.Client
+         /// </summary>
+         private const float MinTanPitch = 0.01f;
+ 
++        // Tuning defaults, named so the Awake sanitizer can fall back to the same value the
++        // field initializer uses instead of inventing a second one.
++        private const float DefaultMinHeight = 15f;
++        private const float DefaultMaxHeight = 80f;
++        private const float DefaultMinPitch = 40f;
++        private const float DefaultMaxPitch = 70f;
++
+         /// <summary>
+         /// Lowest zoom height. Clamped through the setter because the pitch is derived
+         /// from the height fraction, so an inverted or zero-width range is a NaN
+-        /// generator, not just a cosmetic mistake.
++        /// generator, not just a cosmetic mistake. A non-finite write is dropped rather
++        /// than clamped: <c>Mathf.Clamp</c> returns NaN for NaN, so clamping would store
++        /// the very value this clamp exists to keep out.
+         /// </summary>
+         public float MinHeight
+         {
+             get => minHeight;
+-            set => minHeight = Mathf.Min(Mathf.Max(HeightFloor, value), maxHeight);
++            set => minHeight = Mathf.Min(Mathf.Max(HeightFloor, FiniteOr(value, minHeight)), maxHeight);
+         }
+ 
+         /// <summary>Highest zoom height; see <see cref="MinHeight"/> for the ordering rule.</summary>
+         public float MaxHeight
+         {
+             get => maxHeight;
+-            set => maxHeight = Mathf.Max(value, minHeight);
++            set => maxHeight = Mathf.Max(FiniteOr(value, maxHeight), minHeight);
+         }
+ 
+         public float ZoomStep { get => zoomStep; set => zoomStep = value; }
+         public float ZoomSmoothing { get => zoomSmoothing; set => zoomSmoothing = value; }
+ 
+-        /// <summary>Pitch at the lowest zoom; the clamp is here rather than in the inspector because <see cref="RangeAttribute"/> does not bind code.</summary>
++        /// <summary>Pitch at the lowest zoom; the clamp is here rather than in the inspector because <see cref="RangeAttribute"/> does not bind code. See <see cref="MinHeight"/> for why a non-finite write is dropped.</summary>
+         public float MinPitch
+         {
+             get => minPitch;
+-            set => minPitch = Mathf.Clamp(value, PitchFloorDegrees, maxPitch);
++            set => minPitch = Mathf.Clamp(FiniteOr(value, minPitch), PitchFloorDegrees, maxPitch);
+         }
+ 
+         /// <summary>Pitch at the highest zoom; see <see cref="MinPitch"/>.</summary>
+         public float MaxPitch
+         {
+             get => maxPitch;
+-            set => maxPitch = Mathf.Clamp(value, minPitch, PitchCeilingDegrees);
++            set => maxPitch = Mathf.Clamp(FiniteOr(value, maxPitch), minPitch, PitchCeilingDegrees);
+         }
+ 
+         public float RotationSensitivity { get => rotationSensitivity; set => rotationSensitivity = value; }
+@@ -131,9 +140,29 @@ namespace GlobalFront.Client
+ 
+         private void Awake()
+         {
++            SanitizeSerializedRanges();
+             InitializeState();
+         }
+ 
++        /// <summary>
++        /// Forces the serialized pitch/height fields into a finite, ordered range before the
++        /// first <see cref="ApplyTransform"/>. Every one of them feeds a division, and a scene
++        /// asset reaches them without passing a setter: Unity round-trips a hand-edited
++        /// <c>NaN</c> in the YAML back into the field, and <see cref="RangeAttribute"/> only
++        /// constrains the inspector slider. Doing it here rather than only inside
++        /// <see cref="ApplyTransform"/> is what makes the whole object trustworthy from the
++        /// first frame — properties, <see cref="InitializeState"/> and the height clamp in
++        /// <see cref="SetHeight"/> all read these fields as already valid.
++        /// </summary>
++        private void SanitizeSerializedRanges()
++        {
++            minPitch = Mathf.Clamp(FiniteOr(minPitch, DefaultMinPitch), PitchFloorDegrees, PitchCeilingDegrees);
++            maxPitch = Mathf.Clamp(FiniteOr(maxPitch, DefaultMaxPitch), minPitch, PitchCeilingDegrees);
++            minHeight = Mathf.Max(HeightFloor, FiniteOr(minHeight, DefaultMinHeight));
++            maxHeight = Mathf.Max(minHeight, FiniteOr(maxHeight, DefaultMaxHeight));
++            startHeight = Mathf.Clamp(FiniteOr(startHeight, minHeight), minHeight, maxHeight);
++        }
++
+         public void InitializeState()
+         {
+             if (inputManager == null)
+@@ -290,10 +319,11 @@ namespace GlobalFront.Client
+                 _currentYaw = _targetYaw;
+             }
+ 
+-            // The last line of defence, deliberately independent of the setters: a scene
+-            // asset can serialize a pitch or a height range no setter ever saw, and both
+-            // feed a division. Everything below is bounded before it divides, and the
+-            // serialized fields are read through locals rather than rewritten in place.
++            // The last line of defence, deliberately independent of the Awake sanitizer and of
++            // the setters: the two ranges can still be collapsed to a zero width by a legitimate
++            // call (MinHeight(60) then MaxHeight(20) lands on 60..60), and both feed a division.
++            // Everything below is bounded before it divides, and the serialized fields are read
++            // through locals rather than rewritten in place.
+             var heightFloor = Mathf.Max(HeightFloor, minHeight);
+             var heightCeiling = Mathf.Max(maxHeight, heightFloor);
+             _currentHeight = Mathf.Clamp(_currentHeight, heightFloor, heightCeiling);
+@@ -390,6 +420,14 @@ namespace GlobalFront.Client
+         /// </summary>
+         private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+ 
++        /// <summary>
++        /// The number, or <paramref name="fallback"/> when it is not one. Needed because
++        /// <c>Mathf.Clamp</c> and <c>Mathf.Max</c> propagate a non-finite value instead of
++        /// repairing it — clamping NaN still yields NaN — so a range that must stay usable
++        /// needs a fallback, not a clamp.
++        /// </summary>
++        private static float FiniteOr(float value, float fallback) => IsFinite(value) ? value : fallback;
++
+         private static bool IsFinite(in Vector3 value) =>
+             IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+ 
+diff --git a/Assets/_GlobalFront/Runtime/Client/Input/RtsInputManager.cs b/Assets/_GlobalFront/Runtime/Client/Input/RtsInputManager.cs
+index 0a4e38b..d4237a8 100644
+--- a/Assets/_GlobalFront/Runtime/Client/Input/RtsInputManager.cs
++++ b/Assets/_GlobalFront/Runtime/Client/Input/RtsInputManager.cs
+@@ -88,6 +88,15 @@ namespace GlobalFront.Client
+         /// <summary>
+         /// Raycast world position of the mouse on the ground plane (Y = 0).
+         /// </summary>
++        /// <remarks>
++        /// Safe fallback, not a hit: when the camera ray is parallel to the plane or aimed
++        /// away from it — a horizontal pitch, or a camera flown above the map looking up —
++        /// there is no intersection with <see cref="GroundPlane"/> and the property returns
++        /// <see cref="Vector3.zero"/>. The client pitch is clamped below 90 degrees, so this
++        /// needs an unusual camera, but the value is indistinguishable from a real hit on the
++        /// world origin. Callers that must tell the two apart use
++        /// <see cref="TryGetMouseWorldPosition"/>, which reports the miss as false.
++        /// </remarks>
+         public Vector3 MouseWorldPosition
+         {
+             get
+@@ -317,9 +326,20 @@ namespace GlobalFront.Client
+             _mockMoveInput = moveInput.sqrMagnitude > 1f ? moveInput.normalized : moveInput;
+         }
+ 
++        /// <summary>
++        /// Injects zoom input on the same scale and with the same sign as the hardware scroll:
++        /// positive zooms in (<see cref="RtsCameraController"/> subtracts it from the height
++        /// target, so the camera descends), negative zooms out and lifts the camera, zero holds.
++        /// The magnitude is clamped to <c>[-1, 1]</c> because the hardware path quantizes the
++        /// wheel with <see cref="Mathf.Sign"/> and never reports more than a unit step — an
++        /// unclamped mock value would move the camera further per step than any physical wheel
++        /// can (a mock of 3 drove 24 m against the 8 m a real scroll produces). Like the
++        /// hardware path, zoom is a discrete step and is deliberately not scaled by deltaTime;
++        /// both paths stay identical in that respect.
++        /// </summary>
+         public void SetMockZoomInput(float zoomInput)
+         {
+-            _mockZoomInput = zoomInput;
++            _mockZoomInput = Mathf.Clamp(zoomInput, -1f, 1f);
+         }
+ 
+         public void SetMockRotationInput(float rotationInput)
+diff --git a/Assets/_GlobalFront/Tests/EditMode/Client/RtsCameraTests.cs b/Assets/_GlobalFront/Tests/EditMode/Client/RtsCameraTests.cs
+index dad02c8..946f0b3 100644
+--- a/Assets/_GlobalFront/Tests/EditMode/Client/RtsCameraTests.cs
++++ b/Assets/_GlobalFront/Tests/EditMode/Client/RtsCameraTests.cs
+@@ -1,4 +1,5 @@
+ using System.Collections.Generic;
++using System.Reflection;
+ using GlobalFront.Client;
+ using NUnit.Framework;
+ using UnityEngine;
+@@ -326,6 +327,31 @@ namespace GlobalFront.Tests.EditMode.Client
+                 () => Drive(200),
+                 UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory(),
+                 "the camera step runs every frame and must not touch the heap");
++
++            // The run above is the idle branch: SetUp leaves every mock input at zero, so it
++            // proves nothing about the code a player actually exercises, and an allocation in
++            // the movement path would sail through it. Drive every input branch and measure
++            // the same way — same recorder, because the editor's Mono runtime still reports 0
++            // bytes from GC.GetAllocatedBytesForCurrentThread().
++            _inputManager.SetMockMoveInput(new Vector2(1f, 0f));
++            _inputManager.SetMockZoomInput(1f);
++            _inputManager.SetMockRotationInput(12f);
++            _inputManager.SetMockIsRotating(true);
++            _inputManager.SetMockResetRotation(true);
++            _inputManager.SetMockMousePosition(new Vector2(2f, 2f));
++
++            Drive(20);
++            Assert.That(_cameraController.TargetFocusPoint.x, Is.GreaterThan(0f),
++                "the pan branch must actually be running, or this measures the idle path again");
++            Assert.That(_cameraController.TargetYaw, Is.EqualTo(0f),
++                "the North reset must win over the rotation input");
++
++            Drive(200);
++            Assert.That(
++                () => Drive(200),
++                UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory(),
++                "the hot path under live pan, zoom and rotation input allocates zero bytes");
++            _inputManager.ResetMockInputs();
+         }
+ 
+         [Test]
+@@ -355,5 +381,123 @@ namespace GlobalFront.Tests.EditMode.Client
+             _inputManager.SetMockIsRotating(true);
+             Assert.That(_inputManager.IsRotating, Is.True);
+         }
++
++        [Test]
++        public void InputManager_MockZoomInput_MatchesHardwareScrollScaleAndSign()
++        {
++            // R-1: the wheel is quantized to Sign(scroll), so a real mouse can never ask for
++            // more than one zoom step per frame. The mock path used to forward its argument
++            // verbatim, which let a test drive 24 m where hardware drives 8 m — the two models
++            // of the same gesture disagreed, and every zoom assertion inherited that.
++            var zoomStep = _cameraController.ZoomStep;
++
++            _inputManager.SetMockZoomInput(3f);
++            Assert.That(_inputManager.ZoomInput, Is.EqualTo(1f).Within(1e-5f),
++                "an over-range mock is quantized to the hardware unit step");
++
++            _inputManager.SetMockZoomInput(-3f);
++            Assert.That(_inputManager.ZoomInput, Is.EqualTo(-1f).Within(1e-5f), "same in the other direction");
++
++            _inputManager.SetMockZoomInput(0.25f);
++            Assert.That(_inputManager.ZoomInput, Is.EqualTo(0.25f).Within(1e-5f),
++                "a partial wheel stays partial; only the range is bounded");
++
++            _inputManager.SetMockZoomInput(3f);
++            _cameraController.SetHeight(45f, immediate: true);
++            _cameraController.ManualUpdate(0.016f);
++            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - zoomStep).Within(1e-3f),
++                "positive zoom means the camera descends, by exactly one step");
++
++            _cameraController.ManualUpdate(0.016f);
++            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - 2f * zoomStep).Within(1e-3f),
++                "one step per frame, not one scaled by the injected magnitude");
++
++            _inputManager.SetMockZoomInput(-1f);
++            _cameraController.ManualUpdate(0.016f);
++            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - zoomStep).Within(1e-3f),
++                "negative zoom means the camera climbs");
++
++            _inputManager.SetMockZoomInput(0f);
++            _cameraController.ManualUpdate(0.016f);
++            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - zoomStep).Within(1e-3f),
++                "zero holds");
++        }
++
++        [Test]
++        public void Camera_BrokenSceneRange_IsSanitizedBeforeFirstApplyTransform()
++        {
++            // R-4: a scene file writes into the serialized fields without passing a setter,
++            // Unity round-trips a hand-edited NaN or infinity back out of the YAML, and the
++            // [Range] attributes only ever constrained the inspector slider. Reproduce that
++            // order — fields poisoned, then Awake — because every one of them feeds a division
++            // and a NaN there is the original P1-1 defect: a transform assignment of
++            // { NaN, NaN, NaN }.
++            var brokenRig = new GameObject("RtsCameraTest_BrokenSceneRig");
++            _createdObjects.Add(brokenRig);
++            brokenRig.AddComponent<Camera>();
++            var brokenController = brokenRig.AddComponent<RtsCameraController>();
++
++            WriteSerializedField(brokenController, "minPitch", float.NaN);
++            WriteSerializedField(brokenController, "maxPitch", float.PositiveInfinity);
++            WriteSerializedField(brokenController, "minHeight", float.NaN);
++            WriteSerializedField(brokenController, "startHeight", float.NegativeInfinity);
++            // Finite but inverted: a clamp on one field alone leaves the range unusable.
++            WriteSerializedField(brokenController, "maxHeight", 2f);
++            InvokeAwake(brokenController);
++
++            Assert.That(brokenController.MinPitch, Is.EqualTo(40f).Within(1e-4f), "NaN pitch falls back");
++            Assert.That(brokenController.MaxPitch, Is.InRange(brokenController.MinPitch, 85f),
++                "an infinite pitch ceiling falls back inside the range");
++            Assert.That(brokenController.MinHeight, Is.GreaterThanOrEqualTo(1f), "NaN height falls back");
++            Assert.That(brokenController.MaxHeight, Is.GreaterThanOrEqualTo(brokenController.MinHeight),
++                "the height range stays ordered whatever the scene claimed");
++            Assert.That(brokenController.CurrentHeight, Is.InRange(brokenController.MinHeight, brokenController.MaxHeight));
++            Assert.That(brokenController.CurrentPitch, Is.InRange(10f, 85f));
++
++            var position = brokenController.transform.position;
++            Assert.That(
++                float.IsNaN(position.x) || float.IsNaN(position.y) || float.IsNaN(position.z)
++                || float.IsInfinity(position.x) || float.IsInfinity(position.y) || float.IsInfinity(position.z),
++                Is.False,
++                "the transform must be finite after Awake rebuilds it");
++            Assert.That(position.y, Is.GreaterThan(0f), "the camera must stay above the map");
++
++            // The same poison through the public door: clamping a NaN stores a NaN, so the
++            // setters refuse it instead.
++            var minPitch = _cameraController.MinPitch;
++            var maxHeight = _cameraController.MaxHeight;
++            _cameraController.MinPitch = float.NaN;
++            _cameraController.MaxPitch = float.NaN;
++            _cameraController.MinHeight = float.NaN;
++            _cameraController.MaxHeight = float.PositiveInfinity;
++            Assert.That(_cameraController.MinPitch, Is.EqualTo(minPitch).Within(1e-4f), "pitch setter refuses NaN");
++            Assert.That(_cameraController.MaxPitch, Is.InRange(_cameraController.MinPitch, 85f));
++            Assert.That(_cameraController.MaxHeight, Is.EqualTo(maxHeight).Within(1e-4f), "height setter refuses NaN");
++
++            _cameraController.ManualUpdate(0.016f);
++            var livePosition = _cameraController.transform.position;
++            Assert.That(
++                float.IsNaN(livePosition.x) || float.IsNaN(livePosition.y) || float.IsNaN(livePosition.z),
++                Is.False,
++                "and the step after it must still be finite");
++        }
++
++        /// <summary>
++        /// Writes a serialized field directly, the way scene deserialization does: no setter,
++        /// no attribute, no validation. Awake is invoked separately for the same reason.
++        /// </summary>
++        private static void WriteSerializedField(RtsCameraController controller, string fieldName, float value)
++        {
++            typeof(RtsCameraController)
++                .GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance)
++                .SetValue(controller, value);
++        }
++
++        private static void InvokeAwake(RtsCameraController controller)
++        {
++            typeof(RtsCameraController)
++                .GetMethod("Awake", BindingFlags.NonPublic | BindingFlags.Instance)
++                .Invoke(controller, null);
++        }
+     }
+ }

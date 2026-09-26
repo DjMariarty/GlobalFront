@@ -54,14 +54,17 @@ namespace GlobalFront.Client.Presentation
         private readonly ulong[] _capturedTickAtBind;
 
         /// <summary>
-        /// Health denominator per archetype, resolved once from the catalog at
+        /// Presentation row per archetype, resolved once from the catalog at
         /// construction. A spawn has to state a unit's health fraction before the
         /// ring has anything to show, and the buffer's own copy of that table is
         /// private — so the binder keeps its own array-indexed lookup rather than
-        /// paying a virtual catalog call per spawn. O(1), no allocation, and the same
-        /// zero for an unresolved archetype that keeps a bar from dividing by 0.
+        /// paying a virtual catalog call per spawn. The same row carries the
+        /// footprint radius the overlays are scaled from (OD-25). O(1), no allocation,
+        /// and the same zeroed <see cref="UnitDefinition"/> for an archetype the
+        /// client has no row for that keeps a bar from dividing by 0 and a ring from
+        /// being drawn at all.
         /// </summary>
-        private readonly float[] _invMaxHealthByKind;
+        private readonly UnitDefinition[] _definitionByKind;
 
         private readonly int _slotLimit;
 
@@ -104,12 +107,12 @@ namespace GlobalFront.Client.Presentation
             _capturedTickAtBind = new ulong[_slotLimit];
 
             var source = catalog ?? UnitCatalog.Default;
-            _invMaxHealthByKind = new float[UnitKinds.Count];
-            for (var kind = 1; kind < _invMaxHealthByKind.Length; kind++)
+            _definitionByKind = new UnitDefinition[UnitKinds.Count];
+            for (var kind = 1; kind < _definitionByKind.Length; kind++)
             {
                 if (source.TryGet((byte)kind, out var definition))
                 {
-                    _invMaxHealthByKind[kind] = definition.InvMaxHealth;
+                    _definitionByKind[kind] = definition;
                 }
             }
 
@@ -168,6 +171,15 @@ namespace GlobalFront.Client.Presentation
             view = (uint)slot < (uint)_slotLimit ? _viewBySlot[slot] : null;
             return view != null;
         }
+
+        /// <summary>
+        /// Number of replication slots this binder walks, and therefore the range a
+        /// consumer may enumerate with <see cref="TryGetView"/>. The overlay pass
+        /// (OD-25) builds its instance batches by walking exactly this range, so it
+        /// needs the bound but never the array itself: handing out the reference would
+        /// let a caller leave a slot pointing at a view the pool already took back.
+        /// </summary>
+        public int SlotCount => _slotLimit;
 
         /// <summary>
         /// Advances the render clock and writes one frame of presentation. Call it
@@ -311,15 +323,14 @@ namespace GlobalFront.Client.Presentation
                 return false;
             }
 
-            view.Bind(state.Entity);
-
             // Authoritative position and health first, interpolated pose from the next capture:
             // a unit that materialised at the world origin for three frames is a
             // worse artefact than one that holds still for a packet.
-            var invMaxHealth = (uint)state.UnitKind < (uint)_invMaxHealthByKind.Length
-                ? _invMaxHealthByKind[state.UnitKind]
-                : 0f;
-            view.SnapToAuthority(in state, invMaxHealth);
+            var definition = (uint)state.UnitKind < (uint)_definitionByKind.Length
+                ? _definitionByKind[state.UnitKind]
+                : default;
+            view.Bind(state.Entity, definition.MaximumHealth, definition.RadiusMillimetres);
+            view.SnapToAuthority(in state, definition.InvMaxHealth);
 
             _viewBySlot[slot] = view;
             _capturedTickAtBind[slot] = capturedTick;
@@ -339,6 +350,16 @@ namespace GlobalFront.Client.Presentation
             _viewBySlot[slot] = null;
             _capturedTickAtBind[slot] = 0;
             _boundCount--;
+
+            if (!ReferenceEquals(view, null))
+            {
+                // Selection is dropped here rather than only inside the pool's
+                // release, because the pool can refuse this view (a repeated release,
+                // one it never created, a GameObject destroyed outside it) and return
+                // before it touches the object — and a view that keeps a dead unit's
+                // selection is one that puts a ring on whoever is drawn next.
+                view.SetSelected(false);
+            }
 
             // The slot reference is dropped even if the pool rejected the view: a
             // view the pool does not own any more must not stay bound to a slot,

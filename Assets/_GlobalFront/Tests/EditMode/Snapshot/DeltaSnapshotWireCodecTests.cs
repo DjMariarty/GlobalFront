@@ -934,6 +934,74 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         }
 
         [Test]
+        public void Decode_RejectsAttackTargetDeltaThatOverflowsTheEntityId()
+        {
+            // The encoder computes the delta as (long)attackTarget - id, so a
+            // well-behaved sender can never produce a delta that overflows the sum
+            // back. A forged one can: without the upper guard, id + long.MaxValue
+            // wrapped to a negative long and the (ulong) cast turned it into an
+            // enormous entity id the client would then trust as a targeted unit.
+            const long entity = 1000;
+            var packet = EncodeOk(
+                Array.Empty<DeltaAddRecord>(),
+                new[] { MakeUpdate((ulong)entity, UnitDirtyMask.AttackTarget, attackTarget: entity + 1) },
+                Array.Empty<DeltaRemoveRecord>());
+
+            var deltaOffset = HeaderSize + DeltaSnapshotWireCodec.GetVarintZigzagSize(entity) + 1;
+            Assert.That(deltaOffset, Is.EqualTo(packet.Length - 1),
+                "the packet ends with the target delta that is about to be replaced");
+
+            var forged = new byte[DeltaSnapshotProtocol.VarintMaxSizeBytes];
+
+            Assert.That(
+                DeltaSnapshotWireCodec.TryWriteVarintZigzag(long.MaxValue, forged, out var overflowBytes),
+                Is.True);
+            Assert.That(overflowBytes, Is.GreaterThan(1), "long.MaxValue cannot be a one byte varint");
+
+            Assert.That(
+                Decode(SpliceTargetDelta(packet, deltaOffset, forged, overflowBytes),
+                    out _, out _, out _, out _),
+                Is.EqualTo(DeltaCodecResult.Malformed),
+                "a delta that overflows id + delta on addition must be refused, not wrapped");
+
+            // One below the overflow is still representable, so the guard has to stop
+            // at the boundary rather than shrink the legal range.
+            var largestLegal = long.MaxValue - entity;
+
+            Assert.That(
+                DeltaSnapshotWireCodec.TryWriteVarintZigzag(largestLegal, forged, out var boundaryBytes),
+                Is.True);
+
+            var accepted = SpliceTargetDelta(packet, deltaOffset, forged, boundaryBytes);
+            Assert.That(
+                Decode(accepted, out _, out _, out var decodedAccepted, out _),
+                Is.EqualTo(DeltaCodecResult.Ok),
+                $"a delta of {largestLegal} still fits and must decode");
+            Assert.That(
+                decodedAccepted[0].AttackTarget,
+                Is.EqualTo(new EntityId((ulong)(entity + largestLegal))));
+        }
+
+        /// <summary>
+        /// Rebuilds the packet with the update record's trailing target delta replaced
+        /// by <paramref name="deltaBytes"/>. The header declares no payload length, so
+        /// the record counts stay right and the packet still occupies exactly the bytes
+        /// it declares: the range guard is the only thing left that can answer
+        /// Malformed here.
+        /// </summary>
+        private static byte[] SpliceTargetDelta(
+            byte[] packet,
+            int deltaOffset,
+            byte[] deltaBytes,
+            int deltaByteCount)
+        {
+            var result = new byte[deltaOffset + deltaByteCount];
+            Array.Copy(packet, 0, result, 0, deltaOffset);
+            Array.Copy(deltaBytes, 0, result, deltaOffset, deltaByteCount);
+            return result;
+        }
+
+        [Test]
         public void UpdateRecord_AllFields_RoundTrips()
         {
             const UnitDirtyMask all = UnitDirtyMask.Owner | UnitDirtyMask.Position | UnitDirtyMask.Health |

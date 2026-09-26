@@ -85,8 +85,16 @@ namespace GlobalFront.Client.Catalog
         /// <summary>
         /// Builds a table from hand-authored or data-driven rows. Rejects a row for
         /// <see cref="UnitKinds.Unknown"/> (unknown is a lookup miss, not a kind),
-        /// duplicate kinds, and kinds outside the protocol's range, so a mistake
-        /// surfaces at load instead of silently re-skinned units later.
+        /// duplicate kinds, kinds outside the protocol's range, and rows that are not
+        /// usable for presentation, so a mistake surfaces at load instead of silently
+        /// re-skinned units later.
+        ///
+        /// Rejecting unresolved rows is what makes <see cref="TryGet"/> mean
+        /// something: a row that had already been stored with a zero denominator
+        /// would read back as "this archetype has zero hit points" everywhere the
+        /// caller trusts the lookup, which is the exact <c>0/0</c> and empty-bar shape
+        /// this table exists to prevent. A roster still in progress leaves the kind
+        /// out of the array instead of shipping a placeholder row for it.
         /// </summary>
         public UnitCatalog(UnitDefinition[] definitions)
         {
@@ -104,6 +112,20 @@ namespace GlobalFront.Client.Catalog
                 {
                     throw new ArgumentException(
                         $"Unit kind {definition.Kind} is not a defined archetype.",
+                        nameof(definitions));
+                }
+
+                if (!definition.IsResolved)
+                {
+                    throw new ArgumentException(
+                        $"Unit kind {definition.Kind} is not resolved: MaximumHealth and RadiusMillimetres must both be positive (got {definition.MaximumHealth} and {definition.RadiusMillimetres}).",
+                        nameof(definitions));
+                }
+
+                if (definition.DisplayName == null)
+                {
+                    throw new ArgumentException(
+                        $"Unit kind {definition.Kind} has no display name.",
                         nameof(definitions));
                 }
 

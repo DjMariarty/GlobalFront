@@ -1,0 +1,2349 @@
+diff --git a/Assets/_GlobalFront/Runtime/Client/Catalog/UnitCatalog.cs b/Assets/_GlobalFront/Runtime/Client/Catalog/UnitCatalog.cs
+index a6cfa08..f5f3dd1 100644
+--- a/Assets/_GlobalFront/Runtime/Client/Catalog/UnitCatalog.cs
++++ b/Assets/_GlobalFront/Runtime/Client/Catalog/UnitCatalog.cs
+@@ -85,8 +85,16 @@ namespace GlobalFront.Client.Catalog
+         /// <summary>
+         /// Builds a table from hand-authored or data-driven rows. Rejects a row for
+         /// <see cref="UnitKinds.Unknown"/> (unknown is a lookup miss, not a kind),
+-        /// duplicate kinds, and kinds outside the protocol's range, so a mistake
+-        /// surfaces at load instead of silently re-skinned units later.
++        /// duplicate kinds, kinds outside the protocol's range, and rows that are not
++        /// usable for presentation, so a mistake surfaces at load instead of silently
++        /// re-skinned units later.
++        ///
++        /// Rejecting unresolved rows is what makes <see cref="TryGet"/> mean
++        /// something: a row that had already been stored with a zero denominator
++        /// would read back as "this archetype has zero hit points" everywhere the
++        /// caller trusts the lookup, which is the exact <c>0/0</c> and empty-bar shape
++        /// this table exists to prevent. A roster still in progress leaves the kind
++        /// out of the array instead of shipping a placeholder row for it.
+         /// </summary>
+         public UnitCatalog(UnitDefinition[] definitions)
+         {
+@@ -107,6 +115,20 @@ namespace GlobalFront.Client.Catalog
+                         nameof(definitions));
+                 }
+ 
++                if (!definition.IsResolved)
++                {
++                    throw new ArgumentException(
++                        $"Unit kind {definition.Kind} is not resolved: MaximumHealth and RadiusMillimetres must both be positive (got {definition.MaximumHealth} and {definition.RadiusMillimetres}).",
++                        nameof(definitions));
++                }
++
++                if (definition.DisplayName == null)
++                {
++                    throw new ArgumentException(
++                        $"Unit kind {definition.Kind} has no display name.",
++                        nameof(definitions));
++                }
++
+                 if (_byKind[definition.Kind].Kind != UnitKinds.Unknown)
+                 {
+                     throw new ArgumentException(
+diff --git a/Assets/_GlobalFront/Runtime/Client/GlobalFront.Client.asmdef b/Assets/_GlobalFront/Runtime/Client/GlobalFront.Client.asmdef
+index f436c39..c8a051b 100644
+--- a/Assets/_GlobalFront/Runtime/Client/GlobalFront.Client.asmdef
++++ b/Assets/_GlobalFront/Runtime/Client/GlobalFront.Client.asmdef
+@@ -5,6 +5,8 @@
+     "GlobalFront.Core",
+     "GlobalFront.Server",
+     "Unity.InputSystem",
++    "Unity.RenderPipelines.Core.Runtime",
++    "Unity.RenderPipelines.Universal.Runtime",
+     "UnityEngine.UI"
+   ],
+   "includePlatforms": [],
+diff --git a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitView.cs b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitView.cs
+index 47ce4a6..1a055fd 100644
+--- a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitView.cs
++++ b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitView.cs
+@@ -48,6 +48,9 @@ namespace GlobalFront.Client.Presentation
+         private ulong _entity;
+         private byte _kind;
+         private bool _isPooledView;
++        private int _maximumHealth;
++        private int _radiusMillimetres;
++        private bool _isSelected;
+ 
+         /// <summary>Hull transform the pose is written to; the GameObject's own.</summary>
+         public Transform Hull => _hull != null ? _hull : (_hull = transform);
+@@ -115,26 +118,77 @@ namespace GlobalFront.Client.Presentation
+         public float HealthFraction { get; private set; }
+ 
+         /// <summary>
+-        /// Takes ownership of this view for one replicated entity. Called by
++        /// Health denominator of the archetype this view presents, 0 when the client
++        /// has no catalog row for it. The overlay pass needs it to tell "at full
++        /// health" from "no stats at all": a unit whose maximum is unresolved reads
++        /// as an empty bar, and an empty bar on top of an unknown unit is a lie the
++        /// player cannot act on, so those units get no bar.
++        /// </summary>
++        public int MaxHealth => _maximumHealth;
++
++        /// <summary>
++        /// Footprint radius in millimetres, the size the selection ring and the
++        /// health bar are scaled from. 0 for an unresolved archetype, which is also
++        /// the degenerate-scale case the overlay pass filters out.
++        /// </summary>
++        public int RadiusMillimetres => _radiusMillimetres;
++
++        /// <summary>
++        /// True while this unit is part of the player's selection. Presentation
++        /// state only — the ring and the bar of a selected unit are drawn
++        /// differently, nothing else changes — and it belongs to the unit named by
++        /// <see cref="EntityValue"/>, never to the slot or to the pooled object:
++        /// <see cref="Bind"/> and <see cref="Release"/> both clear it, so a unit that
++        /// takes over a recycled slot cannot inherit the casualty's ring.
++        /// </summary>
++        public bool IsSelected => _isSelected;
++
++        /// <summary>
++        /// Takes ownership of this view for one replicated entity, stamped with the
++        /// catalog geometry its archetype resolves to. Called by
+         /// <see cref="UnitViewBinder"/> immediately after
+         /// <see cref="UnitViewPool.Acquire"/>, before any pose is applied.
++        ///
++        /// The identity reset is the load-bearing part: the pool hands out objects
++        /// that a previous unit already used, so this is the last point at which a
++        /// stale selection is guaranteed not to survive, even for a view the pool
++        /// never got back (a release it rejected, a GameObject destroyed outside the
++        /// pool).
+         /// </summary>
+-        public void Bind(EntityId entity)
++        public void Bind(EntityId entity, int maximumHealth, int radiusMillimetres)
+         {
+             _entity = entity.Value;
++            _maximumHealth = maximumHealth > 0 ? maximumHealth : 0;
++            _radiusMillimetres = radiusMillimetres > 0 ? radiusMillimetres : 0;
++            Health = 0;
++            HealthFraction = 0f;
++            _isSelected = false;
+         }
+ 
+         /// <summary>
+-        /// Drops the identity and the health readout, called by the pool on release.
+-        /// The transform is deliberately left where it is: the GameObject is
+-        /// deactivated at the same moment, and resetting a transform nobody reads
+-        /// would put two more native writes on the despawn path.
++        /// Drops the identity, the health readout and the archetype geometry, called
++        /// by the pool on release. The transform is deliberately left where it is: the
++        /// GameObject is deactivated at the same moment, and resetting a transform
++        /// nobody reads would put two more native writes on the despawn path.
+         /// </summary>
+         public void Release()
+         {
+             _entity = 0;
+             Health = 0;
+             HealthFraction = 0f;
++            _maximumHealth = 0;
++            _radiusMillimetres = 0;
++            _isSelected = false;
++        }
++
++        /// <summary>
++        /// Joins or leaves the player's selection. Every overlay drawn for this unit
++        /// follows from this flag on the next batch build, so the caller does not
++        /// have to touch anything else.
++        /// </summary>
++        public void SetSelected(bool selected)
++        {
++            _isSelected = selected;
+         }
+ 
+         /// <summary>
+diff --git a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitViewBinder.cs b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitViewBinder.cs
+index 7c12ed5..de75a74 100644
+--- a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitViewBinder.cs
++++ b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitViewBinder.cs
+@@ -54,14 +54,17 @@ namespace GlobalFront.Client.Presentation
+         private readonly ulong[] _capturedTickAtBind;
+ 
+         /// <summary>
+-        /// Health denominator per archetype, resolved once from the catalog at
++        /// Presentation row per archetype, resolved once from the catalog at
+         /// construction. A spawn has to state a unit's health fraction before the
+         /// ring has anything to show, and the buffer's own copy of that table is
+         /// private — so the binder keeps its own array-indexed lookup rather than
+-        /// paying a virtual catalog call per spawn. O(1), no allocation, and the same
+-        /// zero for an unresolved archetype that keeps a bar from dividing by 0.
++        /// paying a virtual catalog call per spawn. The same row carries the
++        /// footprint radius the overlays are scaled from (OD-25). O(1), no allocation,
++        /// and the same zeroed <see cref="UnitDefinition"/> for an archetype the
++        /// client has no row for that keeps a bar from dividing by 0 and a ring from
++        /// being drawn at all.
+         /// </summary>
+-        private readonly float[] _invMaxHealthByKind;
++        private readonly UnitDefinition[] _definitionByKind;
+ 
+         private readonly int _slotLimit;
+ 
+@@ -104,12 +107,12 @@ namespace GlobalFront.Client.Presentation
+             _capturedTickAtBind = new ulong[_slotLimit];
+ 
+             var source = catalog ?? UnitCatalog.Default;
+-            _invMaxHealthByKind = new float[UnitKinds.Count];
+-            for (var kind = 1; kind < _invMaxHealthByKind.Length; kind++)
++            _definitionByKind = new UnitDefinition[UnitKinds.Count];
++            for (var kind = 1; kind < _definitionByKind.Length; kind++)
+             {
+                 if (source.TryGet((byte)kind, out var definition))
+                 {
+-                    _invMaxHealthByKind[kind] = definition.InvMaxHealth;
++                    _definitionByKind[kind] = definition;
+                 }
+             }
+ 
+@@ -169,6 +172,15 @@ namespace GlobalFront.Client.Presentation
+             return view != null;
+         }
+ 
++        /// <summary>
++        /// Number of replication slots this binder walks, and therefore the range a
++        /// consumer may enumerate with <see cref="TryGetView"/>. The overlay pass
++        /// (OD-25) builds its instance batches by walking exactly this range, so it
++        /// needs the bound but never the array itself: handing out the reference would
++        /// let a caller leave a slot pointing at a view the pool already took back.
++        /// </summary>
++        public int SlotCount => _slotLimit;
++
+         /// <summary>
+         /// Advances the render clock and writes one frame of presentation. Call it
+         /// once per frame, after replication has been applied and after
+@@ -311,15 +323,14 @@ namespace GlobalFront.Client.Presentation
+                 return false;
+             }
+ 
+-            view.Bind(state.Entity);
+-
+             // Authoritative position and health first, interpolated pose from the next capture:
+             // a unit that materialised at the world origin for three frames is a
+             // worse artefact than one that holds still for a packet.
+-            var invMaxHealth = (uint)state.UnitKind < (uint)_invMaxHealthByKind.Length
+-                ? _invMaxHealthByKind[state.UnitKind]
+-                : 0f;
+-            view.SnapToAuthority(in state, invMaxHealth);
++            var definition = (uint)state.UnitKind < (uint)_definitionByKind.Length
++                ? _definitionByKind[state.UnitKind]
++                : default;
++            view.Bind(state.Entity, definition.MaximumHealth, definition.RadiusMillimetres);
++            view.SnapToAuthority(in state, definition.InvMaxHealth);
+ 
+             _viewBySlot[slot] = view;
+             _capturedTickAtBind[slot] = capturedTick;
+@@ -340,6 +351,16 @@ namespace GlobalFront.Client.Presentation
+             _capturedTickAtBind[slot] = 0;
+             _boundCount--;
+ 
++            if (!ReferenceEquals(view, null))
++            {
++                // Selection is dropped here rather than only inside the pool's
++                // release, because the pool can refuse this view (a repeated release,
++                // one it never created, a GameObject destroyed outside it) and return
++                // before it touches the object — and a view that keeps a dead unit's
++                // selection is one that puts a ring on whoever is drawn next.
++                view.SetSelected(false);
++            }
++
+             // The slot reference is dropped even if the pool rejected the view: a
+             // view the pool does not own any more must not stay bound to a slot,
+             // because the next unit there would inherit it.
+diff --git a/Assets/_GlobalFront/Runtime/Core/Snapshot/DeltaSnapshotWireCodec.cs b/Assets/_GlobalFront/Runtime/Core/Snapshot/DeltaSnapshotWireCodec.cs
+index 1a42697..321708a 100644
+--- a/Assets/_GlobalFront/Runtime/Core/Snapshot/DeltaSnapshotWireCodec.cs
++++ b/Assets/_GlobalFront/Runtime/Core/Snapshot/DeltaSnapshotWireCodec.cs
+@@ -941,7 +941,15 @@ namespace GlobalFront.Core.Snapshot
+ 
+                 if ((mask & (byte)UnitDirtyMask.AttackTarget) != 0)
+                 {
+-                    if (!reader.TryReadVarint(out var targetDelta) || targetDelta < -id)
++                    // Both bounds, because the encoder writes the delta as a signed
++                    // difference of two unsigned ids and can therefore declare a value
++                    // this side cannot represent: the lower guard alone let a forged
++                    // delta of long.MaxValue wrap (id + delta) into a negative long,
++                    // which the cast then reinterpreted as an enormous entity id that
++                    // no peer ever sent.
++                    if (!reader.TryReadVarint(out var targetDelta) ||
++                        targetDelta < -id ||
++                        targetDelta > long.MaxValue - id)
+                     {
+                         return DeltaCodecResult.Malformed;
+                     }
+diff --git a/Assets/_GlobalFront/Tests/EditMode/Client/Catalog/UnitCatalogTests.cs b/Assets/_GlobalFront/Tests/EditMode/Client/Catalog/UnitCatalogTests.cs
+index f8833da..4d07835 100644
+--- a/Assets/_GlobalFront/Tests/EditMode/Client/Catalog/UnitCatalogTests.cs
++++ b/Assets/_GlobalFront/Tests/EditMode/Client/Catalog/UnitCatalogTests.cs
+@@ -89,10 +89,80 @@ namespace GlobalFront.Tests.EditMode.Client.Catalog
+             Assert.That(negative.InvMaxHealth, Is.EqualTo(0f));
+             Assert.That(negative.IsResolved, Is.False);
+ 
+-            // An unresolved row is refused by the catalog rather than served, so no
+-            // caller can read a zero denominator as "this unit has zero health".
+-            var catalog = new UnitCatalog(new[] { unresolved });
+-            Assert.That(catalog.TryGet(UnitKinds.Scout, out _), Is.False);
++            // An unresolved row never reaches a lookup at all: the catalog refuses it
++            // at construction (see Constructor_RejectsUnusableRows), so no caller can
++            // read a zero denominator back as "this unit has zero health".
++            Assert.That(
++                () => new UnitCatalog(new[] { unresolved }),
++                Throws.ArgumentException);
++        }
++
++        /// <summary>
++        /// Step 3.4 pre-flight (OD-29 note F-2): a row the presentation layer cannot
++        /// draw with is refused where the roster is loaded, not where the bar is
++        /// drawn. A stored zero maximum would come back through <c>TryGet</c> as a
++        /// successful lookup and surface as an empty health bar on a healthy unit,
++        /// and a zero radius as a ring scaled to nothing.
++        /// </summary>
++        [Test]
++        public void Constructor_RejectsUnusableRows()
++        {
++            Assert.That(
++                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Scout, "No health", 0, 500) }),
++                Throws.ArgumentException,
++                "a zero maximum health is an unresolved row, not a dead archetype");
++
++            Assert.That(
++                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Scout, "Negative health", -100, 500) }),
++                Throws.ArgumentException);
++
++            Assert.That(
++                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Tank, "No radius", 100, 0) }),
++                Throws.ArgumentException,
++                "a zero radius cannot size a selection ring");
++
++            Assert.That(
++                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Tank, "Negative radius", 100, -1) }),
++                Throws.ArgumentException);
++
++            Assert.That(
++                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Tank, null, 100, 500) }),
++                Throws.ArgumentException,
++                "a row without a name cannot drive the inspector or the selection HUD");
++
++            // An empty name is still a name the caller chose; only the absence of a
++            // row is refused, so a data-driven roster may stage a kind before its
++            // localization key arrives.
++            Assert.That(
++                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Tank, string.Empty, 100, 500) }),
++                Throws.Nothing);
++        }
++
++        /// <summary>
++        /// The guard must not become a reason to drop a good row that happens to sit
++        /// next to a bad one in the same array: the rejection is per row, and the
++        /// rows that pass are exactly the ones the catalog serves.
++        /// </summary>
++        [Test]
++        public void Constructor_RejectsTheWholeTable_AndServesNothingFromABadRow()
++        {
++            Assert.That(
++                () => new UnitCatalog(new[]
++                {
++                    new UnitDefinition(UnitKinds.Scout, "Scout", 100, 500),
++                    new UnitDefinition(UnitKinds.Tank, "Tank", 0, 900),
++                }),
++                Throws.ArgumentException);
++
++            var partial = new UnitCatalog(new[]
++            {
++                new UnitDefinition(UnitKinds.Scout, "Scout", 100, 500),
++            });
++
++            Assert.That(partial.TryGet(UnitKinds.Scout, out var scout), Is.True);
++            Assert.That(scout.IsResolved, Is.True);
++            Assert.That(partial.TryGet(UnitKinds.Tank, out _), Is.False,
++                "a kind the roster left out stays a miss rather than a placeholder");
+         }
+ 
+         [Test]
+diff --git a/Assets/_GlobalFront/Tests/EditMode/GlobalFront.Tests.EditMode.asmdef b/Assets/_GlobalFront/Tests/EditMode/GlobalFront.Tests.EditMode.asmdef
+index 78f5003..746baf3 100644
+--- a/Assets/_GlobalFront/Tests/EditMode/GlobalFront.Tests.EditMode.asmdef
++++ b/Assets/_GlobalFront/Tests/EditMode/GlobalFront.Tests.EditMode.asmdef
+@@ -7,6 +7,8 @@
+         "GlobalFront.Core",
+         "GlobalFront.Server",
+         "GlobalFront.Client",
++        "Unity.RenderPipelines.Core.Runtime",
++        "Unity.RenderPipelines.Universal.Runtime",
+         "UnityEngine.UI"
+     ],
+     "includePlatforms": [
+diff --git a/Assets/_GlobalFront/Tests/EditMode/Snapshot/DeltaSnapshotWireCodecTests.cs b/Assets/_GlobalFront/Tests/EditMode/Snapshot/DeltaSnapshotWireCodecTests.cs
+index 6894ff9..a5bddae 100644
+--- a/Assets/_GlobalFront/Tests/EditMode/Snapshot/DeltaSnapshotWireCodecTests.cs
++++ b/Assets/_GlobalFront/Tests/EditMode/Snapshot/DeltaSnapshotWireCodecTests.cs
+@@ -933,6 +933,74 @@ namespace GlobalFront.Tests.EditMode.Snapshot
+             Assert.That(decodedCleared[0].AttackTarget, Is.EqualTo(new EntityId(0)));
+         }
+ 
++        [Test]
++        public void Decode_RejectsAttackTargetDeltaThatOverflowsTheEntityId()
++        {
++            // The encoder computes the delta as (long)attackTarget - id, so a
++            // well-behaved sender can never produce a delta that overflows the sum
++            // back. A forged one can: without the upper guard, id + long.MaxValue
++            // wrapped to a negative long and the (ulong) cast turned it into an
++            // enormous entity id the client would then trust as a targeted unit.
++            const long entity = 1000;
++            var packet = EncodeOk(
++                Array.Empty<DeltaAddRecord>(),
++                new[] { MakeUpdate((ulong)entity, UnitDirtyMask.AttackTarget, attackTarget: entity + 1) },
++                Array.Empty<DeltaRemoveRecord>());
++
++            var deltaOffset = HeaderSize + DeltaSnapshotWireCodec.GetVarintZigzagSize(entity) + 1;
++            Assert.That(deltaOffset, Is.EqualTo(packet.Length - 1),
++                "the packet ends with the target delta that is about to be replaced");
++
++            var forged = new byte[DeltaSnapshotProtocol.VarintMaxSizeBytes];
++
++            Assert.That(
++                DeltaSnapshotWireCodec.TryWriteVarintZigzag(long.MaxValue, forged, out var overflowBytes),
++                Is.True);
++            Assert.That(overflowBytes, Is.GreaterThan(1), "long.MaxValue cannot be a one byte varint");
++
++            Assert.That(
++                Decode(SpliceTargetDelta(packet, deltaOffset, forged, overflowBytes),
++                    out _, out _, out _, out _),
++                Is.EqualTo(DeltaCodecResult.Malformed),
++                "a delta that overflows id + delta on addition must be refused, not wrapped");
++
++            // One below the overflow is still representable, so the guard has to stop
++            // at the boundary rather than shrink the legal range.
++            var largestLegal = long.MaxValue - entity;
++
++            Assert.That(
++                DeltaSnapshotWireCodec.TryWriteVarintZigzag(largestLegal, forged, out var boundaryBytes),
++                Is.True);
++
++            var accepted = SpliceTargetDelta(packet, deltaOffset, forged, boundaryBytes);
++            Assert.That(
++                Decode(accepted, out _, out _, out var decodedAccepted, out _),
++                Is.EqualTo(DeltaCodecResult.Ok),
++                $"a delta of {largestLegal} still fits and must decode");
++            Assert.That(
++                decodedAccepted[0].AttackTarget,
++                Is.EqualTo(new EntityId((ulong)(entity + largestLegal))));
++        }
++
++        /// <summary>
++        /// Rebuilds the packet with the update record's trailing target delta replaced
++        /// by <paramref name="deltaBytes"/>. The header declares no payload length, so
++        /// the record counts stay right and the packet still occupies exactly the bytes
++        /// it declares: the range guard is the only thing left that can answer
++        /// Malformed here.
++        /// </summary>
++        private static byte[] SpliceTargetDelta(
++            byte[] packet,
++            int deltaOffset,
++            byte[] deltaBytes,
++            int deltaByteCount)
++        {
++            var result = new byte[deltaOffset + deltaByteCount];
++            Array.Copy(packet, 0, result, 0, deltaOffset);
++            Array.Copy(deltaBytes, 0, result, deltaOffset, deltaByteCount);
++            return result;
++        }
++
+         [Test]
+         public void UpdateRecord_AllFields_RoundTrips()
+         {
+diff --git a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayBatcher.cs b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayBatcher.cs
+new file mode 100644
+index 0000000..79831e3
+--- /dev/null
++++ b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayBatcher.cs
+@@ -0,0 +1,349 @@
++using System;
++using GlobalFront.Client.Replication;
++using UnityEngine;
++
++namespace GlobalFront.Client.Presentation
++{
++    /// <summary>
++    /// Builds the two instanced overlay batches of a frame — selection rings and
++    /// health bars (Phase 3, step 3.4, OD-25).
++    ///
++    /// OD-25 bans the two obvious ways to draw an overlay per unit: a world-space
++    /// uGUI canvas or a child GameObject on every unit (four hundred canvases is four
++    /// hundred layout passes and four hundred draw calls), and a decal projector for
++    /// the rings (reprojection of a moving footprint is exactly what it is worst at).
++    /// What is left is one instanced draw per overlay kind, fed from flat arrays that
++    /// this class owns.
++    ///
++    /// Two properties make the design work under the OD-28 budget:
++    ///
++    /// 1. <b>The buffers never grow.</b> All four arrays are allocated at
++    ///    construction, so <see cref="BuildBatches"/> writes into memory that already
++    ///    exists and allocates nothing however many units are on screen — the same
++    ///    rule <see cref="UnitViewTickBuffer"/> and <see cref="UnitViewBinder"/> keep,
++    ///    because a per-frame allocation at four hundred units is a garbage burst every
++    ///    second regardless of which layer produced it.
++    /// 2. <b>Nothing decides visibility but this pass.</b> The caller does not add or
++    ///    remove overlays; it sets <see cref="UnitView.SetSelected"/> and
++    ///    <see cref="AlwaysShowHealthBars"/> and the batch follows on the next build.
++    ///    That is also what makes the lifecycle safe: an overlay cannot outlive the
++    ///    unit it belongs to, because the batch is rebuilt from the binder's slot
++    ///    table every frame instead of accumulating handles.
++    ///
++    /// Every guard below exists because the input is replicated, not trusted: a
++    /// corrupted position, an archetype the client has no row for, or a zero-length
++    /// camera rotation must cost one missing overlay, never a NaN in an instance
++    /// matrix — a single NaN matrix can take the whole instanced draw apart on some
++    /// APIs, which is worse than one unit without a ring.
++    /// </summary>
++    public sealed class UnitOverlayBatcher
++    {
++        /// <summary>
++        /// Instances per overlay kind at construction: the OD-28 profile is four
++        /// hundred units on screen, so the default leaves headroom without reserving
++        /// the whole replication table.
++        /// </summary>
++        public const int DefaultCapacity = 512;
++
++        /// <summary>
++        /// Upper bound for <see cref="Capacity"/>: one overlay per replicated unit
++        /// slot is the most any client can ever show, and <see cref="UnitViewPool"/>
++        /// caps its views at the same number.
++        /// </summary>
++        public const int MaxCapacity = ClientReplicationWorld.DefaultCapacity;
++
++        /// <summary>
++        /// Instances one <c>DrawMeshInstanced</c> call may carry. This is not a
++        /// performance choice but a shader limit: the built-in instancing path packs
++        /// its constant buffer with <c>UNITY_INSTANCED_ARRAY_SIZE</c> entries, which
++        /// is 250 on Vulkan-mobile, Switch and WebGPU and 500 elsewhere (see
++        /// <c>UnityInstancing.hlsl</c>). Reading past it is undefined, so the draw
++        /// path chunks to this size and URP's own decal system uses the same number.
++        /// </summary>
++        public const int MaxInstancesPerDraw = 250;
++
++        /// <summary>
++        /// Height of the ring plane above the ground. Terrain walkable areas are
++        /// exactly Y = 0 by OD-27, so the offset is what keeps a flat ring from
++        /// z-fighting with the mesh it lies on.
++        /// </summary>
++        public const float RingHeightMetres = 0.02f;
++
++        /// <summary>
++        /// Height of the bar above the hull origin. A per-archetype silhouette height
++        /// belongs on the catalog row when real roster art exists; until then every
++        /// archetype is the prototype footprint, so one constant cannot read wrong for
++        /// one kind and right for another.
++        /// </summary>
++        public const float HealthBarHeightMetres = 1.1f;
++
++        /// <summary>Bar height as a fraction of its own width, in metres.</summary>
++        public const float HealthBarThicknessMetres = 0.16f;
++
++        /// <summary>
++        /// Bar width in unit footprints. Wider than the hull so the bar reads as an
++        /// overlay rather than a stripe painted on the unit.
++        /// </summary>
++        public const float HealthBarWidthInDiameters = 1.25f;
++
++        /// <summary>Squared norm below which a quaternion cannot orient anything.</summary>
++        private const float RotationEpsilon = 1e-6f;
++
++        private readonly Matrix4x4[] _ringMatrices;
++        private readonly Vector4[] _ringProperties;
++        private readonly Matrix4x4[] _barMatrices;
++        private readonly Vector4[] _barProperties;
++
++        private int _ringCount;
++        private int _barCount;
++
++        public UnitOverlayBatcher(int capacity = DefaultCapacity)
++        {
++            if (capacity <= 0 || capacity > MaxCapacity)
++            {
++                throw new ArgumentOutOfRangeException(
++                    nameof(capacity),
++                    $"overlay capacity must be between 1 and {MaxCapacity}.");
++            }
++
++            _ringMatrices = new Matrix4x4[capacity];
++            _ringProperties = new Vector4[capacity];
++            _barMatrices = new Matrix4x4[capacity];
++            _barProperties = new Vector4[capacity];
++            Capacity = capacity;
++
++            SelectionRingColor = new Color(0.20f, 1.00f, 0.38f, 1.00f);
++            LowHealthBarColor = new Color(0.90f, 0.12f, 0.08f, 1.00f);
++            FullHealthBarColor = new Color(0.15f, 0.90f, 0.25f, 1.00f);
++        }
++
++        /// <summary>Instances per overlay kind this batcher can ever emit.</summary>
++        public int Capacity { get; }
++
++        /// <summary>Rings in the last build.</summary>
++        public int SelectionRingCount => _ringCount;
++
++        /// <summary>Bars in the last build.</summary>
++        public int HealthBarCount => _barCount;
++
++        /// <summary>
++        /// Overlays the last build could not write because the batch was already
++        /// full. A warm-up question, not a bug: the count says how far short of the
++        /// match's selection the configured <see cref="Capacity"/> was.
++        /// </summary>
++        public int ClippedInstanceCount { get; private set; }
++
++        /// <summary>
++        /// Draw a bar over every living unit, not only the injured and the selected
++        /// ones. A player option, and the reason the bar rule is a predicate rather
++        /// than "damaged units only".
++        /// </summary>
++        public bool AlwaysShowHealthBars { get; set; }
++
++        /// <summary>Colour of every selection ring, per instance in batch order.</summary>
++        public Color SelectionRingColor { get; set; }
++
++        /// <summary>Bar colour at zero health; the fill ramps to <see cref="FullHealthBarColor"/>.</summary>
++        public Color LowHealthBarColor { get; set; }
++
++        /// <summary>Bar colour at full health.</summary>
++        public Color FullHealthBarColor { get; set; }
++
++        /// <summary>Rings of the last build, in emission order.</summary>
++        public ReadOnlySpan<Matrix4x4> SelectionRingMatrices => _ringMatrices.AsSpan(0, _ringCount);
++
++        /// <summary>Ring colours, parallel to <see cref="SelectionRingMatrices"/>.</summary>
++        public ReadOnlySpan<Vector4> SelectionRingProperties => _ringProperties.AsSpan(0, _ringCount);
++
++        /// <summary>Billboarded bars of the last build, in emission order.</summary>
++        public ReadOnlySpan<Matrix4x4> HealthBarMatrices => _barMatrices.AsSpan(0, _barCount);
++
++        /// <summary>
++        /// Bar parameters, parallel to <see cref="HealthBarMatrices"/>:
++        /// <c>(health fraction, red, green, blue)</c>.
++        /// </summary>
++        public ReadOnlySpan<Vector4> HealthBarProperties => _barProperties.AsSpan(0, _barCount);
++
++        // The draw path needs the buffers themselves rather than a span copy:
++        // DrawMeshInstanced takes a Matrix4x4[], and MaterialPropertyBlock takes a
++        // Vector4[], both by reference and both reading only the first `count`
++        // entries. Internal so that the arrays stay out of the public API — a
++        // caller that wrote into them could put a NaN in front of the GPU.
++        internal Matrix4x4[] SelectionRingMatrixBuffer => _ringMatrices;
++        internal Vector4[] SelectionRingPropertyBuffer => _ringProperties;
++        internal Matrix4x4[] HealthBarMatrixBuffer => _barMatrices;
++        internal Vector4[] HealthBarPropertyBuffer => _barProperties;
++
++        /// <summary>
++        /// Empties both batches without touching the configuration. Call it when
++        /// presentation is hidden, so a paused or exited match draws no overlay even
++        /// though the pass keeps running.
++        /// </summary>
++        public void Clear()
++        {
++            _ringCount = 0;
++            _barCount = 0;
++            ClippedInstanceCount = 0;
++        }
++
++        /// <summary>
++        /// Rebuilds both batches from the binder's slot table.
++        ///
++        /// Deterministic and self-contained on purpose: no camera, no cull, no URP
++        /// context is needed, which is what lets the whole visibility rule set be
++        /// tested in EditMode. The only input the frame contributes is
++        /// <paramref name="cameraRotation"/>, the billboard orientation of the bars;
++        /// rings lie on the ground and ignore it.
++        ///
++        /// Emission order is slot order, so a caller that wants to know which unit an
++        /// instance belongs to walks the same slots in the same order. Nothing here
++        /// allocates.
++        /// </summary>
++        /// <param name="binder">Slot table to read bound views from.</param>
++        /// <param name="cameraRotation">
++        /// World rotation of the camera the bars face. A degenerate or non-finite
++        /// value falls back to <see cref="Quaternion.identity"/>.
++        /// </param>
++        public void BuildBatches(UnitViewBinder binder, Quaternion cameraRotation)
++        {
++            if (binder == null)
++            {
++                throw new ArgumentNullException(nameof(binder));
++            }
++
++            _ringCount = 0;
++            _barCount = 0;
++            ClippedInstanceCount = 0;
++
++            var barRotation = IsRotationUsable(cameraRotation) ? cameraRotation : Quaternion.identity;
++            var slotCount = binder.SlotCount;
++
++            for (var slot = 0; slot < slotCount; slot++)
++            {
++                if (!binder.TryGetView(slot, out var view))
++                {
++                    continue;
++                }
++
++                // Three independent reasons a view has no overlay to show: it is back
++                // in the pool free list (identity cleared), the unit is dead (a corpse
++                // keeps its last pose for the death animation but not its ring), or
++                // its archetype resolved to nothing, in which case there is no
++                // geometry to size an instance from and a bar would be a 0-width quad.
++                if (!view.IsBound || view.Health <= 0 || view.RadiusMillimetres <= 0)
++                {
++                    continue;
++                }
++
++                var position = view.Hull.position;
++                if (!IsFinite(position.x) || !IsFinite(position.y) || !IsFinite(position.z))
++                {
++                    continue;
++                }
++
++                var diameter = view.RadiusMillimetres * UnitView.MillimetresToMetres * 2f;
++
++                if (view.IsSelected)
++                {
++                    AddRing(in position, diameter);
++                }
++
++                if (view.MaxHealth > 0 && IsBarWanted(view))
++                {
++                    AddBar(in position, barRotation, diameter * HealthBarWidthInDiameters, view.HealthFraction);
++                }
++            }
++        }
++
++        private bool IsBarWanted(UnitView view)
++        {
++            // Selected, wounded, or the player asked for all of them. The first two
++            // are the information the bar carries; the third is a preference, and it
++            // is why the rule is a predicate instead of "damaged only".
++            return AlwaysShowHealthBars || view.IsSelected || view.Health < view.MaxHealth;
++        }
++
++        private void AddRing(in Vector3 position, float diameter)
++        {
++            if (_ringCount >= Capacity)
++            {
++                ClippedInstanceCount++;
++                return;
++            }
++
++            var index = _ringCount++;
++            _ringMatrices[index] = Matrix4x4.TRS(
++                new Vector3(position.x, RingHeightMetres, position.z),
++                Quaternion.identity,
++                // The ring quad is authored in the XZ plane, so the two horizontal
++                // axes carry the diameter and Y stays 1: a flat quad has no height to
++                // scale, and squaring it with the vertical axis would be a no-op that
++                // reads like a mistake.
++                new Vector3(diameter, 1f, diameter));
++            _ringProperties[index] = new Vector4(
++                SelectionRingColor.r,
++                SelectionRingColor.g,
++                SelectionRingColor.b,
++                SelectionRingColor.a);
++        }
++
++        private void AddBar(
++            in Vector3 position,
++            Quaternion rotation,
++            float width,
++            float healthFraction)
++        {
++            // Validated before anything is counted, so a poisoned fraction costs an
++            // instance and not a slot. The ordering matters: NaN fails the first test
++            // and infinity the second, where a two-sided clamp would let either one
++            // reach the shader and turn into an undefined clip.
++            if (!IsFinite(healthFraction))
++            {
++                return;
++            }
++
++            if (healthFraction < 0f)
++            {
++                healthFraction = 0f;
++            }
++            else if (healthFraction > 1f)
++            {
++                healthFraction = 1f;
++            }
++
++            if (_barCount >= Capacity)
++            {
++                ClippedInstanceCount++;
++                return;
++            }
++
++            var color = Color.Lerp(LowHealthBarColor, FullHealthBarColor, healthFraction);
++            var index = _barCount++;
++
++            // The bar quad is authored in the XY plane with its normal on +Z, so the
++            // camera rotation is the whole billboard: no per-instance look-at, no
++            // Quaternion.LookRotation and no division in the hot path.
++            _barMatrices[index] = Matrix4x4.TRS(
++                new Vector3(position.x, position.y + HealthBarHeightMetres, position.z),
++                rotation,
++                new Vector3(width, HealthBarThicknessMetres, 1f));
++            _barProperties[index] = new Vector4(healthFraction, color.r, color.g, color.b);
++        }
++
++        private static bool IsFinite(float value) =>
++            !float.IsNaN(value) && !float.IsInfinity(value);
++
++        private static bool IsRotationUsable(Quaternion rotation)
++        {
++            var squared = rotation.x * rotation.x +
++                rotation.y * rotation.y +
++                rotation.z * rotation.z +
++                rotation.w * rotation.w;
++
++            // An infinity squared stays infinite and would pass a bare threshold
++            // test, and NaN would pass nothing but is stated here so the next reader
++            // does not "simplify" the check into one comparison.
++            return IsFinite(squared) && squared > RotationEpsilon;
++        }
++    }
++}
+diff --git a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayGeometry.cs b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayGeometry.cs
+new file mode 100644
+index 0000000..358a567
+--- /dev/null
++++ b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayGeometry.cs
+@@ -0,0 +1,158 @@
++using UnityEngine;
++
++
++namespace GlobalFront.Client.Presentation
++{
++    /// <summary>
++    /// The meshes and material the overlay pass draws with (Phase 3, step 3.4,
++    /// OD-25).
++    ///
++    /// Both overlays are one quad each, generated instead of imported: a selection
++    /// ring is a square of ground and a health bar is a rectangle facing the camera,
++    /// so the only thing an authored asset could add is vertices the CPU then throws
++    /// away. The shapes that make them read as a ring and as a bar are drawn in the
++    /// shader from the quad's own UVs, which is also what keeps a ring circular at any
++    /// scale and a bar edge crisp at any zoom.
++    ///
++    /// The two quads differ only in the plane they lie in, and that choice is what the
++    /// instance matrices rely on: the ring is authored in <b>XZ</b> so an identity
++    /// rotation puts it flat on the ground (OD-27), and the bar in <b>XY</b> with its
++    /// normal on <b>+Z</b> so the camera's own rotation is the whole billboard.
++    ///
++    /// Created once, when the renderer feature is set up, and never touched again:
++    /// <see cref="UnitOverlayRenderPass"/> draws from these objects every frame and
++    /// allocating a mesh or a material mid-frame is the exact pattern ADR-012 exists
++    /// to retire.
++    /// </summary>
++    internal static class UnitOverlayGeometry
++    {
++        /// <summary>Name of the overlay shader, for the content author to assign.</summary>
++        public const string ShaderName = "GlobalFront/Unit Overlay";
++
++        /// <summary>Pass index name of the ground ring; resolved with <c>FindPass</c>.</summary>
++        public const string RingPassName = "UnitOverlayRing";
++
++        /// <summary>Pass index name of the billboarded health bar.</summary>
++        public const string HealthBarPassName = "UnitOverlayHealthBar";
++
++        /// <summary>Per-instance ring colour, fed by <c>SetVectorArray</c>.</summary>
++        public static readonly int RingColorProperty = Shader.PropertyToID("_OverlayColor");
++
++        /// <summary>Per-instance bar parameters, fed by <c>SetVectorArray</c>.</summary>
++        public static readonly int HealthBarParamsProperty = Shader.PropertyToID("_HealthBarParams");
++
++        /// <summary>
++        /// One unit square in the XZ plane (normal +Y), centred on the origin, so a
++        /// ring instance is <c>scale = diameter</c> on both horizontal axes.
++        /// </summary>
++        public static Mesh CreateGroundQuad(string name) => CreateQuad(name, Vector3.right, Vector3.forward);
++
++        /// <summary>
++        /// One unit square in the XY plane (normal +Z), centred on the origin, so
++        /// multiplying by the camera rotation aims it straight at the viewer.
++        /// </summary>
++        public static Mesh CreateBillboardQuad(string name) => CreateQuad(name, Vector3.right, Vector3.up);
++
++        /// <summary>
++        /// Resolves the shader, mesh and pass indices the overlay draws with.
++        ///
++        /// <paramref name="assignMaterial"/> lets content own the material (and with
++        /// it the blend state and the ring thickness) instead of this class guessing;
++        /// null falls back to an instance created from <see cref="ShaderName"/>, which
++        /// is what keeps the overlays alive in a build that has no material asset yet
++        /// and in a headless run where the shader may not be importable at all.
++        /// Returns false, having logged once, when there is nothing to draw with: a
++        /// missing overlay shader is a missing ring, not an exception in the render
++        /// loop.
++        /// </summary>
++        public static bool TryCreateResources(
++            Material assignMaterial,
++            out Material material,
++            out Mesh ringMesh,
++            out Mesh barMesh,
++            out int ringPassIndex,
++            out int barPassIndex)
++        {
++            material = assignMaterial;
++            ringMesh = null;
++            barMesh = null;
++            ringPassIndex = -1;
++            barPassIndex = -1;
++
++            if (material == null)
++            {
++                var shader = Shader.Find(ShaderName);
++                if (shader == null)
++                {
++                    Debug.LogWarning(
++                        $"{nameof(UnitOverlayGeometry)}: shader '{ShaderName}' was not found, so selection rings and health bars are not drawn. Assign a material built from it on {nameof(UnitOverlayRendererFeature)}, or check that the shader is included in the build.");
++                    return false;
++                }
++
++                material = new Material(shader)
++                {
++                    name = "Unit Overlay",
++                    // Not selectable and not savable: this object is created by the
++                    // renderer, and a second copy of it appearing in the project would
++                    // read as the asset the feature was supposed to reference.
++                    hideFlags = HideFlags.DontSave,
++                    // DrawMeshInstanced is refused by URP without this, and the
++                    // instanced colour arrays below are the whole overlay design.
++                    enableInstancing = true,
++                };
++            }
++
++            if (material.shader == null)
++            {
++                Debug.LogWarning(
++                    $"{nameof(UnitOverlayGeometry)}: the assigned overlay material has no shader, so rings and health bars are not drawn.");
++                return false;
++            }
++
++            ringPassIndex = material.FindPass(RingPassName);
++            barPassIndex = material.FindPass(HealthBarPassName);
++            if (ringPassIndex < 0 || barPassIndex < 0)
++            {
++                Debug.LogWarning(
++                    $"{nameof(UnitOverlayGeometry)}: material '{material.name}' is missing the '{RingPassName}' or '{HealthBarPassName}' pass, so rings and health bars are not drawn. Use the '{ShaderName}' shader rather than a generic unlit one.");
++                return false;
++            }
++
++            ringMesh = CreateGroundQuad("GlobalFront Selection Ring");
++            barMesh = CreateBillboardQuad("GlobalFront Health Bar");
++            return true;
++        }
++
++        private static Mesh CreateQuad(string name, Vector3 right, Vector3 up)
++        {
++            const float half = 0.5f;
++
++            var mesh = new Mesh
++            {
++                name = name,
++                hideFlags = HideFlags.DontSave,
++                vertices = new[]
++                {
++                    -right * half - up * half,
++                    right * half - up * half,
++                    -right * half + up * half,
++                    right * half + up * half,
++                },
++                uv = new[]
++                {
++                    new Vector2(0f, 0f),
++                    new Vector2(1f, 0f),
++                    new Vector2(0f, 1f),
++                    new Vector2(1f, 1f),
++                },
++                // The shader culls nothing, so the winding only has to be consistent
++                // rather than correct: a health bar flips its facing as the camera
++                // moves, and a backface-culled overlay would blink out mid-turn.
++                triangles = new[] { 0, 1, 2, 2, 1, 3 },
++            };
++
++            mesh.RecalculateBounds();
++            return mesh;
++        }
++    }
++}
+diff --git a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayRenderPass.cs b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayRenderPass.cs
+new file mode 100644
+index 0000000..af09955
+--- /dev/null
++++ b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayRenderPass.cs
+@@ -0,0 +1,241 @@
++using System;
++using UnityEngine;
++using UnityEngine.Rendering;
++using UnityEngine.Rendering.RenderGraphModule;
++using UnityEngine.Rendering.Universal;
++
++namespace GlobalFront.Client.Presentation
++{
++    /// <summary>
++    /// Draws the two overlay batches of <see cref="UnitOverlayBatcher"/> as a URP
++    /// render pass (Phase 3, step 3.4, OD-25).
++    ///
++    /// OD-25 puts the overlays into a <see cref="ScriptableRenderPass"/> on
++    /// <see cref="RenderPassEvent.AfterRenderingOpaques"/> for two reasons: the units
++    /// are already drawn and depth-tested against by then, and staying inside the
++    /// renderer is what keeps the pass alive under Unity 6, where a custom pass has no
++    /// execution hook other than <see cref="RecordRenderGraph"/> — the legacy
++    /// <c>Execute(ScriptableRenderContext, ref RenderingData)</c> override is gone from
++    /// the base class, so recording onto the graph is the only path this pass has.
++    ///
++    /// The frame budget is spent nowhere: <see cref="UnitOverlayBatcher.BuildBatches"/>
++    /// fills arrays that were allocated at construction, and the render function only
++    /// hands those arrays to <c>DrawMeshInstanced</c>. One draw per overlay kind while
++    /// a batch fits inside <see cref="UnitOverlayBatcher.MaxInstancesPerDraw"/>, one
++    /// more per chunk past it — the chunking is forced by the instancing constant
++    /// buffer's size, not by a preference, and it is what keeps an oversized selection
++    /// from reading past the end of it.
++    /// </summary>
++    public sealed class UnitOverlayRenderPass : ScriptableRenderPass
++    {
++        private const string ProfilerTag = "GlobalFront Unit Overlay";
++
++        private readonly UnitOverlayBatcher _batcher;
++
++        // One property block and one scratch pair per batch, deliberately not shared:
++        // a command buffer resolves a MaterialPropertyBlock when it plays back, not
++        // when it is recorded, so reusing one block for both draws would make the ring
++        // draw wear the health bar's instance data.
++        private readonly MaterialPropertyBlock _ringProperties = new MaterialPropertyBlock();
++        private readonly MaterialPropertyBlock _barProperties = new MaterialPropertyBlock();
++        private readonly Matrix4x4[] _ringChunk = new Matrix4x4[UnitOverlayBatcher.MaxInstancesPerDraw];
++        private readonly Vector4[] _ringDataChunk = new Vector4[UnitOverlayBatcher.MaxInstancesPerDraw];
++        private readonly Matrix4x4[] _barChunk = new Matrix4x4[UnitOverlayBatcher.MaxInstancesPerDraw];
++        private readonly Vector4[] _barDataChunk = new Vector4[UnitOverlayBatcher.MaxInstancesPerDraw];
++
++        private UnitViewBinder _binder;
++        private Material _material;
++        private Mesh _ringMesh;
++        private Mesh _barMesh;
++        private int _ringPassIndex = -1;
++        private int _barPassIndex = -1;
++
++        public UnitOverlayRenderPass(UnitOverlayBatcher batcher)
++        {
++            _batcher = batcher ?? throw new ArgumentNullException(nameof(batcher));
++
++            // The base constructor already defaults to this event; stated anyway,
++            // because the whole overlay design depends on drawing after the units.
++            renderPassEvent = RenderPassEvent.AfterRenderingOpaques;
++            profilingSampler = new ProfilingSampler(ProfilerTag);
++        }
++
++        /// <summary>Overlay buffers this pass draws from.</summary>
++        public UnitOverlayBatcher Batcher => _batcher;
++
++        /// <summary>False until a binder and drawable resources are both in place.</summary>
++        public bool IsReady => _binder != null && _material != null && _ringMesh != null && _barMesh != null;
++
++        /// <summary>
++        /// Points the pass at the match whose views it draws. Null detaches it, which
++        /// is what leaving a match looks like from the renderer's side: the pass stays
++        /// registered and simply draws nothing.
++        /// </summary>
++        public void Attach(UnitViewBinder binder) => _binder = binder;
++
++        /// <summary>Installs the meshes, material and pass indices to draw with.</summary>
++        public void SetResources(
++            Material material,
++            Mesh ringMesh,
++            Mesh barMesh,
++            int ringPassIndex,
++            int barPassIndex)
++        {
++            _material = material;
++            _ringMesh = ringMesh;
++            _barMesh = barMesh;
++            _ringPassIndex = ringPassIndex;
++            _barPassIndex = barPassIndex;
++        }
++
++        /// <summary>
++        /// Everything the recorded draw function needs. Graph-owned and pooled per
++        /// frame, so filling it is free; the fields are references to state this pass
++        /// already owns, never copies of it.
++        /// </summary>
++        private class PassData
++        {
++            internal Material material;
++            internal Mesh ringMesh;
++            internal Mesh barMesh;
++            internal int ringPassIndex;
++            internal int barPassIndex;
++            internal UnitOverlayBatcher batcher;
++            internal Matrix4x4[] ringChunk;
++            internal Vector4[] ringDataChunk;
++            internal Matrix4x4[] barChunk;
++            internal Vector4[] barDataChunk;
++            internal MaterialPropertyBlock ringProperties;
++            internal MaterialPropertyBlock barProperties;
++        }
++
++        /// <inheritdoc />
++        public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
++        {
++            if (!IsReady)
++            {
++                return;
++            }
++
++            var resources = frameData.Get<UniversalResourceData>();
++            if (!resources.activeColorTexture.IsValid())
++            {
++                return;
++            }
++
++            var camera = frameData.Get<UniversalCameraData>().camera;
++            if (camera == null)
++            {
++                return;
++            }
++
++            // The bars billboard to whichever camera is recording, so the batches are
++            // built per camera rather than once per frame: with two views on screen the
++            // second would otherwise wear the first one's orientation.
++            _batcher.BuildBatches(_binder, camera.transform.rotation);
++
++            var ringCount = _batcher.SelectionRingCount;
++            var barCount = _batcher.HealthBarCount;
++            if (ringCount == 0 && barCount == 0)
++            {
++                // No overlays, so no pass: recording an empty one would cost a
++                // render-target switch for nothing.
++                return;
++            }
++
++            using (var builder = renderGraph.AddRasterRenderPass<PassData>(ProfilerTag, out var passData, profilingSampler))
++            {
++                passData.material = _material;
++                passData.ringMesh = _ringMesh;
++                passData.barMesh = _barMesh;
++                passData.ringPassIndex = _ringPassIndex;
++                passData.barPassIndex = _barPassIndex;
++                passData.batcher = _batcher;
++                passData.ringChunk = _ringChunk;
++                passData.ringDataChunk = _ringDataChunk;
++                passData.barChunk = _barChunk;
++                passData.barDataChunk = _barDataChunk;
++                passData.ringProperties = _ringProperties;
++                passData.barProperties = _barProperties;
++
++                builder.SetRenderAttachment(resources.activeColorTexture, 0, AccessFlags.Write);
++                if (resources.activeDepthTexture.IsValid())
++                {
++                    // Read only: the quads are depth-tested against the terrain and the
++                    // units (a ring behind a hill must not float over it) but never
++                    // write depth, so they cannot occlude anything.
++                    builder.SetRenderAttachmentDepth(resources.activeDepthTexture, AccessFlags.Read);
++                }
++
++                // The pass declares no renderer list and no sampled texture, so the
++                // graph's dead-code elimination would drop it as unused.
++                builder.AllowPassCulling(false);
++
++                builder.SetRenderFunc(static (PassData data, RasterGraphContext context) =>
++                    ExecutePass(data, context.cmd));
++            }
++        }
++
++        private static void ExecutePass(PassData data, RasterCommandBuffer cmd)
++        {
++            var batcher = data.batcher;
++            DrawInstances(
++                cmd,
++                data.ringMesh,
++                data.material,
++                data.ringPassIndex,
++                batcher.SelectionRingMatrixBuffer,
++                batcher.SelectionRingPropertyBuffer,
++                batcher.SelectionRingCount,
++                UnitOverlayGeometry.RingColorProperty,
++                data.ringChunk,
++                data.ringDataChunk,
++                data.ringProperties);
++            DrawInstances(
++                cmd,
++                data.barMesh,
++                data.material,
++                data.barPassIndex,
++                batcher.HealthBarMatrixBuffer,
++                batcher.HealthBarPropertyBuffer,
++                batcher.HealthBarCount,
++                UnitOverlayGeometry.HealthBarParamsProperty,
++                data.barChunk,
++                data.barDataChunk,
++                data.barProperties);
++        }
++
++        private static void DrawInstances(
++            RasterCommandBuffer cmd,
++            Mesh mesh,
++            Material material,
++            int passIndex,
++            Matrix4x4[] sourceMatrices,
++            Vector4[] sourceProperties,
++            int count,
++            int propertyId,
++            Matrix4x4[] chunkMatrices,
++            Vector4[] chunkProperties,
++            MaterialPropertyBlock properties)
++        {
++            if (mesh == null || material == null || passIndex < 0 || count <= 0)
++            {
++                return;
++            }
++
++            for (var start = 0; start < count; start += UnitOverlayBatcher.MaxInstancesPerDraw)
++            {
++                var length = Math.Min(UnitOverlayBatcher.MaxInstancesPerDraw, count - start);
++
++                // DrawMeshInstanced always takes the first `count` entries of the
++                // array it is handed, so a batch past one draw has to be copied down
++                // into the chunk. 250 matrices is 16 KB of memcpy, which is nothing
++                // next to the draw it feeds, and it keeps this the only code path.
++                Array.Copy(sourceMatrices, start, chunkMatrices, 0, length);
++                Array.Copy(sourceProperties, start, chunkProperties, 0, length);
++                properties.SetVectorArray(propertyId, chunkProperties);
++                cmd.DrawMeshInstanced(mesh, 0, material, passIndex, chunkMatrices, length, properties);
++            }
++        }
++    }
++}
+diff --git a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayRendererFeature.cs b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayRendererFeature.cs
+new file mode 100644
+index 0000000..207ee01
+--- /dev/null
++++ b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlayRendererFeature.cs
+@@ -0,0 +1,115 @@
++using UnityEngine;
++using UnityEngine.Rendering.Universal;
++
++namespace GlobalFront.Client.Presentation
++{
++    /// <summary>
++    /// Registers <see cref="UnitOverlayRenderPass"/> with the Universal renderer and
++    /// owns the <see cref="UnitOverlayBatcher"/> it draws from (Phase 3, step 3.4,
++    /// OD-25).
++    ///
++    /// Adding it to <c>Assets/Settings/PC_Renderer.asset</c> (and the mobile renderer)
++    /// through the renderer's Render Features list is the whole installation: the pass
++    /// then runs for every camera, and the overlay disappears with the renderer rather
++    /// than with a scene object that a match may not have loaded yet.
++    ///
++    /// <see cref="Active"/> exists because a renderer feature is a ScriptableObject
++    /// owned by the pipeline, so nothing in the scene can hold a reference to it. A
++    /// match that wants its units drawn with rings and bars looks itself up here —
++    /// null simply means the feature was never installed, which is a presentation
++    /// difference, not an error.
++    /// </summary>
++    public sealed class UnitOverlayRendererFeature : ScriptableRendererFeature
++    {
++        [Tooltip("Material built from the GlobalFront/Unit Overlay shader. Left empty, " +
++                 "the feature creates one from that shader by name, which keeps the " +
++                 "overlays alive before any material asset is authored.")]
++        [SerializeField] private Material overlayMaterial;
++
++        private UnitOverlayBatcher _batcher;
++        private UnitOverlayRenderPass _pass;
++
++        /// <summary>
++        /// The assignment the current meshes and material were built from. Compared by
++        /// reference rather than by Unity's overloaded equality, because the common
++        /// case is two nulls: the feature created its own material, and an inspector
++        /// that still has none assigned must not ask it to do so again on every reload.
++        /// </summary>
++        private Material _builtFrom;
++
++        /// <summary>The installed instance whose overlays are currently drawn.</summary>
++        public static UnitOverlayRendererFeature Active { get; private set; }
++
++        /// <summary>
++        /// The overlay buffers the pass draws from. Configuration lives here:
++        /// <c>AlwaysShowHealthBars</c>, the capacity and the colours are set by the
++        /// options screen and the load screen, not per frame.
++        /// </summary>
++        public UnitOverlayBatcher Batcher => _batcher;
++
++        /// <inheritdoc />
++        public override void Create()
++        {
++            _batcher ??= new UnitOverlayBatcher();
++            _pass ??= new UnitOverlayRenderPass(_batcher);
++
++            // Re-running Create is normal (it happens on every script reload and on
++            // inspector edits of the renderer), and rebuilding the meshes each time
++            // would leak one pair per reload for the length of the editor session.
++            if (_pass != null && ReferenceEquals(_builtFrom, overlayMaterial))
++            {
++                Active = this;
++                return;
++            }
++
++            _builtFrom = overlayMaterial;
++
++            if (!UnitOverlayGeometry.TryCreateResources(
++                    overlayMaterial,
++                    out var material,
++                    out var ringMesh,
++                    out var barMesh,
++                    out var ringPassIndex,
++                    out var barPassIndex))
++            {
++                _pass.SetResources(null, null, null, -1, -1);
++                Active = this;
++                return;
++            }
++
++            _pass.SetResources(material, ringMesh, barMesh, ringPassIndex, barPassIndex);
++            Active = this;
++        }
++
++        /// <inheritdoc />
++        public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
++        {
++            if (renderer == null || _pass == null || !_pass.IsReady)
++            {
++                return;
++            }
++
++            renderer.EnqueuePass(_pass);
++        }
++
++        /// <summary>
++        /// Points the overlays at one match's view table. Null detaches them, which is
++        /// what leaving a match is: the pass keeps running and draws nothing, so a
++        /// spectator hand-off or a tactical-pause overlay needs no renderer surgery.
++        /// </summary>
++        public void Attach(UnitViewBinder binder) => _pass?.Attach(binder);
++
++        /// <inheritdoc />
++        protected override void Dispose(bool disposing)
++        {
++            if (ReferenceEquals(Active, this))
++            {
++                Active = null;
++            }
++
++            _pass = null;
++            _builtFrom = null;
++            base.Dispose(disposing);
++        }
++    }
++}
+diff --git a/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlay.shader b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlay.shader
+new file mode 100644
+index 0000000..91b4abb
+--- /dev/null
++++ b/Assets/_GlobalFront/Runtime/Client/Presentation/UnitOverlay.shader
+@@ -0,0 +1,189 @@
++Shader "GlobalFront/Unit Overlay"
++{
++    // Both overlay kinds read one instanced float4 per unit, and the two passes
++    // differ only in what that float4 carries and how it is shaded: a colour for the
++    // ground ring, (fraction, colour) for the billboarded health bar. Two passes in
++    // one shader rather than two shaders because the overlay is one material asset
++    // and the instance matrices already put each kind in its own plane.
++    //
++    // Cull Off and ZWrite Off are load-bearing, not taste: the ring and bar quads are
++    // generated in code (UnitOverlayGeometry), the bar flips to face the camera so its
++    // winding changes with the view, and neither overlay should ever hide anything.
++    Properties
++    {
++        _RingThickness("Ring thickness", Range(0.02, 0.5)) = 0.12
++        _BarBorder("Bar border", Range(0.0, 0.4)) = 0.12
++    }
++
++    SubShader
++    {
++        Tags
++        {
++            "RenderType" = "Transparent"
++            "Queue" = "Transparent"
++            "IgnoreProjector" = "True"
++            "PreviewType" = "Plane"
++            "RenderPipeline" = "UniversalPipeline"
++        }
++
++        Cull Off
++        ZWrite Off
++        ZTest LEqual
++        Blend SrcAlpha OneMinusSrcAlpha
++
++        Pass
++        {
++            Name "UnitOverlayRing"
++            Tags { "LightMode" = "UnitOverlayRing" }
++
++            HLSLPROGRAM
++            #pragma target 3.0
++            #pragma vertex RingVertex
++            #pragma fragment RingFragment
++            #pragma multi_compile_instancing
++
++            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
++
++            float _RingThickness;
++
++            UNITY_INSTANCING_BUFFER_START(Overlay)
++                UNITY_DEFINE_INSTANCED_PROP(float4, _OverlayColor)
++            UNITY_INSTANCING_BUFFER_END(Overlay)
++
++            struct RingAttributes
++            {
++                float4 positionOS : POSITION;
++                float2 uv : TEXCOORD0;
++                UNITY_VERTEX_INPUT_INSTANCE_ID
++            };
++
++            struct RingVaryings
++            {
++                float4 positionCS : SV_POSITION;
++                float2 uv : TEXCOORD0;
++                float4 color : TEXCOORD1;
++                UNITY_VERTEX_INPUT_INSTANCE_ID
++            };
++
++            RingVaryings RingVertex(RingAttributes input)
++            {
++                RingVaryings output = (RingVaryings)0;
++
++                UNITY_SETUP_INSTANCE_ID(input);
++                UNITY_TRANSFER_INSTANCE_ID(input, output);
++
++                // TransformObjectToHClip rather than a hand-rolled mul(UNITY_MATRIX_VP,
++                // mul(UNITY_MATRIX_M, ...)): under camera-relative rendering the
++                // instance matrix is pre-translated, and only these helpers apply the
++                // correction consistently.
++                output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
++                output.uv = input.uv;
++                output.color = UNITY_ACCESS_INSTANCED_PROP(Overlay, _OverlayColor);
++                return output;
++            }
++
++            half4 RingFragment(RingVaryings input) : SV_Target
++            {
++                UNITY_SETUP_INSTANCE_ID(input);
++
++                // The quad spans the ring's bounding box, so uv centre-distance is the
++                // radius in units of the ring itself and the thickness is resolution
++                // independent. fwidth keeps the edge one pixel wide at any distance;
++                // without it a ring shrinks into a flickering dot at map zoom.
++                float2 offset = input.uv * 2.0 - 1.0;
++                float radius = length(offset);
++                float inner = 1.0 - _RingThickness;
++                float aa = max(fwidth(radius), 1e-5);
++                float band = smoothstep(inner - aa, inner + aa, radius)
++                    * (1.0 - smoothstep(1.0 - aa, 1.0 + aa, radius));
++
++                half4 color = input.color;
++                color.a *= band;
++                if (color.a < 0.01)
++                {
++                    discard;
++                }
++
++                return color;
++            }
++            ENDHLSL
++        }
++
++        Pass
++        {
++            Name "UnitOverlayHealthBar"
++            Tags { "LightMode" = "UnitOverlayHealthBar" }
++
++            HLSLPROGRAM
++            #pragma target 3.0
++            #pragma vertex BarVertex
++            #pragma fragment BarFragment
++            #pragma multi_compile_instancing
++
++            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
++
++            float _BarBorder;
++
++            UNITY_INSTANCING_BUFFER_START(Overlay)
++                // x: health fraction (already clamped on the CPU), yzw: fill colour.
++                UNITY_DEFINE_INSTANCED_PROP(float4, _HealthBarParams)
++            UNITY_INSTANCING_BUFFER_END(Overlay)
++
++            struct BarAttributes
++            {
++                float4 positionOS : POSITION;
++                float2 uv : TEXCOORD0;
++                UNITY_VERTEX_INPUT_INSTANCE_ID
++            };
++
++            struct BarVaryings
++            {
++                float4 positionCS : SV_POSITION;
++                float2 uv : TEXCOORD0;
++                float3 color : TEXCOORD1;
++                float fraction : TEXCOORD2;
++                UNITY_VERTEX_INPUT_INSTANCE_ID
++            };
++
++            BarVaryings BarVertex(BarAttributes input)
++            {
++                BarVaryings output = (BarVaryings)0;
++
++                UNITY_SETUP_INSTANCE_ID(input);
++                UNITY_TRANSFER_INSTANCE_ID(input, output);
++
++                output.positionCS = TransformObjectToHClip(input.positionOS.xyz);
++                output.uv = input.uv;
++
++                float4 parameters = UNITY_ACCESS_INSTANCED_PROP(Overlay, _HealthBarParams);
++                output.fraction = parameters.x;
++                output.color = parameters.yzw;
++                return output;
++            }
++
++            half4 BarFragment(BarVaryings input) : SV_Target
++            {
++                UNITY_SETUP_INSTANCE_ID(input);
++
++                float2 uv = input.uv;
++
++                // Distance to the nearest edge, in uv: under one border unit is the
++                // dark frame that makes the bar readable against bright terrain.
++                float edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
++                if (edge >= _BarBorder)
++                {
++                    float span = 1.0 - 2.0 * _BarBorder;
++                    float filled = (uv.x - _BarBorder) / max(span, 1e-5);
++                    return filled <= input.fraction
++                        ? half4(input.color, 1.0)
++                        : half4(0.04, 0.04, 0.05, 0.85);
++                }
++
++                return half4(0.0, 0.0, 0.0, 0.75);
++            }
++            ENDHLSL
++        }
++    }
++
++    Fallback Off
++}
+diff --git a/Assets/_GlobalFront/Tests/EditMode/Client/Presentation/UnitOverlayTests.cs b/Assets/_GlobalFront/Tests/EditMode/Client/Presentation/UnitOverlayTests.cs
+new file mode 100644
+index 0000000..8dfccf5
+--- /dev/null
++++ b/Assets/_GlobalFront/Tests/EditMode/Client/Presentation/UnitOverlayTests.cs
+@@ -0,0 +1,808 @@
++using System;
++using GlobalFront.Client.Catalog;
++using GlobalFront.Client.Presentation;
++using GlobalFront.Client.Replication;
++using GlobalFront.Core.Model;
++using GlobalFront.Core.Movement;
++using GlobalFront.Core.Snapshot;
++using NUnit.Framework;
++using UnityEngine;
++using UnityEngine.TestTools;
++using UnityEngine.TestTools.Constraints;
++using EntityId = GlobalFront.Core.Model.EntityId;
++using GcAssert = UnityEngine.TestTools.Constraints.Is;
++using Is = NUnit.Framework.Is;
++using Object = UnityEngine.Object;
++
++namespace GlobalFront.Tests.EditMode.Client.Presentation
++{
++    /// <summary>
++    /// Phase 3, step 3.4: the instanced overlay batches OD-25 draws selection rings
++    /// and health bars with (<see cref="UnitOverlayBatcher"/>).
++    ///
++    /// The two things a reviewer cannot see from a screenshot are what this suite
++    /// defends. First, ownership: an overlay that outlives its unit is a ring sitting
++    /// on a corpse or, worse, on the next unit that spawns into the same pooled view,
++    /// so every lifecycle edge the binder has (bind, release, slot hand-over, resync,
++    /// leaving a match) has to clear the selection along with the identity. Second,
++    /// robustness: the batches go straight into a <c>DrawMeshInstanced</c> call, and
++    /// one NaN in one instance matrix can take the whole draw apart on some APIs, so a
++    /// corrupted position, an archetype with no catalog row, or a zero-length camera
++    /// rotation has to cost one missing overlay and nothing else.
++    ///
++    /// <see cref="UnitOverlayBatcher.BuildBatches"/> is deliberately exercisable
++    /// without a camera, a renderer or a frame: everything asserted here is the
++    /// visibility rule set and the contents of the buffers the pass would submit.
++    /// </summary>
++    [TestFixture]
++    public sealed class UnitOverlayTests
++    {
++        private const int SlotCapacity = 64;
++        private const int MatchUnits = 400;
++        private const int LargeMatchCapacity = 512;
++        private const double TickSeconds = 0.05;           // 20 Hz simulation
++        private const double FrameSeconds = 1.0 / 60.0;    // 60 fps presentation
++
++        /// <summary>The unit's X position in millimetres, wherever a unit spawns.</summary>
++        private const int XMillimetres = 1000;
++
++        private const int ZMillimetres = 2000;
++        private const int Health = UnitCatalog.PrototypeMaximumHealth;
++        private const int DamagedHealth = 65;
++
++        /// <summary>Diameter of the prototype footprint, in metres.</summary>
++        private const float PrototypeDiameter = UnitCatalog.PrototypeRadiusMm * UnitView.MillimetresToMetres * 2f;
++
++        private static readonly Quaternion DefaultCameraRotation = Quaternion.Euler(45f, 0f, 0f);
++
++        private Transform _root;
++        private UnitViewPool _pool;
++        private ClientReplicationWorld _world;
++        private UnitViewTickBuffer _buffer;
++        private UnitViewBinder _binder;
++        private UnitOverlayBatcher _batcher;
++        private ulong _tick;
++
++        [SetUp]
++        public void SetUp()
++        {
++            _root = new GameObject("UnitOverlayTests_Root").transform;
++            _pool = new UnitViewPool(_root);
++            CreateMatch(SlotCapacity);
++        }
++
++        [TearDown]
++        public void TearDown()
++        {
++            _pool?.Dispose();
++            if (_root != null)
++            {
++                Object.DestroyImmediate(_root.gameObject);
++            }
++        }
++
++        // ---------------------------------------------------------------- helpers
++
++        private void CreateMatch(int slotCapacity)
++        {
++            _world = new ClientReplicationWorld(slotCapacity);
++            _buffer = new UnitViewTickBuffer(slotCapacity, TickSeconds);
++            _binder = new UnitViewBinder(_pool, _world, _buffer);
++            _batcher = new UnitOverlayBatcher();
++            _tick = 0;
++        }
++
++        private void AddUnit(
++            ulong entity,
++            byte kind = UnitKinds.Scout,
++            int posX = XMillimetres,
++            int posZ = ZMillimetres,
++            int health = Health)
++        {
++            Assert.That(
++                _world.ApplyAdd(new DeltaAddRecord(
++                    new EntityId(entity),
++                    new PlayerId(1),
++                    new WorldPointMm(posX, posZ),
++                    health,
++                    false,
++                    new WorldPointMm(0, 0),
++                    new EntityId(0),
++                    false,
++                    kind)),
++                Is.EqualTo(ClientWorldApplyResult.Ok),
++                $"unit {entity} must enter the client world");
++
++            // The pool never instantiates in combat (OD-26), so a binder with an
++            // unwarmed archetype silently leaves the unit un-presented — and "no
++            // view" is exactly the failure these tests must not confuse with "the
++            // overlay pass drew nothing".
++            _pool.Warmup(kind, _world.LiveCount);
++        }
++
++        private void RemoveUnit(ulong entity)
++        {
++            Assert.That(
++                _world.ApplyRemove(new DeltaRemoveRecord(
++                    new EntityId(entity),
++                    DeltaRemoveCause.Destroyed)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++        }
++
++        /// <summary>
++        /// One replication packet plus the frame that follows it. Binding happens
++        /// during the render, and the view keeps its authoritative snap until the ring
++        /// recaptures the slot, so this is the shortest path to a bound, filled view.
++        /// </summary>
++        private void Step(int frames = 1)
++        {
++            _tick++;
++            _buffer.CaptureTick(_tick, _world);
++            for (var frame = 0; frame < frames; frame++)
++            {
++                _binder.Render(FrameSeconds);
++            }
++        }
++
++        private int SlotOf(ulong entity)
++        {
++            for (var slot = 0; slot < _world.Capacity; slot++)
++            {
++                if (_world.TryGetSlotState(slot, out var state) && state.Entity.Value == entity)
++                {
++                    return slot;
++                }
++            }
++
++            Assert.Fail($"entity {entity} is not in the client world");
++            return -1;
++        }
++
++        private UnitView ViewOf(ulong entity)
++        {
++            var slot = SlotOf(entity);
++            Assert.That(_binder.TryGetView(slot, out var view), Is.True, $"entity {entity} has no view");
++            return view;
++        }
++
++        /// <summary>Spawns one scout, binds its view, and returns the view.</summary>
++        private UnitView SpawnUnit(
++            ulong entity,
++            byte kind = UnitKinds.Scout,
++            int health = Health)
++        {
++            AddUnit(entity, kind, health: health);
++            Step();
++            return ViewOf(entity);
++        }
++
++        private void Build() => _batcher.BuildBatches(_binder, DefaultCameraRotation);
++
++        private static bool IsFinite(float value) =>
++            !float.IsNaN(value) && !float.IsInfinity(value);
++
++        private static bool IsFinite(Vector3 value) =>
++            IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
++
++        private static void AssertFinite(float value, string field, string because) =>
++            Assert.That(IsFinite(value), Is.True, $"{because}: {field} must stay finite");
++
++        private static void AssertAllFinite(Matrix4x4 matrix, string because)
++        {
++            AssertFinite(matrix.m00, nameof(matrix.m00), because);
++            AssertFinite(matrix.m01, nameof(matrix.m01), because);
++            AssertFinite(matrix.m02, nameof(matrix.m02), because);
++            AssertFinite(matrix.m03, nameof(matrix.m03), because);
++            AssertFinite(matrix.m10, nameof(matrix.m10), because);
++            AssertFinite(matrix.m11, nameof(matrix.m11), because);
++            AssertFinite(matrix.m12, nameof(matrix.m12), because);
++            AssertFinite(matrix.m13, nameof(matrix.m13), because);
++            AssertFinite(matrix.m20, nameof(matrix.m20), because);
++            AssertFinite(matrix.m21, nameof(matrix.m21), because);
++            AssertFinite(matrix.m22, nameof(matrix.m22), because);
++            AssertFinite(matrix.m23, nameof(matrix.m23), because);
++            AssertFinite(matrix.m30, nameof(matrix.m30), because);
++            AssertFinite(matrix.m31, nameof(matrix.m31), because);
++            AssertFinite(matrix.m32, nameof(matrix.m32), because);
++            AssertFinite(matrix.m33, nameof(matrix.m33), because);
++        }
++
++        private static void AssertAllFinite(ReadOnlySpan<Matrix4x4> matrices, string because)
++        {
++            for (var index = 0; index < matrices.Length; index++)
++            {
++                AssertAllFinite(matrices[index], because);
++            }
++        }
++
++        private static void AssertAllFinite(ReadOnlySpan<Vector4> properties, string because)
++        {
++            for (var index = 0; index < properties.Length; index++)
++            {
++                AssertFinite(properties[index].x, "x", because);
++                AssertFinite(properties[index].y, "y", because);
++                AssertFinite(properties[index].z, "z", because);
++                AssertFinite(properties[index].w, "w", because);
++            }
++        }
++
++        // ---------------------------------------------------------------- visibility rules
++
++        [Test]
++        public void HealthyUnselectedUnits_ProduceNoOverlays()
++        {
++            SpawnUnit(1);
++            SpawnUnit(2);
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0), "nothing was built yet");
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0),
++                "a full-health bar carries no information and costs a draw");
++        }
++
++        [Test]
++        public void SelectingAUnit_AddsExactlyOneRingAndOneBar()
++        {
++            var view = SpawnUnit(1);
++            view.SetSelected(true);
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(1));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(1),
++                "the selected unit is the one case a healthy bar is worth drawing");
++            Assert.That(_batcher.HealthBarProperties[0].x, Is.EqualTo(1f).Within(1e-5f));
++        }
++
++        [Test]
++        public void DeselectingAUnit_ClearsItsOverlaysOnTheNextBuild()
++        {
++            var view = SpawnUnit(1);
++            view.SetSelected(true);
++            Build();
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(1));
++
++            view.SetSelected(false);
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0),
++                "the batch is rebuilt every frame, not accumulated");
++        }
++
++        [Test]
++        public void DamagedUnselectedUnit_DrawsABarButNoRing()
++        {
++            SpawnUnit(1, health: DamagedHealth);
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(1));
++            Assert.That(_batcher.HealthBarProperties[0].x, Is.EqualTo(0.65f).Within(1e-5f),
++                "the bar publishes the fraction the buffer already computed");
++        }
++
++        [Test]
++        public void AlwaysShowHealthBars_DrawsABarForEveryLivingBoundUnit()
++        {
++            SpawnUnit(1);
++            SpawnUnit(2);
++            SpawnUnit(3, health: DamagedHealth);
++
++            _batcher.AlwaysShowHealthBars = true;
++            Build();
++
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(3));
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0),
++                "the preference is about bars, not about inventing selections");
++        }
++
++        [Test]
++        public void UnitAtZeroHealth_DrawsNothingEvenWhileSelected()
++        {
++            var view = SpawnUnit(1);
++            view.SetSelected(true);
++            view.SnapHealth(0, 0f);
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0), "a corpse gets no ring");
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0));
++        }
++
++        [Test]
++        public void DeadUnit_LeavesNoOverlayEvenWhenItWasSelected()
++        {
++            var view = SpawnUnit(1);
++            view.SetSelected(true);
++            SpawnUnit(2);
++
++            RemoveUnit(1);
++            Step();
++
++            Assert.That(view.IsBound, Is.False, "the binder retired the view with the unit");
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0));
++        }
++
++        [Test]
++        public void ReleasedViews_LeaveNoOverlay()
++        {
++            var view = SpawnUnit(1);
++            view.SetSelected(true);
++            Assert.That(_binder.ReleaseAllViews(), Is.EqualTo(1));
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0));
++        }
++
++        // ---------------------------------------------------------------- lifecycle ownership
++
++        [Test]
++        public void View_SelectionAndArchetypeState_DoNotSurviveBindOrRelease()
++        {
++            Assert.That(_pool.Warmup(UnitKinds.Scout, 1), Is.EqualTo(1));
++            var view = _pool.Acquire(UnitKinds.Scout);
++
++            view.Bind(new EntityId(5), Health, UnitCatalog.PrototypeRadiusMm);
++            Assert.That(view.MaxHealth, Is.EqualTo(Health));
++            Assert.That(view.RadiusMillimetres, Is.EqualTo(UnitCatalog.PrototypeRadiusMm));
++
++            view.SetSelected(true);
++            Assert.That(view.IsSelected, Is.True);
++
++            view.Bind(new EntityId(6), Health, UnitCatalog.PrototypeRadiusMm);
++            Assert.That(view.IsSelected, Is.False, "a rebind is a new unit, not a new label on the old one");
++            Assert.That(view.Health, Is.EqualTo(0), "the previous unit's readout must not flash on the next");
++
++            view.SetSelected(true);
++            view.Release();
++            Assert.That(view.IsSelected, Is.False);
++            Assert.That(view.MaxHealth, Is.EqualTo(0), "an unbound view has no archetype");
++            Assert.That(view.RadiusMillimetres, Is.EqualTo(0));
++
++            // A catalog row is validated on construction, so a negative could only
++            // arrive from a hand-written call; either way it cannot become a geometry.
++            view.Bind(new EntityId(7), -5, -1);
++            Assert.That(view.MaxHealth, Is.EqualTo(0));
++            Assert.That(view.RadiusMillimetres, Is.EqualTo(0));
++
++            Assert.That(_pool.Release(view), Is.True);
++        }
++
++        [Test]
++        public void RecycledSlot_NewUnitDoesNotInheritTheSelection()
++        {
++            var first = SpawnUnit(1);
++            first.SetSelected(true);
++            Build();
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(1));
++
++            // The hand-over the table actually performs: the slot is freed and taken
++            // again before the next presentation frame. The slot has to be named
++            // before the death, because after it the entity is gone from the table.
++            var recycled = SlotOf(1);
++            RemoveUnit(1);
++            AddUnit(2);
++            Assert.That(SlotOf(2), Is.EqualTo(recycled), "the freed slot is the recycled one");
++            Step();
++
++            var replacement = ViewOf(2);
++            Assert.That(replacement, Is.SameAs(first), "presentation recycles the same object");
++            Assert.That(replacement.IsSelected, Is.False);
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0),
++                "a ring on a unit nobody selected is a lie about the player's order");
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0));
++        }
++
++        [Test]
++        public void Resync_ClearsEveryOverlayAndSelection()
++        {
++            SpawnUnit(1).SetSelected(true);
++            SpawnUnit(2).SetSelected(true);
++            Build();
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(2));
++
++            _binder.HandleResync(_tick + 50);
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0));
++
++            // The keyframe may bring the same entities back: they are new views, and
++            // OD-20 does not promise the player kept their selection.
++            _world.Reset();
++            AddUnit(1);
++            Step();
++            Assert.That(ViewOf(1).IsSelected, Is.False);
++        }
++
++        // ---------------------------------------------------------------- geometry
++
++        [Test]
++        public void Ring_SitsOnTheGroundPlaneAndSpansTheCatalogDiameter()
++        {
++            var view = SpawnUnit(1);
++            view.SetSelected(true);
++
++            Build();
++
++            var matrix = _batcher.SelectionRingMatrices[0];
++            AssertAllFinite(matrix, "a selected, alive unit at a finite position must produce a real matrix");
++            Assert.That(
++                matrix.m03,
++                Is.EqualTo(XMillimetres * UnitView.MillimetresToMetres).Within(1e-5f),
++                "the ring is centred on the hull in X");
++            Assert.That(
++                matrix.m23,
++                Is.EqualTo(ZMillimetres * UnitView.MillimetresToMetres).Within(1e-5f),
++                "and in Z");
++            Assert.That(matrix.m13, Is.EqualTo(UnitOverlayBatcher.RingHeightMetres).Within(1e-6f),
++                "lifted off the flat Y = 0 playfield so it cannot z-fight with the terrain (OD-27)");
++            Assert.That(matrix.m00, Is.EqualTo(PrototypeDiameter).Within(1e-5f),
++                "the quad is unit-sized, so the scale is the ring diameter in metres");
++            Assert.That(matrix.m22, Is.EqualTo(PrototypeDiameter).Within(1e-5f));
++            Assert.That(matrix.m11, Is.EqualTo(1f).Within(1e-6f), "a flat quad has no height to scale");
++            Assert.That(view.RadiusMillimetres, Is.EqualTo(UnitCatalog.PrototypeRadiusMm));
++        }
++
++        [Test]
++        public void Bar_BillboardsToTheCameraAndCarriesTheHealthFraction()
++        {
++            var rotation = Quaternion.Euler(30f, 37f, -12f);
++            SpawnUnit(1, health: DamagedHealth);
++
++            _batcher.BuildBatches(_binder, rotation);
++
++            var matrix = _batcher.HealthBarMatrices[0];
++            AssertAllFinite(matrix, "the bar of an alive, damaged unit must be a real matrix");
++
++            // The bar quad's normal is its local +Z, so a correct billboard is exactly
++            // "local +Z lands on the camera's forward" — no per-instance look-at, and
++            // no assumption about what that rotation happens to be.
++            var normal = matrix.MultiplyVector(Vector3.forward).normalized;
++            Assert.That(
++                Vector3.Distance(normal, (rotation * Vector3.forward).normalized),
++                Is.LessThan(1e-4f));
++            Assert.That(
++                matrix.MultiplyVector(Vector3.up).magnitude,
++                Is.EqualTo(UnitOverlayBatcher.HealthBarThicknessMetres).Within(1e-5f));
++            Assert.That(
++                matrix.MultiplyVector(Vector3.right).magnitude,
++                Is.EqualTo(PrototypeDiameter * UnitOverlayBatcher.HealthBarWidthInDiameters).Within(1e-5f));
++            Assert.That(
++                matrix.MultiplyPoint3x4(Vector3.zero).y,
++                Is.EqualTo(UnitOverlayBatcher.HealthBarHeightMetres).Within(1e-5f),
++                "the bar floats above the hull origin by the configured offset");
++            Assert.That(_batcher.HealthBarProperties[0].x, Is.EqualTo(0.65f).Within(1e-5f));
++        }
++
++        [Test]
++        public void BarColor_RampsFromLowToFullHealth()
++        {
++            SpawnUnit(1, health: DamagedHealth);
++
++            Build();
++
++            var property = _batcher.HealthBarProperties[0];
++            var expected = Color.Lerp(_batcher.LowHealthBarColor, _batcher.FullHealthBarColor, 0.65f);
++            Assert.That(property.y, Is.EqualTo(expected.r).Within(1e-4f));
++            Assert.That(property.z, Is.EqualTo(expected.g).Within(1e-4f));
++            Assert.That(property.w, Is.EqualTo(expected.b).Within(1e-4f));
++        }
++
++        [Test]
++        public void RingColor_IsThePerInstancePropertyOfEveryRing()
++        {
++            SpawnUnit(1).SetSelected(true);
++            SpawnUnit(2).SetSelected(true);
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(2));
++            for (var index = 0; index < _batcher.SelectionRingCount; index++)
++            {
++                var property = _batcher.SelectionRingProperties[index];
++                Assert.That(property.x, Is.EqualTo(_batcher.SelectionRingColor.r).Within(1e-5f));
++                Assert.That(property.y, Is.EqualTo(_batcher.SelectionRingColor.g).Within(1e-5f));
++                Assert.That(property.z, Is.EqualTo(_batcher.SelectionRingColor.b).Within(1e-5f));
++                Assert.That(property.w, Is.EqualTo(_batcher.SelectionRingColor.a).Within(1e-5f));
++            }
++        }
++
++        [Test]
++        public void Overlays_FollowTheUnitAsItMoves()
++        {
++            var view = SpawnUnit(1);
++            view.SetSelected(true);
++            Build();
++            Assert.That(_batcher.SelectionRingMatrices[0].m03, Is.EqualTo(1f).Within(1e-5f));
++
++            Assert.That(
++                _world.ApplyUpdate(new DeltaUpdateRecord(
++                    new EntityId(1),
++                    (byte)UnitDirtyMask.Position,
++                    new PlayerId(1),
++                    new WorldPointMm(7000, 9000),
++                    0,
++                    false,
++                    new WorldPointMm(0, 0),
++                    new EntityId(0),
++                    false)),
++                Is.EqualTo(ClientWorldApplyResult.Ok));
++            Step(6);
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingMatrices[0].m03, Is.GreaterThan(1.5f),
++                "a ring that stayed behind the unit it belongs to would be worse than no ring");
++        }
++
++        // ---------------------------------------------------------------- adversarial input
++
++        [Test]
++        public void UnresolvedArchetype_DrawsNothingAndProducesNoDegenerateMatrix()
++        {
++            Assert.That(_pool.Warmup(UnitKinds.Unknown, 1), Is.EqualTo(1));
++            var view = SpawnUnit(1, kind: UnitKinds.Unknown);
++            view.SetSelected(true);
++
++            Assert.That(view.MaxHealth, Is.EqualTo(0), "the client has no row for this archetype");
++            Assert.That(view.RadiusMillimetres, Is.EqualTo(0));
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0),
++                "no denominator means no fraction, and a 0-width bar is not a bar");
++            Assert.That(view.HealthFraction, Is.EqualTo(0f), "health * 0 is 0, never 0/0 = NaN");
++        }
++
++        [Test]
++        public void NonFinitePositions_AreSkippedAndNeverReachTheBatch()
++        {
++            SpawnUnit(1).SetSelected(true);
++            var poisoned = SpawnUnit(2);
++            poisoned.SetSelected(true);
++            SpawnUnit(3, health: DamagedHealth);
++
++            // A non-finite transform write is refused by the engine, which logs it as
++            // an error; that message is the point of the test, not a failure of it.
++            LogAssert.ignoreFailingMessages = true;
++            try
++            {
++                foreach (var position in new[]
++                {
++                    new Vector3(float.NaN, 0f, 0f),
++                    new Vector3(0f, float.NaN, 0f),
++                    new Vector3(0f, 0f, float.PositiveInfinity),
++                    new Vector3(float.NegativeInfinity, 1f, 2f),
++                })
++                {
++                    poisoned.Hull.position = position;
++
++                    // The expectation is derived from what the transform reports rather
++                    // than from what was written. The engine keeps the hull at its last
++                    // good position, so today the batcher's own position guard cannot be
++                    // provoked through a Transform — it is the backstop for a pose whose
++                    // millimetre arithmetic overflows before it ever reaches one. Pinning
++                    // the batch to the read-back tests the real contract either way: an
++                    // overlay for every finite hull, no overlay for a non-finite one, and
++                    // never a non-finite number in either batch.
++                    var held = IsFinite(poisoned.Hull.position);
++
++                    Build();
++
++                    Assert.That(
++                        _batcher.SelectionRingCount,
++                        Is.EqualTo(held ? 2 : 1),
++                        $"rings must follow the hull positions (read-back {poisoned.Hull.position})");
++                    Assert.That(
++                        _batcher.HealthBarCount,
++                        Is.EqualTo(held ? 3 : 2),
++                        $"bars must follow the hull positions (read-back {poisoned.Hull.position})");
++                    AssertAllFinite(_batcher.SelectionRingMatrices, $"after a position of {position}");
++                    AssertAllFinite(_batcher.HealthBarMatrices, $"after a position of {position}");
++                    AssertAllFinite(_batcher.HealthBarProperties, $"after a position of {position}");
++                }
++            }
++            finally
++            {
++                LogAssert.ignoreFailingMessages = false;
++            }
++        }
++
++        [Test]
++        public void DegenerateCameraRotation_FallsBackToIdentity()
++        {
++            SpawnUnit(1, health: DamagedHealth);
++
++            foreach (var rotation in new[]
++            {
++                new Quaternion(0f, 0f, 0f, 0f),
++                new Quaternion(float.NaN, 0f, 0f, 1f),
++                new Quaternion(float.PositiveInfinity, 0f, 0f, 1f),
++            })
++            {
++                _batcher.BuildBatches(_binder, rotation);
++
++                Assert.That(_batcher.HealthBarCount, Is.EqualTo(1), "the unit is still there and still hurt");
++                var matrix = _batcher.HealthBarMatrices[0];
++                AssertAllFinite(_batcher.HealthBarMatrices, $"after rotation {rotation}");
++                Assert.That(matrix.m00, Is.EqualTo(PrototypeDiameter * UnitOverlayBatcher.HealthBarWidthInDiameters).Within(1e-4f),
++                    "the fallback is an upright bar, not a sheared one");
++                Assert.That(matrix.m01, Is.EqualTo(0f).Within(1e-6f));
++                Assert.That(matrix.m10, Is.EqualTo(0f).Within(1e-6f));
++            }
++
++            // The same rotation, valid this time, has to be the thing that rotates it.
++            _batcher.BuildBatches(_binder, Quaternion.Euler(0f, 90f, 0f));
++            Assert.That(_batcher.HealthBarMatrices[0].m00, Is.EqualTo(0f).Within(1e-5f),
++                "a yaw of 90 degrees turns the bar's width into its Z extent");
++        }
++
++        [Test]
++        public void NonFiniteHealthFraction_ProducesNoNaNAndOutOfRangeValues()
++        {
++            var poisoned = SpawnUnit(1);
++            poisoned.SetSelected(true);
++            poisoned.SnapHealth(DamagedHealth, float.NaN);
++
++            Build();
++
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0), "an unknown fraction draws no bar");
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(1), "and the ring does not depend on it");
++
++            // Infinity does not survive the view's own clamp, and the clamp is
++            // Mathf.Clamp01, which takes infinities to the bound but passes NaN
++            // straight through. So the batcher's non-finite guard has exactly one
++            // shape to catch here, and this asserts which layer caught the other.
++            poisoned.SnapHealth(DamagedHealth, float.PositiveInfinity);
++            Assert.That(poisoned.HealthFraction, Is.EqualTo(1f),
++                "the view absorbs an infinite fraction before the batcher sees it");
++            Build();
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(1));
++            Assert.That(_batcher.HealthBarProperties[0].x, Is.EqualTo(1f));
++
++            // Over 1 is not poison, it is a stat the server has not caught up with.
++            poisoned.SnapHealth(Health * 2, 2f);
++            Build();
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(1));
++            Assert.That(_batcher.HealthBarProperties[0].x, Is.EqualTo(1f), "clamped, not passed through");
++
++            poisoned.SnapHealth(DamagedHealth, -0.5f);
++            Build();
++            Assert.That(_batcher.HealthBarProperties[0].x, Is.EqualTo(0f));
++        }
++
++        [Test]
++        public void BatchStopsAtCapacity_WithoutWritingPastIt()
++        {
++            CreateMatch(LargeMatchCapacity);
++            Assert.That(_pool.Warmup(UnitKinds.Scout, 3), Is.EqualTo(3));
++            _batcher = new UnitOverlayBatcher(2);
++
++            SpawnUnit(1).SetSelected(true);
++            SpawnUnit(2).SetSelected(true);
++            SpawnUnit(3).SetSelected(true);
++
++            Build();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(2));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(2));
++            Assert.That(_batcher.ClippedInstanceCount, Is.EqualTo(2), "one ring and one bar did not fit");
++
++            // The written entries stay the contract: nothing half-emitted, nothing
++            // from the third unit, and no exception on the way.
++            AssertAllFinite(_batcher.SelectionRingMatrices, "with a saturated ring batch");
++            AssertAllFinite(_batcher.HealthBarMatrices, "with a saturated bar batch");
++        }
++
++        [Test]
++        public void Constructor_RejectsUselessCapacities()
++        {
++            Assert.That(() => new UnitOverlayBatcher(0), Throws.TypeOf<ArgumentOutOfRangeException>());
++            Assert.That(() => new UnitOverlayBatcher(-1), Throws.TypeOf<ArgumentOutOfRangeException>());
++            Assert.That(
++                () => new UnitOverlayBatcher(UnitOverlayBatcher.MaxCapacity + 1),
++                Throws.TypeOf<ArgumentOutOfRangeException>(),
++                "more overlays than the replication table can hold units is a misconfiguration, not a buffer");
++            Assert.That(new UnitOverlayBatcher().Capacity, Is.EqualTo(UnitOverlayBatcher.DefaultCapacity));
++        }
++
++        [Test]
++        public void BuildBatches_RequiresABinder()
++        {
++            Assert.That(
++                () => _batcher.BuildBatches(null, DefaultCameraRotation),
++                Throws.ArgumentNullException);
++        }
++
++        [Test]
++        public void Clear_EmptiesTheBatchesWithoutLosingConfiguration()
++        {
++            SpawnUnit(1).SetSelected(true);
++            Build();
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(1));
++
++            _batcher.AlwaysShowHealthBars = true;
++            _batcher.Clear();
++
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(0));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(0));
++            Assert.That(_batcher.AlwaysShowHealthBars, Is.True, "hiding overlays is not resetting the player's options");
++
++            Build();
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(1));
++        }
++
++        // ---------------------------------------------------------------- frame budget
++
++        [Test]
++        public void BuildBatches_AtFourHundredUnits_DoesNotAllocate()
++        {
++            byte[] ballast = null;
++            Assert.That(
++                () => { ballast = new byte[4096]; },
++                GcAssert.AllocatingGCMemory(),
++                "the recorder has to see an allocation before its silence means anything");
++            Assert.That(ballast, Is.Not.Null);
++
++            CreateMatch(LargeMatchCapacity);
++            Assert.That(_pool.Warmup(UnitKinds.Scout, MatchUnits), Is.EqualTo(MatchUnits));
++            for (var entity = 1; entity <= MatchUnits; entity++)
++            {
++                AddUnit((ulong)entity, health: entity % 2 == 0 ? DamagedHealth : Health);
++            }
++
++            Step();
++            Assert.That(_binder.BoundViewCount, Is.EqualTo(MatchUnits));
++
++            // Half of them selected, all of them alive: the worst frame the OD-28
++            // profile can produce is both batches full at once.
++            for (var slot = 0; slot < _binder.SlotCount; slot++)
++            {
++                if (_binder.TryGetView(slot, out var view) && (view.EntityValue & 1UL) != 0UL)
++                {
++                    view.SetSelected(true);
++                }
++            }
++
++            _batcher = new UnitOverlayBatcher(LargeMatchCapacity);
++            Assert.That(_batcher.Capacity, Is.GreaterThanOrEqualTo(MatchUnits));
++
++            void Build(int iterations)
++            {
++                // No assertions and no span reads in here: a boxed Matrix4x4 is an
++                // allocation, and the point of the window is that nothing does.
++                for (var iteration = 0; iteration < iterations; iteration++)
++                {
++                    _batcher.BuildBatches(_binder, DefaultCameraRotation);
++                }
++            }
++
++            Build(20);
++            Assert.That(_batcher.SelectionRingCount, Is.EqualTo(MatchUnits / 2));
++            Assert.That(_batcher.HealthBarCount, Is.EqualTo(MatchUnits),
++                "half selected, the other half damaged: every unit earns a bar");
++
++            Assert.That(
++                () => Build(200),
++                Is.Not.AllocatingGCMemory(),
++                "the overlay batch is a per-frame cost at four hundred units, so it must be allocation-free");
++
++            Assert.That(_binder.BoundViewCount, Is.EqualTo(MatchUnits));
++            Assert.That(_pool.GrowCount, Is.EqualTo(0), "the measured window must be steady state");
++        }
++    }
++}

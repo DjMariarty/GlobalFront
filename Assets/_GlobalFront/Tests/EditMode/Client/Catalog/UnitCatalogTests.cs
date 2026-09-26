@@ -89,10 +89,80 @@ namespace GlobalFront.Tests.EditMode.Client.Catalog
             Assert.That(negative.InvMaxHealth, Is.EqualTo(0f));
             Assert.That(negative.IsResolved, Is.False);
 
-            // An unresolved row is refused by the catalog rather than served, so no
-            // caller can read a zero denominator as "this unit has zero health".
-            var catalog = new UnitCatalog(new[] { unresolved });
-            Assert.That(catalog.TryGet(UnitKinds.Scout, out _), Is.False);
+            // An unresolved row never reaches a lookup at all: the catalog refuses it
+            // at construction (see Constructor_RejectsUnusableRows), so no caller can
+            // read a zero denominator back as "this unit has zero health".
+            Assert.That(
+                () => new UnitCatalog(new[] { unresolved }),
+                Throws.ArgumentException);
+        }
+
+        /// <summary>
+        /// Step 3.4 pre-flight (OD-29 note F-2): a row the presentation layer cannot
+        /// draw with is refused where the roster is loaded, not where the bar is
+        /// drawn. A stored zero maximum would come back through <c>TryGet</c> as a
+        /// successful lookup and surface as an empty health bar on a healthy unit,
+        /// and a zero radius as a ring scaled to nothing.
+        /// </summary>
+        [Test]
+        public void Constructor_RejectsUnusableRows()
+        {
+            Assert.That(
+                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Scout, "No health", 0, 500) }),
+                Throws.ArgumentException,
+                "a zero maximum health is an unresolved row, not a dead archetype");
+
+            Assert.That(
+                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Scout, "Negative health", -100, 500) }),
+                Throws.ArgumentException);
+
+            Assert.That(
+                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Tank, "No radius", 100, 0) }),
+                Throws.ArgumentException,
+                "a zero radius cannot size a selection ring");
+
+            Assert.That(
+                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Tank, "Negative radius", 100, -1) }),
+                Throws.ArgumentException);
+
+            Assert.That(
+                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Tank, null, 100, 500) }),
+                Throws.ArgumentException,
+                "a row without a name cannot drive the inspector or the selection HUD");
+
+            // An empty name is still a name the caller chose; only the absence of a
+            // row is refused, so a data-driven roster may stage a kind before its
+            // localization key arrives.
+            Assert.That(
+                () => new UnitCatalog(new[] { new UnitDefinition(UnitKinds.Tank, string.Empty, 100, 500) }),
+                Throws.Nothing);
+        }
+
+        /// <summary>
+        /// The guard must not become a reason to drop a good row that happens to sit
+        /// next to a bad one in the same array: the rejection is per row, and the
+        /// rows that pass are exactly the ones the catalog serves.
+        /// </summary>
+        [Test]
+        public void Constructor_RejectsTheWholeTable_AndServesNothingFromABadRow()
+        {
+            Assert.That(
+                () => new UnitCatalog(new[]
+                {
+                    new UnitDefinition(UnitKinds.Scout, "Scout", 100, 500),
+                    new UnitDefinition(UnitKinds.Tank, "Tank", 0, 900),
+                }),
+                Throws.ArgumentException);
+
+            var partial = new UnitCatalog(new[]
+            {
+                new UnitDefinition(UnitKinds.Scout, "Scout", 100, 500),
+            });
+
+            Assert.That(partial.TryGet(UnitKinds.Scout, out var scout), Is.True);
+            Assert.That(scout.IsResolved, Is.True);
+            Assert.That(partial.TryGet(UnitKinds.Tank, out _), Is.False,
+                "a kind the roster left out stays a miss rather than a placeholder");
         }
 
         [Test]

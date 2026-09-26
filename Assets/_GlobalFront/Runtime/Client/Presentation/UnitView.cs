@@ -48,6 +48,9 @@ namespace GlobalFront.Client.Presentation
         private ulong _entity;
         private byte _kind;
         private bool _isPooledView;
+        private int _maximumHealth;
+        private int _radiusMillimetres;
+        private bool _isSelected;
 
         /// <summary>Hull transform the pose is written to; the GameObject's own.</summary>
         public Transform Hull => _hull != null ? _hull : (_hull = transform);
@@ -115,26 +118,77 @@ namespace GlobalFront.Client.Presentation
         public float HealthFraction { get; private set; }
 
         /// <summary>
-        /// Takes ownership of this view for one replicated entity. Called by
+        /// Health denominator of the archetype this view presents, 0 when the client
+        /// has no catalog row for it. The overlay pass needs it to tell "at full
+        /// health" from "no stats at all": a unit whose maximum is unresolved reads
+        /// as an empty bar, and an empty bar on top of an unknown unit is a lie the
+        /// player cannot act on, so those units get no bar.
+        /// </summary>
+        public int MaxHealth => _maximumHealth;
+
+        /// <summary>
+        /// Footprint radius in millimetres, the size the selection ring and the
+        /// health bar are scaled from. 0 for an unresolved archetype, which is also
+        /// the degenerate-scale case the overlay pass filters out.
+        /// </summary>
+        public int RadiusMillimetres => _radiusMillimetres;
+
+        /// <summary>
+        /// True while this unit is part of the player's selection. Presentation
+        /// state only — the ring and the bar of a selected unit are drawn
+        /// differently, nothing else changes — and it belongs to the unit named by
+        /// <see cref="EntityValue"/>, never to the slot or to the pooled object:
+        /// <see cref="Bind"/> and <see cref="Release"/> both clear it, so a unit that
+        /// takes over a recycled slot cannot inherit the casualty's ring.
+        /// </summary>
+        public bool IsSelected => _isSelected;
+
+        /// <summary>
+        /// Takes ownership of this view for one replicated entity, stamped with the
+        /// catalog geometry its archetype resolves to. Called by
         /// <see cref="UnitViewBinder"/> immediately after
         /// <see cref="UnitViewPool.Acquire"/>, before any pose is applied.
+        ///
+        /// The identity reset is the load-bearing part: the pool hands out objects
+        /// that a previous unit already used, so this is the last point at which a
+        /// stale selection is guaranteed not to survive, even for a view the pool
+        /// never got back (a release it rejected, a GameObject destroyed outside the
+        /// pool).
         /// </summary>
-        public void Bind(EntityId entity)
+        public void Bind(EntityId entity, int maximumHealth, int radiusMillimetres)
         {
             _entity = entity.Value;
+            _maximumHealth = maximumHealth > 0 ? maximumHealth : 0;
+            _radiusMillimetres = radiusMillimetres > 0 ? radiusMillimetres : 0;
+            Health = 0;
+            HealthFraction = 0f;
+            _isSelected = false;
         }
 
         /// <summary>
-        /// Drops the identity and the health readout, called by the pool on release.
-        /// The transform is deliberately left where it is: the GameObject is
-        /// deactivated at the same moment, and resetting a transform nobody reads
-        /// would put two more native writes on the despawn path.
+        /// Drops the identity, the health readout and the archetype geometry, called
+        /// by the pool on release. The transform is deliberately left where it is: the
+        /// GameObject is deactivated at the same moment, and resetting a transform
+        /// nobody reads would put two more native writes on the despawn path.
         /// </summary>
         public void Release()
         {
             _entity = 0;
             Health = 0;
             HealthFraction = 0f;
+            _maximumHealth = 0;
+            _radiusMillimetres = 0;
+            _isSelected = false;
+        }
+
+        /// <summary>
+        /// Joins or leaves the player's selection. Every overlay drawn for this unit
+        /// follows from this flag on the next batch build, so the caller does not
+        /// have to touch anything else.
+        /// </summary>
+        public void SetSelected(bool selected)
+        {
+            _isSelected = selected;
         }
 
         /// <summary>
