@@ -535,6 +535,39 @@ namespace GlobalFront.Client.Presentation
         }
 
         /// <summary>
+        /// Forgets the hovered unit without touching anything else.
+        ///
+        /// For the frames a pointer is not over the battlefield at all. Step 3.6's HUD
+        /// gate is the caller: a pointer sitting on the minimap is not hovering the
+        /// terrain behind it, and a hover that keeps tracking units the player cannot
+        /// see through the panel would be a lie the first hover tooltip ever written
+        /// would inherit.
+        /// </summary>
+        public void ClearHover() => _hoveredEntity = default;
+
+        /// <summary>
+        /// Abandons an in-flight press without deciding anything about it: no
+        /// selection is cleared, no unit is added, no marquee is resolved.
+        ///
+        /// Needed because <see cref="ResolveRelease"/> is not the only way a press can
+        /// end. A drag that started on the battlefield and travelled into the tactical
+        /// HUD has to stop being a battlefield drag — the alternative, from step 3.6's
+        /// pointer gate, is either a marquee that clears the squad behind the minimap
+        /// or a press that stays armed for ever because nothing will release it.
+        ///
+        /// Clearing the selection here would be the bug this method exists to avoid:
+        /// the player asked for that selection with the clicks they made on the
+        /// battlefield, and a pointer that later drifted over a panel says nothing
+        /// about wanting it gone.
+        /// </summary>
+        public void CancelDrag()
+        {
+            _pointerHeld = false;
+            IsDragging = false;
+            ScreenRectPx = default;
+        }
+
+        /// <summary>
         /// A plain click, with the whole click rule set applied: shift toggles, a
         /// double-click on the same unit takes every friendly unit of that archetype
         /// that is on screen, and a click on empty ground clears the selection.

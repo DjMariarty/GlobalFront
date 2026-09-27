@@ -130,12 +130,22 @@ namespace GlobalFront.Client.Presentation
         /// <summary>Kind of the last submission, so a HUD can name it.</summary>
         public GameCommandType LastKind { get; private set; }
 
-        /// <summary>Requests handed to the channel since construction.</summary>
+        /// <summary>Requests the channel accepted since construction.</summary>
         public int SubmittedCount { get; private set; }
+
+        /// <summary>
+        /// Requests handed over since construction, accepted or refused.
+        ///
+        /// <see cref="SubmittedCount"/> cannot tell a HUD that an order happened at all:
+        /// a refused request leaves it exactly where it was, so the orders a player most
+        /// needs to see are the ones the accepted counter never mentions.
+        /// </summary>
+        public int AttemptedCount { get; private set; }
 
         public void Submit(in IssuedCommand command)
         {
             LastKind = command.Kind;
+            AttemptedCount++;
 
             var entities = new EntityId[command.EntityCount];
             for (var index = 0; index < entities.Length; index++)
