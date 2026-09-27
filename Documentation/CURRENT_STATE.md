@@ -1,6 +1,6 @@
 # GlobalFront Current State
 
-> Быстрый handoff для AI-агента • обновлено 2026-09-26
+> Быстрый handoff для AI-агента • обновлено 2026-09-27
 
 ## Current Phase
 
@@ -8,18 +8,18 @@
 
 ## Current Task
 
-**Phase 3.5: Selection System, Screen-Space Drag-Box & RTS Command Issuing — [READY / NEXT]** (ADR-012, OD-24)
+**Phase 3.6: Minimap & Tactical HUD — [READY / NEXT]** (ADR-012, OD-24)
 
-Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Phases 1.0 — 2.8) — **[APPROVED: ZERO DEFECTS]** на `a37f53d` (отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Phase 3.1 (RTS Camera & Input) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`59ef38a` → `8144541`, `2b71414`). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`6ab12ad` → `eac0e1d`). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`be03002`, P3 F-1/F-2 закрыты в `27a10f6`). Phase 3.3 (UnitViewBinder & Object Pooling) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`bcb1e78` → `0243971`, `e69bed1`). Phase 3.4 (Instanced Selection Rings & HP Bars) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`27a10f6` → `b897eea`, двойной независимый adversarial-аудит, P0-1/P1-1/P1-2/P2-1/P2-4/P2-5/P3-1/P3-2/P3-3 закрыты). 770/770 EditMode тестов green, 6/6 PlayMode тестов green. Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
+Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Phases 1.0 — 2.8) — **[APPROVED: ZERO DEFECTS]** на `a37f53d` (отчёт: `Artifacts/GrandAudit-Certification-a37f53d.md`). Phase 3.1 (RTS Camera & Input) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`59ef38a` → `8144541`, `2b71414`). Phase 3.2 (UnitViewTickBuffer & Interpolation) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`6ab12ad` → `eac0e1d`). OD-29 (UnitKind Replication, Protocol v2 & UnitCatalog) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`be03002`, P3 F-1/F-2 закрыты в `27a10f6`). Phase 3.3 (UnitViewBinder & Object Pooling) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`bcb1e78` → `0243971`, `e69bed1`). Phase 3.4 (Instanced Selection Rings & HP Bars) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`27a10f6` → `b897eea`, двойной независимый adversarial-аудит, P0-1/P1-1/P1-2/P2-1/P2-4/P2-5/P3-1/P3-2/P3-3 закрыты). Phase 3.5 (Selection System, Screen-Space Drag-Box & RTS Command Issuing — ADR-012, OD-24) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (`cfa24c2`: `UnitPickMath`, `UnitSelectionController`, `UnitCommandIssuing`, `UnitSelectionDriver`, `SelectionMarqueePresenter`, `UnitSelectionAndCommandTests` — 59 стартовых кейсов подняли EditMode-базу до 829; двойной независимый adversarial-аудит; 34-failure bite-пасс и bite-верифицированная ремедиация P1-1..P1-3, P2-4..P2-8, P3-9..P3-16 довели `UnitSelectionAndCommandTests` до 97 кейсов). 867/867 EditMode тестов green, 6/6 PlayMode тестов green (873 автоматизированных теста). Технический фундамент Фаз 1.0–2.8 ПРИНЯТ: 0 P0, 0 P1. Остаточный бэклог P2 (dedicated server handshake) зафиксирован для будущих фаз.
 
 ## Last Commit
 
-`b897eea` (`fix(client): remediate Step 3.4 overlay pass, resource lifecycle, and batcher edge cases (770 tests green)`)
+`cfa24c2` (`feat(client): implement Step 3.5 selection, marquee, and command issuing (867 tests green)`)
 
 ## Tests
 
-- EditMode: **770/770 passed** (100% green, 0 failed, 0 skipped, 5.42 s, 2026-09-26; gate: `Artifacts/TestResults/EditMode-step34-remediation.xml`; 776 автоматизированных тестов вместе с PlayMode)
-- PlayMode: **6/6 passed** (100% green, 0 failed, 0 skipped, 2026-09-26)
+- EditMode: **867/867 passed** (100% green, 0 failed, 0 skipped, 5.60 s, 2026-09-27; gate: `Artifacts/TestResults/EditMode-step35-remediation.xml`; 873 автоматизированных тестов вместе с PlayMode)
+- PlayMode: **6/6 passed** (100% green, 0 failed, 0 skipped, 2026-09-27; gate: `Artifacts/TestResults/PlayMode-step35-remediation.xml`)
 - Unity: `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
 
 ## Completed Milestones
@@ -48,10 +48,11 @@ Phases 1.0–2.8 — **[100% COMPLETED / AUDITED]**. Grand Adversarial Audit (Ph
 - OD-29 UnitKind Replication & UnitCatalog — COMPLETE (`be03002`, `212740a`, 687 тестов); P3 F-1/F-2 закрыты в `27a10f6` — [APPROVED: ZERO DEFECTS]
 - Phase 3.3 UnitViewBinder & Object Pooling — COMPLETE (`bcb1e78`, 711 тестов green, Zero-GC доказан, ADR-012/OD-26); ремедиация аудита (`0243971`, 719 тестов; `e69bed1` — телеметрия `DestroyedViewCount` и лог-бюджет) — [APPROVED: ZERO DEFECTS]
 - Phase 3.4 Instanced Selection Rings & HP Bars — COMPLETE (`27a10f6`, 763 теста green, 0 B GC, ADR-012/OD-25); ремедиация двойного независимого adversarial-аудита (`b897eea`, 770 тестов; P0-1, P1-1, P1-2, P2-1, P2-4, P2-5, P3-1, P3-2, P3-3) — **[APPROVED: ZERO DEFECTS]**
+- Phase 3.5 Selection System, Screen-Space Drag-Box & RTS Command Issuing — COMPLETE (`cfa24c2`, ADR-012/OD-24: `UnitPickMath` — zero-physics ray-to-ground и сквозной `double`-конверт метры → `WorldPointMm`; `UnitSelectionController` — каноническое восходящее множество `EntityId`, одиночный клик, Shift-toggle, двойной клик по `UnitKind` на экране, screen-space маркер, гейт `IsStillSelectable` на всех входах; `UnitCommandIssuing` — `IUnitCommandSink` → `ICommandChannel`; `UnitSelectionDriver` — покадровая обвязка; `SelectionMarqueePresenter` — изолированный transient-канвас, 0 B на кадр); стартовая реализация 829 тестов, двойной независимый adversarial-аудит, 34-failure bite-пасс и ремедиация P1-1..P1-3 / P2-4..P2-8 / P3-9..P3-16 подняли `UnitSelectionAndCommandTests` до 97 кейсов → **867/867 EditMode + 6/6 PlayMode** (873 всего)) — **[APPROVED: ZERO DEFECTS]**
 
 ## Next Step
 
-Phase 3.5 (Selection System, Screen-Space Drag-Box & RTS Command Issuing — OD-24): transient-канвас рамки выделения поверх `UnitOverlayBatcher` (OD-25), выбор юнитов по экранному прямоугольнику и выдача RTS-команд через существующий `ICommandChannel`.
+Phase 3.6 (Minimap & Tactical HUD — ADR-012, OD-24): постоянный HUD-канвас и миникарта по OD-24 — статический террейн запекается в текстуру один раз при загрузке карты, в рантайме на 30 Гц рисуется только оверлей инстансированных точек юнитов поверх неё (без второй постоянной камеры URP), плюс тактический HUD поверх уже принятого `UnitSelectionController`/`IUnitCommandSink` (OD-24) и инстансированных оверлеев OD-25.
 
 ## Backlog
 

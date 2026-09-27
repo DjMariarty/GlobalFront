@@ -51,12 +51,32 @@
     - **P3-3** (`UnitViewBinder`) — guard `UnitKinds.IsDefined((byte)kind)` в конструкторе.
     - Новый `Runtime/Client/AssemblyInfo.cs` (+ `.meta`) — `InternalsVisibleTo("GlobalFront.Tests.EditMode")`, чтобы EditMode-набор читал намеренно `internal` буферы чанков и флаг владения материалом.
     - `UnitOverlayTests` расширен с 25 до 32 кейсов (+7 bite-верифицированных регрессионных тестов на P0-1, P1-1, P1-2, P2-1, P2-4, P2-5, P3-1, P3-2, P3-3) → 770/770 EditMode passed; gate: `Artifacts/TestResults/EditMode-step34-remediation.xml`.
+- Phase 3.5 Selection System, Screen-Space Drag-Box & RTS Command Issuing — **[APPROVED: ZERO DEFECTS]** (`cfa24c2`, стартовая реализация **829/829 EditMode passed**, 0 failed, 0 skipped; 6/6 PlayMode passed; ADR-012, OD-24). В `GlobalFront.Client.Presentation` / `GlobalFront.Client.UI`:
+  - `UnitPickMath` — picking-арифметика без `UnityEngine.Physics`: пересечение луча с плоскостью $Y=0$ по контракту OD-27, сквозной `double`-конверт метры → `WorldPointMm` с `MidpointRounding.AwayFromZero`, `IsInsideScreenRect`, `IUnitPointerProjector` и `CameraUnitPointerProjector`. У представления юнита нет коллайдера (OD-26/OD-25), поэтому `Physics.Raycast` отвечал бы «ничего» для каждого юнита на экране; кроме того physics-hit зависит от порядка вставки коллайдеров и момента шага физики, то есть два клиента по одному пикселю выбирали бы разных юнитов. Дистанция по связанной таблице слотов — детерминирована.
+  - `UnitSelectionController` — `SelectionGesture` (`None` / `Click` / `Marquee` / `DoubleClickKind`), каноническое восходящее множество `EntityId`, одиночный клик, Shift-toggle, двойной клик по тому же `UnitKind` на экране, screen-space маркер, `IsStillSelectable` (владелец + живость) на всех точках входа включая `AddSelected` / `SelectSingle` и эмиссию команд, `PruneStaleSelection`, `TryIssueCommandAtPointer` / `IssueMove` / `IssueStop`, санитизированные и валидируемые tuning-свойства.
+  - `UnitCommandIssuing` — `IssuedCommand`, `IUnitCommandSink` и `UnitCommandChannelSink`, переадресующий в существующий `ICommandChannel`; детерминированный Core не изменён.
+  - `UnitSelectionDriver` — покадровая обвязка `RtsInputManager`, `UnitSelectionController`, `IUnitPointerProjector`, `IUnitCommandSink` и `SelectionMarqueePresenter`; `RequestedTick` назначает владелец цикла, поэтому слой выбора не знает о тиках, сессии и хостинге матча.
+  - `SelectionMarqueePresenter` — изолированный transient-канвас OD-24 (`SortingOrder = 1000`), один `Image` типа Sliced, **0 B** аллокаций на кадр, guard `IsDrawable` на нефинитный/отрицательный прямоугольник.
+  - `RtsInputManager` расширен: `IsShiftPressed` (любая из двух клавиш Shift) и edge-триггерный `StopRequested`, привязанный к `X`/`H`, — `WASD` остаётся исключительно за панорамированием камеры; плюс mock-сеттеры `SetMockShiftPressed` / `SetMockStopRequested` для EditMode-набора.
+  - Тесты: `UnitSelectionAndCommandTests.cs` — 59 кейсов на старте, затем 38 bite-верифицированных ремедиационных → 97 кейсов.
+  - Двойной независимый adversarial-аудит, 34-failure bite-пасс и bite-верифицированная ремедиация **P1-1..P1-3, P2-4..P2-8, P3-9..P3-16** → **[APPROVED: ZERO DEFECTS]**, 867/867 EditMode:
+    - **P1-1** (жест) — порог драга выводится заново на отпускании, а не только из промежуточных сэмплов: драйвер, увидевший нажатие и отпускание в одном кадре, иначе классифицировал бы драг в 600 px как клик по конечному пикселю и стирал отряд. Нефинитный сэмпл не армит драг, не отменяет живой и не резолвит релиз (`SelectionGesture.None`), а посреди драга оставляет прямоугольник и выделение нетронутыми.
+    - **P1-2** (жест) — валидация прямоугольника маркера и вьюпорта проектора выполняется **до** очистки выделения: нефинитный `Rect` в `SelectInsideScreenRect` и проектор с нулевым `ScreenSize` в `SelectKindOnScreen` больше не превращают выбор «ни во что».
+    - **P1-3** (владение) — `AddSelected` и `SelectSingle` решают владельца и живость сами, а не доверяют вызывающему: чужой юнит или труп не попадают в набор и не зажигают кольцо; смена `LocalPlayerId` не оставляет в команде юниты прежнего игрока.
+    - **P2-4** (округление) — конвертация метры → миллиметры целиком в `double` с `MidpointRounding.AwayFromZero`: промежуточный `float` возвращал 24-битную квантизацию ровно там, где значение максимально, и round-half-to-even уводил ровную половину миллиметра к чётному соседу. Пересечение с плоскостью не пишет позицию при промахе (переполненный луч), кладёт результат ровно на $Y=0$ без float-остатка и отказывает лучу, стартующему на плоскости и уходящему от неё (`enter` — знаковый ноль, который не ловит сравнение).
+    - **P2-5** (команды) — эмиссия сама прунит устаревшее выделение: павший юнит в payload — это юнит, которого сервер не знает, а переиспользованный слот читает позицию чужого юнита в центроид, что разворачивает строй на 180°.
+    - **P2-6** (настройка) — `FormationSpacingMillimetres` вне серверного диапазона бросает `ArgumentOutOfRangeException` на присваивании, а не превращает каждый ход матча в `InvalidFormation`; отказ оставляет рабочее значение прежним.
+    - **P2-8** (обвязка) — `SelectionMarqueePresenter` прячет рамку и никогда не пишет в `RectTransform` нефинитный или отрицательный прямоугольник (`RectTransform` принимает `NaN` и потом сообщает сломанный layout каждый кадр, включая кадры следующего корректного драга).
+    - **P3-10** — только Move разворачивается в строй: Attack и Stop игнорируют раскладку, поэтому несут `default(FormationSpec)` без лишнего прохода по центроиду.
+    - **P3-14** (`UnitSelectionDriver`) — `SetCamera` перенацеливает уже принадлежащий драйверу `CameraUnitPointerProjector`, а не создаёт новый объект проекции на каждую смену камеры.
+    - **P3-16** — нефинитные или отрицательные tuning-значения порога драга, минимального радиуса pick и окна двойного клика откатываются к дефолтам (как `UnitOverlayBatcher` санитизирует цвета), при этом ноль у порога драга остаётся валидной настройкой.
+    - Gate: `Artifacts/TestResults/EditMode-step35-remediation.xml`, `Artifacts/TestResults/PlayMode-step35-remediation.xml` → 867/867 EditMode + 6/6 PlayMode (873 автоматизированных теста).
 
 ### Verified
 
 - Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`.
-- **770/770 EditMode** passed (100%), 0 failed, 0 skipped, 2026-09-26 (5.42 s; gate: `Artifacts/TestResults/EditMode-step34-remediation.xml`; 776 автоматизированных тестов вместе с PlayMode).
-- **6/6 PlayMode** passed (100%), 0 failed, 0 skipped, 2026-09-26.
+- **867/867 EditMode** passed (100%), 0 failed, 0 skipped, 2026-09-27 (5.60 s; gate: `Artifacts/TestResults/EditMode-step35-remediation.xml`; 873 автоматизированных тестов вместе с PlayMode).
+- **6/6 PlayMode** passed (100%), 0 failed, 0 skipped, 2026-09-27 (gate: `Artifacts/TestResults/PlayMode-step35-remediation.xml`).
 
 ## Confirmed Foundation History
 
