@@ -43,6 +43,8 @@ namespace GlobalFront.Client
         private bool _mockRightButtonDown;
         private bool _mockRightButtonPressed;
         private bool _mockRightButtonUp;
+        private bool _mockShiftPressed;
+        private bool _mockStopRequested;
 
         // Hardware state
         private Vector2 _moveInput;
@@ -57,6 +59,8 @@ namespace GlobalFront.Client
         private bool _rightButtonDown;
         private bool _rightButtonPressed;
         private bool _rightButtonUp;
+        private bool _hardwareShiftPressed;
+        private bool _hardwareStopRequested;
 
         [Header("Target Camera")]
         [SerializeField] private Camera targetCamera;
@@ -84,6 +88,26 @@ namespace GlobalFront.Client
         public bool IsRightMouseButtonDown => isMockMode ? _mockRightButtonDown : _rightButtonDown;
         public bool IsRightMouseButtonPressed => isMockMode ? _mockRightButtonPressed : _rightButtonPressed;
         public bool IsRightMouseButtonUp => isMockMode ? _mockRightButtonUp : _rightButtonUp;
+
+        /// <summary>
+        /// Shift held, the additive-selection modifier (step 3.5). Either shift key
+        /// counts: RTS players reach for whichever is under the mouse hand, and a
+        /// binding that only accepts one turns a group add into a lost selection.
+        /// </summary>
+        public bool IsShiftPressed => isMockMode ? _mockShiftPressed : _hardwareShiftPressed;
+
+        /// <summary>
+        /// Edge-triggered stop request (step 3.5). An edge rather than a held state
+        /// because the command it produces is once per press — holding the key must not
+        /// spend a command sequence every frame.
+        ///
+        /// Bound to X and H, not to S: S is the pan-back key of the WASD rig above, and
+        /// a stop that shared it meant every backward pan of the camera halted the
+        /// player's squad for the rest of the match. WASD belongs to the camera alone.
+        /// X sits under the same hand as the movement keys and H is the classic RTS
+        /// "halt", so neither costs a reach.
+        /// </summary>
+        public bool StopRequested => isMockMode ? _mockStopRequested : _hardwareStopRequested;
 
         /// <summary>
         /// Raycast world position of the mouse on the ground plane (Y = 0).
@@ -209,10 +233,17 @@ namespace GlobalFront.Client
             if (keyboard != null)
             {
                 _resetRotation = keyboard.homeKey.wasPressedThisFrame || keyboard.backquoteKey.wasPressedThisFrame;
+                _hardwareShiftPressed = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed;
+
+                // X and H rather than S, which the pan rig already owns. See StopRequested.
+                _hardwareStopRequested = keyboard.xKey.wasPressedThisFrame ||
+                                         keyboard.hKey.wasPressedThisFrame;
             }
             else
             {
                 _resetRotation = false;
+                _hardwareShiftPressed = false;
+                _hardwareStopRequested = false;
             }
         }
 
@@ -362,6 +393,22 @@ namespace GlobalFront.Client
             _mockMousePosition = screenPosition;
         }
 
+        /// <summary>
+        /// Injects the additive-selection modifier for step 3.5. Mock-settable because
+        /// the test assembly does not reference the Input System, so a shift-click
+        /// cannot be simulated any other way.
+        /// </summary>
+        public void SetMockShiftPressed(bool shiftPressed)
+        {
+            _mockShiftPressed = shiftPressed;
+        }
+
+        /// <summary>Injects the edge-triggered stop hotkey.</summary>
+        public void SetMockStopRequested(bool stopRequested)
+        {
+            _mockStopRequested = stopRequested;
+        }
+
         public void SetMockMouseButton(int button, bool down, bool pressed, bool up)
         {
             if (button == 0)
@@ -392,6 +439,8 @@ namespace GlobalFront.Client
             _mockRightButtonDown = false;
             _mockRightButtonPressed = false;
             _mockRightButtonUp = false;
+            _mockShiftPressed = false;
+            _mockStopRequested = false;
         }
 
         #endregion
