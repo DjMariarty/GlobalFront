@@ -6,7 +6,7 @@
 
 - Phase 1 — [DONE/PASSED]
 - Phase 2 (2.1–2.8) — [DONE/PASSED] (Grand Audit [APPROVED: ZERO DEFECTS] на `a37f53d`; 661/661 EditMode, 6/6 PlayMode)
-- Phase 3 — [IN PROGRESS] (RTS Camera, Controls, Visuals): Шаги 3.1–3.6 **[DONE/PASSED / AUDITED: ZERO DEFECTS]**, Шаг 3.7 **[READY / NEXT]**; baseline 1043/1043 EditMode, 6/6 PlayMode (`2a754db`)
+- Phase 3 — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (RTS Camera, Controls, Visuals): Шаги 3.1–3.7 все сертифицированы; baseline 1086/1086 EditMode, 13/13 PlayMode (`3414ba6`)
 
 ## Phase Roadmap
 
@@ -15,8 +15,8 @@
 | 0 | Product Definition: vision, GDD, 1.0 scope и границы post-1.0 | — | master scope approved; detailed TBD remain |
 | 1.0–2.8 | Simulation + Multiplayer Foundation (2.1–2.8, Grand Audit remediation F-01/F-02) | M0 Technical Foundation + prerequisite для M1 | **[DONE/PASSED]** |
 | 2 | Multiplayer Foundation | prerequisite для M1 | **[DONE/PASSED]** |
-| 3 | RTS Core + Vertical Slice пяти фракций (RTS Camera, Controls, Visuals) | M2 Playable RTS Core | **[IN PROGRESS]** — 3.1–3.6 certified, 3.7 next |
-| 4 | Multiplayer Gameplay Integration | M1 Multiplayer Prototype | planned |
+| 3 | RTS Core + Vertical Slice пяти фракций (RTS Camera, Controls, Visuals) | M2 Playable RTS Core | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — 3.1–3.7 certified |
+| 4 | Multiplayer Gameplay Integration | M1 Multiplayer Prototype | **[NEXT]** |
 | 5 | Full Five Factions | M3 Five Factions | planned |
 | 6 | AI | M4 RTS AI | planned |
 | 7 | Content + Maps + Presentation | — | planned |
@@ -50,9 +50,9 @@
 | 3.4 | Instanced Selection Rings & HP Bars (OD-25) | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `27a10f6` → `b897eea` |
 | 3.5 | Selection, Screen-Space Drag-Box & Command Issuing (OD-24) | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `cfa24c2` |
 | 3.6 | Minimap & Tactical HUD (OD-24, OD-27, OD-28) | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `2a754db` (1043/1043 EditMode, 6/6 PlayMode) |
-| 3.7 | Vertical Slice Integration & 400-Unit Benchmark (OD-23..OD-29) | **[READY / NEXT]** |
+| 3.7 | Vertical Slice Integration & 400-Unit Benchmark (OD-23..OD-29) | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `3414ba6` (1086/1086 EditMode, 13/13 PlayMode; OD-28: 0.623 ms/frame avg over 120 frames, 0 B GC) |
 
-Phase 3 закрывает M2 Playable RTS Core: 3.1–3.6 — презентационный стек целиком, 3.7 — его интеграция и профильный замер OD-28 (400 активных юнитов при стабильных 60+ FPS на средних ПК).
+Phase 3 закрывает M2 Playable RTS Core и **завершён полностью**: 3.1–3.6 — презентационный стек целиком, 3.7 — его интеграция и профильный замер OD-28 (**400 активных юнитов: 0.623 ms/frame среднее за 120 презентационных кадров с включённым авторитетным тиком симуляции, 0 B GC.Alloc** — далеко ниже 8.0 ms EditMode-гарда и потолка 16.67 ms для 60 FPS), плюс 12 инвариантов архитектуры в `ArchitectureInvariantsTests`. Следующая фаза — **Phase 4 (Multiplayer Gameplay Integration)**, которая соединяет сетевой фундамент Phase 2 с принятым RTS-геймплеем Phase 3.
 
 ## Cross-Phase Rules
 
