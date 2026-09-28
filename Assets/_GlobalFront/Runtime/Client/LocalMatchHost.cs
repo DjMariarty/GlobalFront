@@ -373,7 +373,23 @@ namespace GlobalFront.Client
 
         public ServerReplicationEmitter AttachReplication(
             IReplicationTransport transport,
-            in ServerReplicationEmitterConfig config)
+            in ServerReplicationEmitterConfig config) =>
+            AttachReplication(transport, config, null);
+
+        /// <summary>
+        /// The same attach, with the roster the emitter describes supplied by
+        /// the caller. Null keeps the default <see cref="MatchServerSnapshotSource"/>,
+        /// so this overload adds a seam rather than changing what the host
+        /// streams: it exists because a snapshot source is the only place a
+        /// consumer can decide that a unit has stopped being part of the world
+        /// it replicates (a corpse leaving the roster is what makes the diff
+        /// engine emit <c>DeltaRemoveRecord</c>; the server itself keeps
+        /// simulating a roster it never shrinks).
+        /// </summary>
+        public ServerReplicationEmitter AttachReplication(
+            IReplicationTransport transport,
+            in ServerReplicationEmitterConfig config,
+            IServerSnapshotSource snapshotSource)
         {
             if (transport == null)
             {
@@ -386,7 +402,8 @@ namespace GlobalFront.Client
                     "the replication emitter is already attached to this host");
             }
 
-            var emitter = new ServerReplicationEmitter(_server, transport, config);
+            var source = snapshotSource ?? new MatchServerSnapshotSource(_server);
+            var emitter = new ServerReplicationEmitter(source, transport, config);
             Replication = emitter;
             TickCompleted += emitter.OnTickCompleted;
             transport.SessionDetached += (session, reason) =>

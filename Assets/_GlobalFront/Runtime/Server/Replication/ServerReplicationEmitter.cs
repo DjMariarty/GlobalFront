@@ -687,8 +687,16 @@ namespace GlobalFront.Server.Replication
                     hash = MixChecksumByte(hash, (ulong)unit.Position.Z);
                     hash = MixChecksumByte(hash, (ulong)unit.CurrentHealth);
                     hash = MixChecksumByte(hash, unit.HasMoveTarget ? 1UL : 0UL);
-                    hash = MixChecksumByte(hash, (ulong)unit.MoveTarget.X);
-                    hash = MixChecksumByte(hash, (ulong)unit.MoveTarget.Z);
+
+                    // Exactly the term the client world hashes. The authoritative
+                    // record keeps its last destination after a unit arrives, but
+                    // the wire omits the coordinates of a cleared move target, so
+                    // hashing them here describes state no client could ever hold
+                    // and turns a completed march into a permanent false desync.
+                    var moveTargetX = unit.HasMoveTarget ? unit.MoveTarget.X : 0;
+                    var moveTargetZ = unit.HasMoveTarget ? unit.MoveTarget.Z : 0;
+                    hash = MixChecksumByte(hash, (ulong)moveTargetX);
+                    hash = MixChecksumByte(hash, (ulong)moveTargetZ);
                     hash = MixChecksumByte(hash, unit.AttackTarget.Value);
                 }
 

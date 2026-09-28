@@ -11,6 +11,7 @@ namespace GlobalFront.Client.UI
     /// Safe against NullReferenceException when UI references are unassigned.
     /// Zero-GC in steady state gameplay.
     /// </summary>
+    [DisallowMultipleComponent]
     public sealed class TacticalPauseOverlay : MonoBehaviour
     {
         [Header("UI References (Optional)")]

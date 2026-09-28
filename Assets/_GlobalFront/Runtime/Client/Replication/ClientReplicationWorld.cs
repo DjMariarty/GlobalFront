@@ -481,8 +481,16 @@ namespace GlobalFront.Client.Replication
                     hash = MixChecksumByte(hash, (ulong)unit.PosZ);
                     hash = MixChecksumByte(hash, (ulong)unit.Health);
                     hash = MixChecksumByte(hash, unit.HasMoveTarget ? 1UL : 0UL);
-                    hash = MixChecksumByte(hash, (ulong)unit.MoveTargetX);
-                    hash = MixChecksumByte(hash, (ulong)unit.MoveTargetZ);
+
+                    // The digest must be a function of what the wire can carry.
+                    // A cleared move target arrives without coordinates (OD-14),
+                    // so the coordinates a slot still holds from an earlier packet
+                    // are not part of the state the server described: hashing them
+                    // would compare one client's history against another's.
+                    var moveTargetX = unit.HasMoveTarget ? unit.MoveTargetX : 0;
+                    var moveTargetZ = unit.HasMoveTarget ? unit.MoveTargetZ : 0;
+                    hash = MixChecksumByte(hash, (ulong)moveTargetX);
+                    hash = MixChecksumByte(hash, (ulong)moveTargetZ);
                     hash = MixChecksumByte(hash, unit.AttackTarget.Value);
                 }
 

@@ -1,11 +1,14 @@
 using GlobalFront.Core.Simulation;
 using GlobalFront.Server;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace GlobalFront.Client
 {
     public sealed class PrototypeHud : MonoBehaviour
     {
+        private const string SliceButtonLabel = "Launch 400-Unit Tactical Vertical Slice [F9]";
+
         private PrototypeRtsController _controller;
         private GUIStyle _titleStyle;
         private GUIStyle _bodyStyle;
@@ -16,19 +19,42 @@ namespace GlobalFront.Client
             _controller = GetComponent<PrototypeRtsController>();
         }
 
+        private void Update()
+        {
+#if !UNITY_SERVER
+            // F9 hands the scene to the Phase 3 slice. Null in a build with no
+            // keyboard device, which is the same reason the camera rig reads its
+            // own device defensively.
+            var keyboard = Keyboard.current;
+            if (keyboard != null && keyboard.f9Key.wasPressedThisFrame)
+            {
+                GlobalFrontRuntimeBootstrap.ActivateTacticalVerticalSlice();
+            }
+#endif
+        }
+
         private void OnGUI()
         {
 #if !UNITY_SERVER
+            // The slice switch destroys this component's controller at the end
+            // of the frame it is requested in, and this panel reads the host
+            // through it. Without the guard the switch shows an error panel
+            // instead of the battlefield it just built.
+            if (_controller == null)
+            {
+                return;
+            }
+
             EnsureStyles();
 
             var host = _controller.Host;
             var driver = host != null ? host.TickDriver : null;
             var backlogMs = (host != null ? host.TickBacklogSeconds : 0.0) * 1000.0;
 
-            var area = new Rect(18f, 18f, 460f, 185f);
+            var area = new Rect(18f, 18f, 460f, 215f);
             GUI.Box(area, GUIContent.none);
 
-            GUILayout.BeginArea(new Rect(32f, 28f, 435f, 165f));
+            GUILayout.BeginArea(new Rect(32f, 28f, 435f, 195f));
             GUILayout.Label("GLOBAL FRONT - BATTLE PROTOTYPE 0.3", _titleStyle);
             GUILayout.Space(5f);
             GUILayout.Label(
@@ -43,6 +69,12 @@ namespace GlobalFront.Client
                 "RMB ground: move   RMB enemy: attack\n" +
                 "Camera: WASD / arrows / screen edge   Zoom: mouse wheel",
                 _bodyStyle);
+            GUILayout.Space(6f);
+            if (GUILayout.Button(SliceButtonLabel))
+            {
+                GlobalFrontRuntimeBootstrap.ActivateTacticalVerticalSlice();
+            }
+
             GUILayout.EndArea();
 
             if (_controller.Outcome.IsTerminal)

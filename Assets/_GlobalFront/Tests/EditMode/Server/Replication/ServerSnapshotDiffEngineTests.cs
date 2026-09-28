@@ -335,6 +335,30 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
         }
 
         [Test]
+        public void DirtyMask_ReissuingAClearedDestination_SendsTheCoordinatesAgain()
+        {
+            // OD-14 makes the client forget the coordinates the moment a target is
+            // cleared, while the authoritative record keeps the last destination it
+            // was given. So an order back onto that same point is a change the client
+            // has to be told about, and comparing coordinates against the record it left
+            // behind is how it stays unsaid.
+            var previous = Unit(1, hasMoveTarget: false, moveTargetX: 5, moveTargetZ: 6);
+            var current = Unit(1, hasMoveTarget: true, moveTargetX: 5, moveTargetZ: 6);
+
+            Assert.That(
+                ServerSnapshotDiffEngine.ComputeDirtyMask(in previous, in current),
+                Is.EqualTo(0x18),
+                "the flag bit alone describes a destination of (0, 0) to a client that " +
+                "zeroed the coordinates when the target was cleared");
+
+            var record = ServerSnapshotDiffEngine.ToUpdateRecord(
+                in current,
+                ServerSnapshotDiffEngine.ComputeDirtyMask(in previous, in current));
+            Assert.That(record.HasMoveTarget, Is.True);
+            Assert.That(record.MoveTarget, Is.EqualTo(new WorldPointMm(5, 6)));
+        }
+
+        [Test]
         public void DirtyMask_CoordinatesWithoutATarget_AreNotReplicated()
         {
             // Stale coordinates while no target exists carry no information.

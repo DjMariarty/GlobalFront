@@ -233,7 +233,12 @@ namespace GlobalFront.Server.Replication
                 mask |= (byte)UnitDirtyMask.HasMoveTarget;
             }
 
-            if (current.HasMoveTarget && previous.MoveTarget != current.MoveTarget)
+            // The destination a cleared record left behind is not a description of
+            // anything: OD-14 zeroes it on the client, so a target reissued to the
+            // same coordinates is a change the client has to be told about even
+            // though it matches the stale value this side kept.
+            if (current.HasMoveTarget &&
+                (!previous.HasMoveTarget || previous.MoveTarget != current.MoveTarget))
             {
                 mask |= (byte)UnitDirtyMask.MoveTarget;
             }
