@@ -3,6 +3,7 @@ using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
+using GlobalFront.Core.Simulation;
 using GlobalFront.Server;
 using GlobalFront.Server.Replication;
 using GlobalFront.Server.Sessions;
@@ -205,9 +206,21 @@ namespace GlobalFront.Client
         /// <see cref="TickCompleted"/>). Returns the number of ticks
         /// executed; returns 0 when the driver is in manual mode.
         /// When tactical pause is active, pumps in-flight keyframe slices (OD-18 / P0-3).
+        /// Non-finite and negative elapsed time is rejected outright (Phase 1.0,
+        /// P0-1): an infinite delta would spin the pause drain forever, and a NaN
+        /// would poison the accumulators for the rest of the match.
         /// </summary>
         public int AdvanceRealTime(double elapsedSeconds)
         {
+            // Zero is still a valid frame: the driver drains whatever backlog the
+            // bounded catch-up left queued.
+            if (double.IsNaN(elapsedSeconds) ||
+                double.IsInfinity(elapsedSeconds) ||
+                elapsedSeconds < 0.0)
+            {
+                return 0;
+            }
+
             if (IsPaused)
             {
                 PumpPausedSlices();
@@ -216,7 +229,15 @@ namespace GlobalFront.Client
                 _isAdvancingRealTime = true;
                 try
                 {
-                    while (_pausedSecondsAccumulator >= _tickDriver.TickDurationSeconds)
+                    // A sleep or debugger hitch can deliver hours of wall time in one
+                    // frame. Pause accounting only ever exists to elapse the disconnect
+                    // grace window — the host resumes on the tick past it — so the drain
+                    // stops one catch-up unit beyond that window and the remainder stays
+                    // queued instead of freezing the frame (P0-1).
+                    var pauseBudget = _sessions.DisconnectGraceTicks +
+                                      SimulationConstants.MaxCatchUpTicksPerFrame;
+                    while (_pausedSecondsAccumulator >= _tickDriver.TickDurationSeconds &&
+                           pauseBudget-- > 0)
                     {
                         _pausedSecondsAccumulator -= _tickDriver.TickDurationSeconds;
                         AdvancePauseTicks(1);

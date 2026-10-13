@@ -139,6 +139,10 @@ namespace GlobalFront.Server
 
         private CombatantTickInput[] _combatantInputsCache = new CombatantTickInput[1024];
 
+        // Hoisted so scheduling never allocates a delegate for the sort (Phase 1.0, P1-4).
+        private static readonly Comparison<ScheduledCommand> ScheduledCommandComparison =
+            CompareScheduledCommands;
+
         private sealed class UnitRecord
         {
             public CombatantState Combat;
@@ -445,7 +449,8 @@ namespace GlobalFront.Server
                 return rejection;
             }
 
-            if (entities == null || entities.Length == 0)
+            if (entities == null || entities.Length == 0 ||
+                entities.Length > SimulationConstants.MaxSelectedEntities)
             {
                 return MatchCommandRejection.InvalidPayload;
             }
@@ -679,7 +684,7 @@ namespace GlobalFront.Server
                 return;
             }
 
-            commands.Sort(CompareScheduledCommands);
+            commands.Sort(ScheduledCommandComparison);
 
             for (var index = 0; index < commands.Count; index++)
             {

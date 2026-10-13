@@ -274,6 +274,97 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(snapshot.Position, Is.EqualTo(new WorldPointMm(500, 0)));
         }
 
+        /// <summary>
+        /// Phase 1.0, P0-1: a frame whose elapsed time is not a finite positive
+        /// number is rejected before the pause drain can see it. An infinite delta
+        /// previously subtracted one tick duration from an accumulator that stayed
+        /// infinite, so the drain loop never exited and the engine froze; a huge
+        /// finite delta (sleep or debugger recovery) spun the same loop for hours of
+        /// wall time. Zero is deliberately accepted: a zero-length frame still has to
+        /// drain the backlog the bounded catch-up left queued.
+        /// </summary>
+        [Test]
+        public void AdvanceRealTime_WhenPausedWithInfinityOrNaN_DoesNotHangAndReturnsZero()
+        {
+            var host = new LocalMatchHost();
+            host.Pause();
+
+            Assert.That(host.AdvanceRealTime(double.PositiveInfinity), Is.EqualTo(0));
+            Assert.That(host.AdvanceRealTime(double.NaN), Is.EqualTo(0));
+            Assert.That(host.AdvanceRealTime(-1.0), Is.EqualTo(0));
+            Assert.That(host.AdvanceRealTime(1e300), Is.EqualTo(0));
+        }
+
+        /// <summary>
+        /// Phase 1.0, P0-1 witness: rejecting the frame has to leave the grace drain
+        /// working. Feeding a NaN straight into the accumulator latched it to NaN, so
+        /// every later frame drained zero pause ticks, the disconnect grace window
+        /// never elapsed and the match stayed paused forever.
+        /// </summary>
+        [Test]
+        public void AdvanceRealTime_WhenPaused_RejectsNonFiniteFrameWithoutLatchingGraceDrain()
+        {
+            var host = new LocalMatchHost(disconnectGraceTicks: 4);
+            var match = host.CreateSessionMatch(2);
+            var localSession = host.CreateSession(host.CreateConnectionHandle());
+            var enemySession = host.CreateSession(host.CreateConnectionHandle());
+            Assert.That(
+                host.TryJoinMatch(localSession, match, out var localPlayer),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                host.TryJoinMatch(enemySession, match, out var enemyPlayer),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                host.TryStartSessionMatch(
+                    match,
+                    new MatchConfig(
+                        StandardStats,
+                        new[]
+                        {
+                            new UnitSpawnSpec(localPlayer, new WorldPointMm(0, 0), 500, false),
+                            new UnitSpawnSpec(enemyPlayer, new WorldPointMm(100_000, 0), 500, false)
+                        }),
+                    out _),
+                Is.True);
+
+            host.StartRealTime();
+            Assert.That(host.NotifyConnectionLost(localSession, host.CurrentTick), Is.True);
+            Assert.That(host.IsPaused, Is.True, "Host must auto-pause on disconnect");
+
+            Assert.That(host.AdvanceRealTime(double.NaN), Is.EqualTo(0));
+            Assert.That(host.IsPaused, Is.True, "A rejected frame must not elapse grace ticks");
+
+            // The next real frame still covers the whole grace window (5 * 0.05 s).
+            host.AdvanceRealTime(0.25);
+            Assert.That(
+                host.IsPaused,
+                Is.False,
+                "Grace must still elapse after a frame was rejected");
+        }
+
+        /// <summary>
+        /// Phase 1.0, P0-1: the drain budget is what keeps a recovery frame bounded.
+        /// Ten million seconds of wall time is 200 million pause ticks, and walking
+        /// them is the freeze; the capped drain walks one grace window instead. The
+        /// assertion is a work bound with three orders of magnitude of slack, so it
+        /// measures the loop rather than the machine.
+        /// </summary>
+        [Test]
+        public void AdvanceRealTime_WhenPausedWithHugeDelta_DrainsBoundedPauseTicks()
+        {
+            var host = new LocalMatchHost();
+            host.Pause();
+
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            Assert.That(host.AdvanceRealTime(1e7), Is.EqualTo(0));
+            watch.Stop();
+
+            Assert.That(
+                watch.ElapsedMilliseconds,
+                Is.LessThan(500),
+                "Pause drain must stay bounded per frame instead of walking the whole elapsed window.");
+        }
+
         private static void RunTicks(LocalMatchHost host, int count)
         {
             for (var index = 0; index < count; index++)

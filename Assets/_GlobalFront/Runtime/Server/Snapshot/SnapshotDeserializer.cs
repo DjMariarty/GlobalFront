@@ -53,10 +53,21 @@ namespace GlobalFront.Server.Snapshot
                     $"Unsupported protocol version: {protocolVersion}. Expected {SnapshotProtocol.Version}.");
             }
 
-            // Validate payload size
+            // Validate payload size before allocating: the declared unit count is
+            // attacker-controlled, and a count that overflows the int-byte product
+            // would otherwise sail past the length check and size the array from it
+            // (Phase 1.0, P1-1).
+            var maxByPayload = (uint)((data.Length - SnapshotProtocol.HeaderSizeBytes)
+                                      / SnapshotProtocol.SnapshotSizeBytes);
+            if (unitCount > maxByPayload)
+            {
+                throw new SnapshotSerializationException(
+                    $"Packet too short: declared {unitCount} units, payload holds at most {maxByPayload}.");
+            }
+
             var expectedSize = SnapshotProtocol.HeaderSizeBytes +
-                              (int)unitCount * SnapshotProtocol.SnapshotSizeBytes;
-            if (data.Length < expectedSize)
+                              (long)unitCount * SnapshotProtocol.SnapshotSizeBytes;
+            if ((long)data.Length < expectedSize)
             {
                 throw new SnapshotSerializationException(
                     $"Packet too short: expected {expectedSize} bytes for {unitCount} units, got {data.Length}.");

@@ -3,6 +3,7 @@ using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
+using GlobalFront.Core.Simulation;
 using GlobalFront.Server;
 using NUnit.Framework;
 using UnityEngine.TestTools.Constraints;
@@ -507,6 +508,73 @@ namespace GlobalFront.Tests.EditMode
             }
 
             Assert.That(() => server.TickOnce(), UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory());
+        }
+
+        /// <summary>
+        /// Phase 1.0, P1-4: the tick that *carries* scheduled commands is the one on
+        /// the hot path, and it used to build a fresh <c>Comparison</c> from the method
+        /// group for its sort. The command batches are issued on three consecutive
+        /// ticks so the sort is already warm when the third one is measured.
+        /// </summary>
+        [Test]
+        public void TickOnce_ExecutingScheduledCommands_IsAllocationFree()
+        {
+            var server = new MatchServer();
+            var p1 = new PlayerId(1);
+            var p2 = new PlayerId(2);
+            var unitA = server.SpawnUnit(p1, StandardStats, new WorldPointMm(0, 0), 500);
+            var unitB = server.SpawnUnit(p2, StandardStats, new WorldPointMm(100_000, 0), 500);
+
+            for (var round = 0; round < 3; round++)
+            {
+                var requestedTick = (ulong)(round + 1);
+                Assert.That(
+                    server.TryEnqueueStop(
+                        new CommandHeader(p1, (uint)(round * 2 + 1), requestedTick, GameCommandType.Stop),
+                        new[] { unitA }),
+                    Is.EqualTo(MatchCommandRejection.None));
+                Assert.That(
+                    server.TryEnqueueStop(
+                        new CommandHeader(p2, (uint)(round * 2 + 2), requestedTick, GameCommandType.Stop),
+                        new[] { unitB }),
+                    Is.EqualTo(MatchCommandRejection.None));
+
+                if (round < 2)
+                {
+                    server.TickOnce();
+                    continue;
+                }
+
+                Assert.That(
+                    () => server.TickOnce(),
+                    UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory());
+            }
+        }
+
+        /// <summary>
+        /// Phase 1.0, P1-5: the selection cap is enforced before the payload is copied
+        /// and sorted. Unit 1 exists, so a server that walks the entities instead of
+        /// checking the length first answers UnknownEntity for unit 2 and the caller
+        /// never learns that the order was simply too big.
+        /// </summary>
+        [Test]
+        public void TryEnqueueStop_WhenEntitiesExceedMaxSelectedEntities_ReturnsInvalidPayload()
+        {
+            var server = new MatchServer();
+            var player = new PlayerId(1);
+            server.SpawnUnit(player, StandardStats, new WorldPointMm(0, 0), 500);
+
+            var tooManyEntities = new EntityId[SimulationConstants.MaxSelectedEntities + 1];
+            for (var i = 0; i < tooManyEntities.Length; i++)
+            {
+                tooManyEntities[i] = new EntityId((ulong)(i + 1));
+            }
+
+            var rejection = server.TryEnqueueStop(
+                new CommandHeader(player, 1, 10, GameCommandType.Stop),
+                tooManyEntities);
+
+            Assert.That(rejection, Is.EqualTo(MatchCommandRejection.InvalidPayload));
         }
     }
 }

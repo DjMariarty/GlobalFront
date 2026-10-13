@@ -187,6 +187,26 @@ namespace GlobalFront.Tests.EditMode
             });
         }
 
+        /// <summary>
+        /// Phase 1.0, P1-1: a declared count far above the payload must be rejected
+        /// before the array is sized from it. Its int-byte product overflows to a
+        /// negative expected size, so the length check alone lets it through and the
+        /// allocation either exhausts memory or crashes the process.
+        /// </summary>
+        [Test]
+        public void Deserialize_WhenUnitCountExceedsPayloadCapacity_ThrowsSnapshotSerializationException()
+        {
+            var headerBytes = new byte[SnapshotProtocol.HeaderSizeBytes];
+            BitConverter.GetBytes(SnapshotProtocol.Version).CopyTo(headerBytes, 0);
+            BitConverter.GetBytes(1UL).CopyTo(headerBytes, 4);
+            BitConverter.GetBytes(uint.MaxValue).CopyTo(headerBytes, 12);
+
+            Assert.Throws<SnapshotSerializationException>(() =>
+            {
+                SnapshotDeserializer.Deserialize(headerBytes);
+            });
+        }
+
         [Test]
         public void EmptySnapshot_SerializesAndDeserializes()
         {
