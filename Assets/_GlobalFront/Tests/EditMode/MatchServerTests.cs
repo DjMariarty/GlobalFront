@@ -552,6 +552,72 @@ namespace GlobalFront.Tests.EditMode
         }
 
         /// <summary>
+        /// Phase 1.0, P1-3: the tick that <em>executes</em> a Move order recomputed the
+        /// formation slots TryEnqueueMove had already built and bounds-checked, so
+        /// TickOnce allocated a FormationSlot[] per executed command. Exactly one command
+        /// is queued per tick on purpose: a single-element batch never enters
+        /// List&lt;T&gt;.Sort's comparison path, so the recomputation is the only
+        /// allocation this window can produce.
+        /// </summary>
+        [Test]
+        public void TickOnce_ExecutingScheduledMoveCommand_IsAllocationFree()
+        {
+            var server = new MatchServer();
+            var player = new PlayerId(1);
+            var first = server.SpawnUnit(
+                player, StandardStats, new WorldPointMm(0, 0), 500);
+            var second = server.SpawnUnit(
+                player, StandardStats, new WorldPointMm(1000, 0), 500);
+            SpawnPassiveOpponent(server);
+
+            for (var round = 0; round < 3; round++)
+            {
+                EnqueueMove(
+                    server,
+                    player,
+                    (uint)(round + 1),
+                    (ulong)(round + 1),
+                    Entities(1, 2),
+                    new WorldPointMm(10000, 0),
+                    new FormationSpec(2, 2000, CardinalFacing.North));
+
+                if (round < 2)
+                {
+                    server.TickOnce();
+                    continue;
+                }
+
+                Assert.That(
+                    () => server.TickOnce(),
+                    UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory());
+            }
+
+            // TickOnce returns early on a terminal outcome or an empty roster, which would
+            // make any allocation claim vacuously true, so prove the measured tick did work.
+            Assert.That(server.TryGetUnit(first, out var firstUnit), Is.True);
+            Assert.That(server.TryGetUnit(second, out var secondUnit), Is.True);
+            Assert.That(
+                firstUnit.HasMoveTarget,
+                Is.True,
+                "the measured tick must have executed a Move command");
+            Assert.That(
+                secondUnit.HasMoveTarget,
+                Is.True,
+                "the measured tick must have executed a Move command");
+            Assert.That(firstUnit.Position, Is.EqualTo(new WorldPointMm(1500, 0)));
+            Assert.That(secondUnit.Position, Is.EqualTo(new WorldPointMm(2500, 0)));
+
+            // Carrying the slots turns the entity-to-slot pairing into an invariant of the
+            // stored command rather than a property of a recompute, so pin it: in a 2-column
+            // line facing north the lowest entity id takes the -1000 mm lateral slot.
+            server.ExecuteTicks(20);
+            Assert.That(server.TryGetUnit(first, out firstUnit), Is.True);
+            Assert.That(firstUnit.Position, Is.EqualTo(new WorldPointMm(9000, 0)));
+            Assert.That(server.TryGetUnit(second, out secondUnit), Is.True);
+            Assert.That(secondUnit.Position, Is.EqualTo(new WorldPointMm(11000, 0)));
+        }
+
+        /// <summary>
         /// Phase 1.0, P1-5: the selection cap is enforced before the payload is copied
         /// and sorted. Unit 1 exists, so a server that walks the entities instead of
         /// checking the length first answers UnknownEntity for unit 2 and the caller
@@ -575,6 +641,138 @@ namespace GlobalFront.Tests.EditMode
                 tooManyEntities);
 
             Assert.That(rejection, Is.EqualTo(MatchCommandRejection.InvalidPayload));
+        }
+
+        // Phase 1.0 sprint 2: SpawnUnitWithEntity used to check only the entity id, so
+        // owner and stats were caught late inside CombatantState - after the entity-id
+        // high-water mark had already moved - while an out-of-bounds position or a
+        // non-positive speed reached the world at all. Each case is asserted against both
+        // spawn entries so the contract cannot drift apart again, and against the id
+        // counter so a rejected spawn provably leaves the server untouched. One case per
+        // test: NUnit reports only the first failure of a method, so a single combined
+        // test would witness one guard and imply it covered four.
+
+        [Test]
+        public void SpawnUnitWithEntity_InvalidOwner_ThrowsLikeSpawnUnit()
+        {
+            var server = new MatchServer();
+            var invalidOwner = new PlayerId(0);
+
+            Assert.Throws<ArgumentException>(() =>
+                server.SpawnUnitWithEntity(
+                    new EntityId(9),
+                    invalidOwner,
+                    StandardStats,
+                    new WorldPointMm(0, 0),
+                    500));
+
+            Assert.Throws<ArgumentException>(() =>
+                server.SpawnUnit(
+                    invalidOwner,
+                    StandardStats,
+                    new WorldPointMm(0, 0),
+                    500));
+
+            Assert.That(server.UnitCount, Is.Zero);
+            Assert.That(
+                server.SpawnUnit(new PlayerId(1), StandardStats, new WorldPointMm(0, 0), 500),
+                Is.EqualTo(new EntityId(1)),
+                "a rejected SpawnUnitWithEntity must not consume the next entity id");
+        }
+
+        [Test]
+        public void SpawnUnitWithEntity_InvalidStats_ThrowsLikeSpawnUnit()
+        {
+            var server = new MatchServer();
+
+            // CombatStats' own constructor refuses zeros, so an invalid instance can only
+            // arrive as default - which is exactly what a callers' uninitialised field gives.
+            var invalidStats = default(CombatStats);
+
+            Assert.Throws<ArgumentException>(() =>
+                server.SpawnUnitWithEntity(
+                    new EntityId(9),
+                    new PlayerId(1),
+                    invalidStats,
+                    new WorldPointMm(0, 0),
+                    500));
+
+            Assert.Throws<ArgumentException>(() =>
+                server.SpawnUnit(
+                    new PlayerId(1),
+                    invalidStats,
+                    new WorldPointMm(0, 0),
+                    500));
+
+            Assert.That(server.UnitCount, Is.Zero);
+            Assert.That(
+                server.SpawnUnit(new PlayerId(1), StandardStats, new WorldPointMm(0, 0), 500),
+                Is.EqualTo(new EntityId(1)),
+                "a rejected SpawnUnitWithEntity must not consume the next entity id");
+        }
+
+        [Test]
+        public void SpawnUnitWithEntity_OutOfBoundsPosition_ThrowsLikeSpawnUnit()
+        {
+            var server = new MatchServer();
+            var outsideWorld = new WorldPointMm(
+                SimulationConstants.MaxWorldCoordinateMm + 1, 0);
+
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                server.SpawnUnitWithEntity(
+                    new EntityId(9),
+                    new PlayerId(1),
+                    StandardStats,
+                    outsideWorld,
+                    500));
+
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                server.SpawnUnit(
+                    new PlayerId(1),
+                    StandardStats,
+                    outsideWorld,
+                    500));
+
+            Assert.That(server.UnitCount, Is.Zero);
+            Assert.That(
+                server.SpawnUnit(new PlayerId(1), StandardStats, new WorldPointMm(0, 0), 500),
+                Is.EqualTo(new EntityId(1)),
+                "a rejected SpawnUnitWithEntity must not consume the next entity id");
+        }
+
+        [Test]
+        public void SpawnUnitWithEntity_NonPositiveSpeed_ThrowsLikeSpawnUnit()
+        {
+            var server = new MatchServer();
+
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                server.SpawnUnitWithEntity(
+                    new EntityId(9),
+                    new PlayerId(1),
+                    StandardStats,
+                    new WorldPointMm(0, 0),
+                    0));
+
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                server.SpawnUnitWithEntity(
+                    new EntityId(9),
+                    new PlayerId(1),
+                    StandardStats,
+                    new WorldPointMm(0, 0),
+                    -1));
+
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                server.SpawnUnit(
+                    new PlayerId(1),
+                    StandardStats,
+                    new WorldPointMm(0, 0),
+                    0));
+
+            Assert.That(server.UnitCount, Is.Zero);
+            Assert.That(
+                server.SpawnUnit(new PlayerId(1), StandardStats, new WorldPointMm(0, 0), 500),
+                Is.EqualTo(new EntityId(1)),
+                "a rejected SpawnUnitWithEntity must not consume the next entity id");
         }
     }
 }

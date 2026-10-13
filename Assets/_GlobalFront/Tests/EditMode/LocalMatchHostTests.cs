@@ -198,6 +198,38 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(snapshots[2].Entity, Is.EqualTo(new EntityId(3)));
         }
 
+        /// <summary>
+        /// Phase 1.0 sprint 2: the host wrapper forwarded six of the server's seven
+        /// arguments, so a host-spawned unit could never carry an archetype and its client
+        /// kept the no-stat-resolved fallback. The omitted case is asserted too, because the
+        /// fix only stays source-compatible while that default holds. Snapshot-to-ADD-record
+        /// replication is pinned separately by ServerSnapshotDiffEngineTests, so this test
+        /// covers the wrapper and nothing downstream of it.
+        /// </summary>
+        [Test]
+        public void SpawnUnitWithEntity_PassesUnitKind_ReplicatedInSnapshot()
+        {
+            var host = new LocalMatchHost();
+            host.SpawnUnitWithEntity(
+                new EntityId(1), new PlayerId(1), StandardStats,
+                new WorldPointMm(0, 0), 500);
+            host.SpawnUnitWithEntity(
+                new EntityId(2), new PlayerId(1), StandardStats,
+                new WorldPointMm(5000, 0), 500, unitKind: UnitKinds.Tank);
+
+            Assert.That(host.TryGetUnit(new EntityId(1), out var unkinded), Is.True);
+            Assert.That(
+                unkinded.UnitKind,
+                Is.EqualTo(UnitKinds.Unknown),
+                "omitting the new argument must not change what existing callers get");
+
+            Assert.That(host.TryGetUnit(new EntityId(2), out var tank), Is.True);
+            Assert.That(
+                tank.UnitKind,
+                Is.EqualTo(UnitKinds.Tank),
+                "the host wrapper must carry the archetype into the snapshot");
+        }
+
         [Test]
         public void IdenticalSetupAndCommands_ProduceIdenticalSnapshots()
         {

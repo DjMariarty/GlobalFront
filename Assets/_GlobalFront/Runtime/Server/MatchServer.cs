@@ -171,6 +171,16 @@ namespace GlobalFront.Server
 
             public MoveCommand Move;
 
+            /// <summary>
+            /// The slots <see cref="MatchServer.TryEnqueueMove"/> already computed and
+            /// bounds-checked for <see cref="Move"/>, kept so the executing tick applies
+            /// them without recomputing or allocating (Phase 1.0, P1-3).
+            /// Per-command rather than one shared scratch buffer because a move can sit
+            /// queued for up to <see cref="AcceptedFutureTicks"/> ticks, where two
+            /// pending batches would otherwise clobber each other.
+            /// </summary>
+            public FormationSlot[] MoveSlots;
+
             public AttackCommand Attack;
 
             public EntityId[] StopEntities;
@@ -259,25 +269,7 @@ namespace GlobalFront.Server
             bool autoAcquire = false,
             byte unitKind = UnitKinds.Unknown)
         {
-            if (!owner.IsValid)
-            {
-                throw new ArgumentException("Owner must be valid.", nameof(owner));
-            }
-
-            if (!stats.IsValid)
-            {
-                throw new ArgumentException("Combat stats must be valid.", nameof(stats));
-            }
-
-            if (!position.IsWithinSimulationBounds)
-            {
-                throw new ArgumentOutOfRangeException(nameof(position));
-            }
-
-            if (speedMmPerTick <= 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(speedMmPerTick));
-            }
+            ValidateUnitSpec(owner, stats, position, speedMmPerTick);
 
             var entity = new EntityId(_nextEntityValue++);
             return SpawnUnitCore(
@@ -290,6 +282,16 @@ namespace GlobalFront.Server
         /// must match an external source (e.g. client scene ids). The caller is
         /// responsible for ensuring uniqueness and ordering.
         /// </summary>
+        /// <exception cref="ArgumentException">
+        /// Thrown when <paramref name="entity"/> is invalid or already spawned, or
+        /// when <paramref name="owner"/> or <paramref name="stats"/> is unusable.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// Thrown when <paramref name="position"/> leaves the simulation bounds or
+        /// <paramref name="speedMmPerTick"/> is not positive. Every check runs before
+        /// the entity-id high-water mark moves, so a rejected spawn leaves the server
+        /// exactly as it was.
+        /// </exception>
         public EntityId SpawnUnitWithEntity(
             EntityId entity,
             PlayerId owner,
@@ -309,6 +311,8 @@ namespace GlobalFront.Server
                 throw new ArgumentException(
                     $"Entity {entity} already exists.", nameof(entity));
             }
+
+            ValidateUnitSpec(owner, stats, position, speedMmPerTick);
 
             if (_nextEntityValue <= entity.Value)
             {
@@ -344,6 +348,41 @@ namespace GlobalFront.Server
                     left.Combat.Entity.Value.CompareTo(right.Combat.Entity.Value));
 
             return entity;
+        }
+
+        /// <summary>
+        /// The unit-spec contract shared by <see cref="SpawnUnit"/> and
+        /// <see cref="SpawnUnitWithEntity"/> (Phase 1.0 sprint 2, audit P2
+        /// "SpawnUnitWithEntity skips all unit validation"). Both entries call it
+        /// before touching <c>_nextEntityValue</c> or the rosters, so a rejected spawn
+        /// cannot consume an id or half-add a unit. Parameter names are part of the
+        /// contract: they are what callers see in <c>ParamName</c>.
+        /// </summary>
+        private static void ValidateUnitSpec(
+            PlayerId owner,
+            CombatStats stats,
+            WorldPointMm position,
+            int speedMmPerTick)
+        {
+            if (!owner.IsValid)
+            {
+                throw new ArgumentException("Owner must be valid.", nameof(owner));
+            }
+
+            if (!stats.IsValid)
+            {
+                throw new ArgumentException("Combat stats must be valid.", nameof(stats));
+            }
+
+            if (!position.IsWithinSimulationBounds)
+            {
+                throw new ArgumentOutOfRangeException(nameof(position));
+            }
+
+            if (speedMmPerTick <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(speedMmPerTick));
+            }
         }
 
         public MatchCommandRejection TryEnqueueMove(
@@ -396,7 +435,14 @@ namespace GlobalFront.Server
                 }
             }
 
-            Schedule(new ScheduledCommand { Header = header, Move = command }, header.RequestedTick);
+            Schedule(
+                new ScheduledCommand
+                {
+                    Header = header,
+                    Move = command,
+                    MoveSlots = slots
+                },
+                header.RequestedTick);
             CommitSequence(header.Player, header.Sequence);
             return MatchCommandRejection.None;
         }
@@ -716,7 +762,10 @@ namespace GlobalFront.Server
 
         private void ExecuteMove(ScheduledCommand command)
         {
-            var slots = FormationLayout.CreateSlots(command.Move);
+            // Apply the slots TryEnqueueMove already computed and bounds-checked, so this
+            // tick allocates nothing (Phase 1.0, P1-3). Recomputing here would also be the
+            // unguarded OverflowException path the enqueue try/catch exists to close.
+            var slots = command.MoveSlots ?? FormationLayout.CreateSlots(command.Move);
 
             for (var index = 0; index < slots.Length; index++)
             {

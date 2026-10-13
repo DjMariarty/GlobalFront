@@ -365,9 +365,10 @@ namespace GlobalFront.Client
             CombatStats stats,
             WorldPointMm position,
             int speedMmPerTick,
-            bool autoAcquire = false) =>
+            bool autoAcquire = false,
+            byte unitKind = UnitKinds.Unknown) =>
             _server.SpawnUnitWithEntity(
-                entity, owner, stats, position, speedMmPerTick, autoAcquire);
+                entity, owner, stats, position, speedMmPerTick, autoAcquire, unitKind);
 
         // -----------------------------------------------------------------
         // Replication pipeline (Phase 2.6, step 2.6.4, audit P1-5). The host
