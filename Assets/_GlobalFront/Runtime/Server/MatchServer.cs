@@ -143,6 +143,26 @@ namespace GlobalFront.Server
         private static readonly Comparison<ScheduledCommand> ScheduledCommandComparison =
             CompareScheduledCommands;
 
+        /// <summary>
+        /// Decides which owners may shoot each other and when the battle ends.
+        /// Read-only and allocated once, because the hostility gate runs for
+        /// every unit pair on every tick (Phase 1.0, P1-2).
+        /// </summary>
+        private readonly ICombatRelation _combatRelation;
+
+        /// <param name="combatRelation">
+        /// Hostility and termination policy for this match, defaulting to
+        /// <see cref="SkirmishCombatRelation.Instance"/> so every existing
+        /// caller keeps its current behaviour. A team match must pass
+        /// <see cref="Team2v2CombatRelation.Instance"/>; without it allies
+        /// acquire each other and a match whose survivors share a team but not
+        /// an owner never terminates.
+        /// </param>
+        public MatchServer(ICombatRelation combatRelation = null)
+        {
+            _combatRelation = combatRelation ?? SkirmishCombatRelation.Instance;
+        }
+
         private sealed class UnitRecord
         {
             public CombatantState Combat;
@@ -879,9 +899,9 @@ namespace GlobalFront.Server
         }
 
         /// <summary>
-        /// Clears attack targets that are dead or belong to the same owner.
-        /// Run before auto-acquire and before movement on each authoritative
-        /// tick.
+        /// Clears attack targets that are dead or that the current relation does
+        /// not consider hostile. Run before auto-acquire and before movement on
+        /// each authoritative tick.
         /// </summary>
         private void ClearInvalidAttackTargets()
         {
@@ -895,7 +915,7 @@ namespace GlobalFront.Server
 
                 if (!_units.TryGetValue(unit.Combat.AttackTarget, out var target) ||
                     !target.Combat.IsAlive ||
-                    target.Combat.Owner == unit.Combat.Owner)
+                    !_combatRelation.AreEnemies(unit.Combat.Owner, target.Combat.Owner))
                 {
                     unit.Combat.ClearTarget();
                 }
@@ -904,7 +924,8 @@ namespace GlobalFront.Server
 
         /// <summary>
         /// For each alive unit with <see cref="UnitRecord.AutoAcquireEnemies"/>
-        /// set and no current attack target, finds the closest enemy within
+        /// set and no current attack target, finds the closest unit the match's
+        /// <see cref="ICombatRelation"/> treats as an enemy within
         /// <see cref="SimulationConstants.AutoAcquireRangeMm"/> and assigns it.
         /// Ties are broken by the order of iteration (stable first-found-wins).
         /// </summary>
@@ -933,7 +954,7 @@ namespace GlobalFront.Server
                 {
                     var candidate = _orderedUnits[targetIndex];
                     if (!candidate.Combat.IsAlive ||
-                        candidate.Combat.Owner == unit.Combat.Owner)
+                        !_combatRelation.AreEnemies(unit.Combat.Owner, candidate.Combat.Owner))
                     {
                         continue;
                     }
@@ -973,7 +994,11 @@ namespace GlobalFront.Server
                 _combatantInputsCache[index] = new CombatantTickInput(unit.Combat, unit.Position);
             }
 
-            var result = CombatTickResolver.Resolve(_combatantInputsCache, count, tick);
+            var result = CombatTickResolver.Resolve(
+                _combatantInputsCache,
+                count,
+                tick,
+                _combatRelation);
 
             if (result.Outcome.IsTerminal)
             {

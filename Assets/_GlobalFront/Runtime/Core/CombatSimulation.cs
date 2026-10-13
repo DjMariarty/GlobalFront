@@ -250,23 +250,43 @@ namespace GlobalFront.Core.Combat
 
     public readonly struct BattleOutcome : IEquatable<BattleOutcome>
     {
-        private BattleOutcome(BattleOutcomeKind kind, PlayerId winner)
+        private BattleOutcome(
+            BattleOutcomeKind kind,
+            PlayerId winner,
+            TeamId winningTeam)
         {
             Kind = kind;
             Winner = winner;
+            WinningTeam = winningTeam;
         }
 
         public BattleOutcomeKind Kind { get; }
 
         public PlayerId Winner { get; }
 
+        /// <summary>
+        /// Winning team, and meaningful only when
+        /// <see cref="IsTeamVictory"/> holds. A player victory leaves it at
+        /// <c>default(TeamId)</c>, which happens to be Team Red because
+        /// <see cref="TeamId"/> has no unset sentinel — never read it unless the
+        /// outcome came from <see cref="TeamVictory"/>.
+        /// </summary>
+        public TeamId WinningTeam { get; }
+
         public bool IsTerminal => Kind != BattleOutcomeKind.InProgress;
 
+        /// <summary>
+        /// True for a victory awarded to a team rather than to a player, in
+        /// which case <see cref="Winner"/> is deliberately invalid.
+        /// </summary>
+        public bool IsTeamVictory =>
+            Kind == BattleOutcomeKind.Victory && !Winner.IsValid;
+
         public static BattleOutcome InProgress =>
-            new BattleOutcome(BattleOutcomeKind.InProgress, default);
+            new BattleOutcome(BattleOutcomeKind.InProgress, default, default);
 
         public static BattleOutcome Draw =>
-            new BattleOutcome(BattleOutcomeKind.Draw, default);
+            new BattleOutcome(BattleOutcomeKind.Draw, default, default);
 
         public static BattleOutcome Victory(PlayerId winner)
         {
@@ -275,16 +295,26 @@ namespace GlobalFront.Core.Combat
                 throw new ArgumentException("Winner must be valid.", nameof(winner));
             }
 
-            return new BattleOutcome(BattleOutcomeKind.Victory, winner);
+            return new BattleOutcome(BattleOutcomeKind.Victory, winner, default);
         }
 
+        /// <summary>
+        /// Awards the battle to a whole team (Phase 1.0, P1-2). Carries no
+        /// winning player because no single member of the team won.
+        /// </summary>
+        public static BattleOutcome TeamVictory(TeamId winningTeam) =>
+            new BattleOutcome(BattleOutcomeKind.Victory, default, winningTeam);
+
         public bool Equals(BattleOutcome other) =>
-            Kind == other.Kind && Winner == other.Winner;
+            Kind == other.Kind &&
+            Winner == other.Winner &&
+            WinningTeam == other.WinningTeam;
 
         public override bool Equals(object obj) =>
             obj is BattleOutcome other && Equals(other);
 
-        public override int GetHashCode() => HashCode.Combine((byte)Kind, Winner);
+        public override int GetHashCode() =>
+            HashCode.Combine((byte)Kind, Winner, WinningTeam);
     }
 
     public readonly struct CombatTickResult
@@ -377,13 +407,15 @@ namespace GlobalFront.Core.Combat
 
         public static CombatTickResult Resolve(
             CombatantTickInput[] combatants,
-            ulong tick) =>
-            Resolve(combatants, combatants?.Length ?? 0, tick);
+            ulong tick,
+            ICombatRelation relation = null) =>
+            Resolve(combatants, combatants?.Length ?? 0, tick, relation);
 
         public static CombatTickResult Resolve(
             CombatantTickInput[] combatants,
             int count,
-            ulong tick)
+            ulong tick,
+            ICombatRelation relation = null)
         {
             if (combatants == null)
             {
@@ -394,6 +426,10 @@ namespace GlobalFront.Core.Combat
             {
                 throw new ArgumentOutOfRangeException(nameof(count));
             }
+
+            // Resolved once so every hostility and outcome decision in the tick
+            // uses the same relation (Phase 1.0, P1-2).
+            var hostility = relation ?? SkirmishCombatRelation.Instance;
 
             s_byEntity.Clear();
             s_events.Clear();
@@ -421,7 +457,7 @@ namespace GlobalFront.Core.Combat
                 s_byEntity.Add(input.State.Entity, input);
             }
 
-            ClearInvalidTargets(s_canonical, count, s_byEntity);
+            ClearInvalidTargets(s_canonical, count, s_byEntity, hostility);
 
             for (var index = 0; index < count; index++)
             {
@@ -464,9 +500,9 @@ namespace GlobalFront.Core.Combat
                 }
             }
 
-            ClearInvalidTargets(s_canonical, count, s_byEntity);
+            ClearInvalidTargets(s_canonical, count, s_byEntity, hostility);
 
-            var outcome = DetermineOutcome(s_canonical, count);
+            var outcome = hostility.DetermineOutcome(s_canonical, count);
             if (s_events.Count == 0)
             {
                 return new CombatTickResult(Array.Empty<DamageEvent>(), 0, outcome);
@@ -487,7 +523,8 @@ namespace GlobalFront.Core.Combat
         private static void ClearInvalidTargets(
             CombatantTickInput[] canonical,
             int count,
-            Dictionary<EntityId, CombatantTickInput> byEntity)
+            Dictionary<EntityId, CombatantTickInput> byEntity,
+            ICombatRelation hostility)
         {
             for (var index = 0; index < count; index++)
             {
@@ -505,7 +542,7 @@ namespace GlobalFront.Core.Combat
 
                 if (!byEntity.TryGetValue(attacker.AttackTarget, out var target) ||
                     !target.State.IsAlive ||
-                    target.State.Owner == attacker.Owner)
+                    !hostility.AreEnemies(attacker.Owner, target.State.Owner))
                 {
                     attacker.ClearTarget();
                 }
@@ -551,37 +588,6 @@ namespace GlobalFront.Core.Combat
 
             if (left < j) QuickSort(array, left, j);
             if (i < right) QuickSort(array, i, right);
-        }
-
-        private static BattleOutcome DetermineOutcome(CombatantTickInput[] canonical, int count)
-        {
-            var hasLivingOwner = false;
-            var soleOwner = default(PlayerId);
-
-            for (var index = 0; index < count; index++)
-            {
-                var state = canonical[index].State;
-                if (!state.IsAlive)
-                {
-                    continue;
-                }
-
-                if (!hasLivingOwner)
-                {
-                    hasLivingOwner = true;
-                    soleOwner = state.Owner;
-                    continue;
-                }
-
-                if (state.Owner != soleOwner)
-                {
-                    return BattleOutcome.InProgress;
-                }
-            }
-
-            return hasLivingOwner
-                ? BattleOutcome.Victory(soleOwner)
-                : BattleOutcome.Draw;
         }
     }
 }
