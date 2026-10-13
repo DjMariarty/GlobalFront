@@ -139,6 +139,14 @@ namespace GlobalFront.Server
 
         private CombatantTickInput[] _combatantInputsCache = new CombatantTickInput[1024];
 
+        /// <summary>
+        /// Combat scratch owned by this match, never by the process: two servers
+        /// ticking on different threads must not interleave into one roster
+        /// (Phase 1.0, P1-1). The ~180 KB of capacity-1024 buffers is the accepted
+        /// cost of that isolation; the tick itself stays allocation-free.
+        /// </summary>
+        private readonly CombatTickResolver _combatResolver = new CombatTickResolver();
+
         // Hoisted so scheduling never allocates a delegate for the sort (Phase 1.0, P1-4).
         private static readonly Comparison<ScheduledCommand> ScheduledCommandComparison =
             CompareScheduledCommands;
@@ -994,7 +1002,7 @@ namespace GlobalFront.Server
                 _combatantInputsCache[index] = new CombatantTickInput(unit.Combat, unit.Position);
             }
 
-            var result = CombatTickResolver.Resolve(
+            var result = _combatResolver.Resolve(
                 _combatantInputsCache,
                 count,
                 tick,

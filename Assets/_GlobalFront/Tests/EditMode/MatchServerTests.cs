@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Reflection;
+using System.Threading;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
@@ -773,6 +776,247 @@ namespace GlobalFront.Tests.EditMode
                 server.SpawnUnit(new PlayerId(1), StandardStats, new WorldPointMm(0, 0), 500),
                 Is.EqualTo(new EntityId(1)),
                 "a rejected SpawnUnitWithEntity must not consume the next entity id");
+        }
+
+        private const int IsolationMaxHealth = 1_000_000;
+
+        /// <summary>
+        /// Two sides already in range and firing, with enough health that the match
+        /// cannot end: TickOnce returns early on a terminal outcome, and a match that
+        /// stopped simulating would make any scratch-isolation claim vacuous.
+        /// </summary>
+        private static MatchServer BuildFiringRoster(int duels)
+        {
+            var stats = new CombatStats(
+                maximumHealth: IsolationMaxHealth,
+                damage: 10,
+                rangeMm: 12_000,
+                cooldownTicks: 1);
+
+            var server = new MatchServer();
+            for (var index = 0; index < duels; index++)
+            {
+                var lateral = index * 2000;
+                server.SpawnUnit(
+                    new PlayerId(1), stats, new WorldPointMm(lateral, -4000), 500,
+                    autoAcquire: true);
+                server.SpawnUnit(
+                    new PlayerId(2), stats, new WorldPointMm(lateral, 4000), 500,
+                    autoAcquire: true);
+            }
+
+            return server;
+        }
+
+        private static Thread StartCombatTicks(
+            MatchServer server,
+            int ticks,
+            Exception[] failures,
+            int slot,
+            int[] entered,
+            ManualResetEventSlim start)
+        {
+            var thread = new Thread(() =>
+            {
+                // A shared arrival count, not a per-thread slot: the barrier waits for
+                // both workers to be inside before the gate opens.
+                Interlocked.Increment(ref entered[0]);
+                start.Wait(TimeSpan.FromSeconds(5));
+                try
+                {
+                    server.ExecuteTicks(ticks);
+                }
+                catch (Exception error)
+                {
+                    failures[slot] = error;
+                }
+            })
+            { IsBackground = true };
+
+            thread.Start();
+            return thread;
+        }
+
+        /// <summary>
+        /// Phase 1.0, P1-1: the resolver scratch used to be process-static while
+        /// MatchServer is per-instance. Ticking two servers in lockstep on one thread
+        /// proves nothing, because every Resolve clears its scratch on entry, so this
+        /// overlaps two servers on two threads and compares one against an identical
+        /// twin ticked serially here. Aliased scratch surfaces as a health vector that
+        /// does not match the twin, or as a throw out of the shared roster dictionary.
+        /// </summary>
+        [Test]
+        public void MultipleMatchServers_HaveIsolatedCombatResolverState()
+        {
+            const int Ticks = 2000;
+
+            var twin = BuildFiringRoster(3);
+            twin.ExecuteTicks(Ticks);
+
+            var server = BuildFiringRoster(3);
+
+            // A deliberately different roster size, so interleaving into one shared
+            // buffer holds genuinely different contents rather than an identical roster.
+            var other = BuildFiringRoster(7);
+
+            var failures = new Exception[2];
+            var entered = new int[1];
+            var start = new ManualResetEventSlim(false);
+
+            var serverThread = StartCombatTicks(server, Ticks, failures, 0, entered, start);
+            var otherThread = StartCombatTicks(other, Ticks, failures, 1, entered, start);
+
+            for (var spin = 0; Volatile.Read(ref entered[0]) < 2 && spin < 2_000_000; spin++)
+            {
+                Thread.SpinWait(100);
+            }
+
+            start.Set();
+
+            Assert.That(
+                serverThread.Join(TimeSpan.FromSeconds(30)),
+                Is.True,
+                "the concurrently ticked MatchServer never finished its ticks");
+            Assert.That(
+                otherThread.Join(TimeSpan.FromSeconds(30)),
+                Is.True,
+                "the second MatchServer never finished its ticks");
+
+            Assert.That(
+                failures[0] ?? failures[1],
+                Is.Null,
+                "a tick thread threw, which means two MatchServers interleaved into one combat scratch");
+
+            Assert.That(server.CurrentTick, Is.EqualTo((ulong)Ticks));
+            Assert.That(server.UnitCount, Is.EqualTo(6));
+            Assert.That(
+                server.Outcome.IsTerminal,
+                Is.False,
+                "the concurrent match must still be simulating for its health vector to mean anything");
+
+            var twinDamage = 0;
+            for (ulong entity = 1; entity <= 6; entity++)
+            {
+                Assert.That(
+                    server.TryGetUnit(new EntityId(entity), out var actual),
+                    Is.True,
+                    $"entity {entity} disappeared from the concurrently ticked server");
+                Assert.That(
+                    twin.TryGetUnit(new EntityId(entity), out var expected),
+                    Is.True,
+                    $"entity {entity} disappeared from the serial twin");
+
+                twinDamage += IsolationMaxHealth - expected.CurrentHealth;
+
+                Assert.That(
+                    actual.CurrentHealth,
+                    Is.EqualTo(expected.CurrentHealth),
+                    $"combat scratch is shared across MatchServer instances: entity {entity} has health {actual.CurrentHealth} on the concurrently ticked server but {expected.CurrentHealth} on the identical twin ticked alone");
+                Assert.That(
+                    actual.AttackTarget,
+                    Is.EqualTo(expected.AttackTarget),
+                    $"combat scratch is shared across MatchServer instances: entity {entity} targets {actual.AttackTarget} on the concurrently ticked server but {expected.AttackTarget} on the identical twin ticked alone");
+            }
+
+            Assert.That(
+                twinDamage,
+                Is.GreaterThan(0),
+                "the twin never traded damage, so the resolver never fired and nothing above could have leaked");
+        }
+
+        /// <summary>
+        /// Reads the private seam reflectively and returns <see cref="object"/>: this
+        /// file has to keep compiling against a static CombatTickResolver, or the bite
+        /// run reports a build failure instead of a defect.
+        /// </summary>
+        private static object ReadThreadDefaultResolver()
+        {
+            var property = typeof(CombatTickResolver).GetProperty(
+                "ThreadDefault",
+                BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+
+            Assert.That(
+                property,
+                Is.Not.Null,
+                "CombatTickResolver lost its thread-default backward-compatibility seam");
+
+            return property.GetValue(null, null);
+        }
+
+        /// <summary>
+        /// Structural witness for the two claims behaviour cannot show on one thread:
+        /// that the scratch is not static, and that a server owns its resolver rather
+        /// than routing through the seam - reverting only that wiring is invisible to
+        /// the threaded test, because the seam gives every thread its own resolver.
+        /// </summary>
+        [Test]
+        public void CombatTickResolver_KeepsScratchPerInstanceAndServersOwnDistinctResolvers()
+        {
+            var offenders = new List<string>();
+            foreach (var field in typeof(CombatTickResolver).GetFields(
+                BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic |
+                BindingFlags.DeclaredOnly))
+            {
+                if (field.Name != "s_threadStaticInstance")
+                {
+                    offenders.Add(field.Name);
+                }
+                else if (field.GetCustomAttributes(typeof(ThreadStaticAttribute), false).Length == 0)
+                {
+                    offenders.Add($"{field.Name} (without [ThreadStatic])");
+                }
+            }
+
+            Assert.That(
+                offenders,
+                Is.Empty,
+                "CombatTickResolver declares static scratch, so two servers still interleave into it");
+
+            var resolverField = typeof(MatchServer).GetField(
+                "_combatResolver",
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+
+            Assert.That(
+                resolverField,
+                Is.Not.Null,
+                "MatchServer no longer owns a CombatTickResolver, so it resolves combat through the shared default");
+            Assert.That(
+                resolverField.IsInitOnly,
+                Is.True,
+                "MatchServer's resolver field is assignable, so one instance can be handed to two servers");
+
+            var first = resolverField.GetValue(new MatchServer());
+            var second = resolverField.GetValue(new MatchServer());
+
+            Assert.That(first, Is.Not.Null, "MatchServer._combatResolver is not a CombatTickResolver");
+            Assert.That(
+                second,
+                Is.Not.SameAs(first),
+                "two MatchServer instances share one CombatTickResolver, so their scratch aliases again");
+
+            var threadDefault = ReadThreadDefaultResolver();
+            Assert.That(
+                first,
+                Is.Not.SameAs(threadDefault),
+                "MatchServer resolves combat through the thread default instead of the resolver it owns");
+
+            object fromWorker = null;
+            var worker = new Thread(() => fromWorker = ReadThreadDefaultResolver())
+            { IsBackground = true };
+            worker.Start();
+
+            Assert.That(
+                worker.Join(TimeSpan.FromSeconds(10)),
+                Is.True,
+                "the thread-default probe never finished");
+            Assert.That(
+                fromWorker,
+                Is.Not.SameAs(threadDefault),
+                "the backward-compatibility resolver is one shared instance, so threads still interleave into it");
+            Assert.That(
+                ReadThreadDefaultResolver(),
+                Is.SameAs(threadDefault),
+                "the calling thread re-allocates its default resolver, so every static resolve allocates");
         }
     }
 }

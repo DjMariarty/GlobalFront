@@ -380,7 +380,12 @@ namespace GlobalFront.Core.Combat
             value < 0 ? (ulong)(-value) : (ulong)value;
     }
 
-    public static class CombatTickResolver
+    /// <summary>
+    /// Resolves one combat tick. All scratch state is owned by the instance, so
+    /// two MatchServers may resolve on different threads without interleaving
+    /// into each other's roster (Phase 1.0, P1-1).
+    /// </summary>
+    public sealed class CombatTickResolver
     {
         private sealed class CombatantComparer : IComparer<CombatantTickInput>
         {
@@ -389,29 +394,51 @@ namespace GlobalFront.Core.Combat
                 left.State.Entity.Value.CompareTo(right.State.Entity.Value);
         }
 
-        private static CombatantTickInput[] s_canonical = new CombatantTickInput[1024];
-        private static readonly Dictionary<EntityId, CombatantTickInput> s_byEntity =
+        private CombatantTickInput[] _canonical = new CombatantTickInput[1024];
+        private readonly Dictionary<EntityId, CombatantTickInput> _byEntity =
             new Dictionary<EntityId, CombatantTickInput>(1024);
-        private static readonly List<DamageEvent> s_events = new List<DamageEvent>(1024);
-        private static readonly Dictionary<EntityId, long> s_accumulatedDamage =
+        private readonly List<DamageEvent> _events = new List<DamageEvent>(1024);
+        private readonly Dictionary<EntityId, long> _accumulatedDamage =
             new Dictionary<EntityId, long>(1024);
 
-        private static readonly DamageEvent[][] s_eventBuffers = new DamageEvent[][]
+        private readonly DamageEvent[][] _eventBuffers = new DamageEvent[][]
         {
             new DamageEvent[1024],
             new DamageEvent[1024],
             new DamageEvent[1024],
             new DamageEvent[1024]
         };
-        private static int s_bufferIndex;
+        private int _bufferIndex;
 
+        /// <summary>
+        /// Backward-compatibility seam for callers that have no resolver of their
+        /// own. One instance per thread, so it is reentrant and thread-safe, but it
+        /// is not an ownership boundary: authoritative code must own a resolver.
+        /// A ThreadStatic field carries no initializer because one would run on the
+        /// first thread only.
+        /// </summary>
+        [ThreadStatic]
+        private static CombatTickResolver s_threadStaticInstance;
+
+        private static CombatTickResolver ThreadDefault =>
+            s_threadStaticInstance ??= new CombatTickResolver();
+
+        /// <summary>
+        /// Resolves the whole array on the calling thread's default resolver.
+        /// The count-carrying form is instance-only.
+        /// </summary>
         public static CombatTickResult Resolve(
             CombatantTickInput[] combatants,
             ulong tick,
             ICombatRelation relation = null) =>
-            Resolve(combatants, combatants?.Length ?? 0, tick, relation);
+            ThreadDefault.Resolve(combatants, combatants?.Length ?? 0, tick, relation);
 
-        public static CombatTickResult Resolve(
+        /// <summary>
+        /// Resolves one tick. The returned events alias a four-slot ring owned by
+        /// this instance, so the result is only valid until four further resolves
+        /// on the same resolver.
+        /// </summary>
+        public CombatTickResult Resolve(
             CombatantTickInput[] combatants,
             int count,
             ulong tick,
@@ -431,42 +458,42 @@ namespace GlobalFront.Core.Combat
             // uses the same relation (Phase 1.0, P1-2).
             var hostility = relation ?? SkirmishCombatRelation.Instance;
 
-            s_byEntity.Clear();
-            s_events.Clear();
-            s_accumulatedDamage.Clear();
+            _byEntity.Clear();
+            _events.Clear();
+            _accumulatedDamage.Clear();
 
-            if (s_canonical.Length < count)
+            if (_canonical.Length < count)
             {
-                var newCapacity = Math.Max(count, Math.Max(s_canonical.Length * 2, 64));
-                s_canonical = new CombatantTickInput[newCapacity];
+                var newCapacity = Math.Max(count, Math.Max(_canonical.Length * 2, 64));
+                _canonical = new CombatantTickInput[newCapacity];
             }
 
-            Array.Copy(combatants, 0, s_canonical, 0, count);
-            SortCanonical(s_canonical, count);
+            Array.Copy(combatants, 0, _canonical, 0, count);
+            SortCanonical(_canonical, count);
 
             for (var index = 0; index < count; index++)
             {
-                var input = s_canonical[index];
-                if (s_byEntity.ContainsKey(input.State.Entity))
+                var input = _canonical[index];
+                if (_byEntity.ContainsKey(input.State.Entity))
                 {
                     throw new ArgumentException(
                         "Combatant entities must be unique.",
                         nameof(combatants));
                 }
 
-                s_byEntity.Add(input.State.Entity, input);
+                _byEntity.Add(input.State.Entity, input);
             }
 
-            ClearInvalidTargets(s_canonical, count, s_byEntity, hostility);
+            ClearInvalidTargets(_canonical, count, _byEntity, hostility);
 
             for (var index = 0; index < count; index++)
             {
-                var attackerInput = s_canonical[index];
+                var attackerInput = _canonical[index];
                 var attacker = attackerInput.State;
                 if (!attacker.IsAlive ||
                     !attacker.HasAttackTarget ||
                     !attacker.CanFire(tick) ||
-                    !s_byEntity.TryGetValue(attacker.AttackTarget, out var targetInput) ||
+                    !_byEntity.TryGetValue(attacker.AttackTarget, out var targetInput) ||
                     !CombatMath.IsWithinRange(
                         attackerInput.Position,
                         targetInput.Position,
@@ -480,12 +507,12 @@ namespace GlobalFront.Core.Combat
                     attacker.Entity,
                     targetInput.State.Entity,
                     attacker.Stats.Damage);
-                s_events.Add(damageEvent);
+                _events.Add(damageEvent);
 
-                s_accumulatedDamage.TryGetValue(
+                _accumulatedDamage.TryGetValue(
                     damageEvent.Target,
                     out var currentDamage);
-                s_accumulatedDamage[damageEvent.Target] =
+                _accumulatedDamage[damageEvent.Target] =
                     currentDamage > long.MaxValue - damageEvent.Damage
                         ? long.MaxValue
                         : currentDamage + damageEvent.Damage;
@@ -493,31 +520,31 @@ namespace GlobalFront.Core.Combat
 
             for (var index = 0; index < count; index++)
             {
-                var target = s_canonical[index].State;
-                if (s_accumulatedDamage.TryGetValue(target.Entity, out var damage))
+                var target = _canonical[index].State;
+                if (_accumulatedDamage.TryGetValue(target.Entity, out var damage))
                 {
                     target.ApplyDamage(damage);
                 }
             }
 
-            ClearInvalidTargets(s_canonical, count, s_byEntity, hostility);
+            ClearInvalidTargets(_canonical, count, _byEntity, hostility);
 
-            var outcome = hostility.DetermineOutcome(s_canonical, count);
-            if (s_events.Count == 0)
+            var outcome = hostility.DetermineOutcome(_canonical, count);
+            if (_events.Count == 0)
             {
                 return new CombatTickResult(Array.Empty<DamageEvent>(), 0, outcome);
             }
 
-            s_bufferIndex = (s_bufferIndex + 1) % s_eventBuffers.Length;
-            var buffer = s_eventBuffers[s_bufferIndex];
-            if (buffer.Length < s_events.Count)
+            _bufferIndex = (_bufferIndex + 1) % _eventBuffers.Length;
+            var buffer = _eventBuffers[_bufferIndex];
+            if (buffer.Length < _events.Count)
             {
-                buffer = new DamageEvent[Math.Max(s_events.Count, buffer.Length * 2)];
-                s_eventBuffers[s_bufferIndex] = buffer;
+                buffer = new DamageEvent[Math.Max(_events.Count, buffer.Length * 2)];
+                _eventBuffers[_bufferIndex] = buffer;
             }
 
-            s_events.CopyTo(buffer, 0);
-            return new CombatTickResult(buffer, s_events.Count, outcome);
+            _events.CopyTo(buffer, 0);
+            return new CombatTickResult(buffer, _events.Count, outcome);
         }
 
         private static void ClearInvalidTargets(
