@@ -60,7 +60,11 @@ namespace GlobalFront.Client.UI
             Entity = entity;
         }
 
-        /// <summary>Position in the widget's own rect space, pixels from its bottom-left.</summary>
+        /// <summary>
+        /// Position in the widget's own vertex space, which is where uGUI draws it: the
+        /// origin is the rect's pivot, so a centred pivot puts the rect's bottom-left
+        /// corner at negative coordinates rather than at (0, 0).
+        /// </summary>
         public Vector2 Center { get; }
 
         /// <summary>Half the quad's size, so the blip is a square of <c>2 × Extent</c>.</summary>
@@ -435,14 +439,19 @@ namespace GlobalFront.Client.UI
 
         private Rect ResolveWidgetRect()
         {
-            var size = ((RectTransform)transform).rect.size;
-            if (size.x > 0f && size.y > 0f)
+            var rect = ((RectTransform)transform).rect;
+            if (rect.width > 0f && rect.height > 0f)
             {
-                // Blips are laid out from the rect's own bottom-left, not from the
-                // canvas's, so the widget's anchoredPosition and pivot are irrelevant
-                // and the mapping is the same whether the minimap is 200 px in a
-                // corner or half the screen in a map-review mode.
-                return new Rect(0f, 0f, size.x, size.y);
+                // The rect itself, edges and all, is the box blips are laid out in.
+                // uGUI generates this graphic's vertices in the widget's local space,
+                // whose origin is the rect's own pivot, so on a centred pivot the rect
+                // spans -width/2..+width/2 and a mapping that started at (0,0) would put
+                // every blip half a widget up and to the right of the point its unit is
+                // at — and the whole north-east half of the map outside the panel. Reading
+                // only the size and assuming the corner is the origin is the mistake this
+                // comment exists to prevent: the widget's anchoredPosition is indeed
+                // irrelevant here, but its pivot is not.
+                return rect;
             }
 
             return _widgetRectPx;

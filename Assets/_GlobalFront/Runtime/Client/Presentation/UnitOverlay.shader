@@ -1,14 +1,16 @@
 Shader "GlobalFront/Unit Overlay"
 {
     // Both overlay kinds read one instanced float4 per unit, and the two passes
-    // differ only in what that float4 carries and how it is shaded: a colour for the
-    // ground ring, (fraction, colour) for the billboarded health bar. Two passes in
-    // one shader rather than two shaders because the overlay is one material asset
-    // and the instance matrices already put each kind in its own plane.
+    // differ in what that float4 carries, how it is shaded, and how it treats depth:
+    // a colour for the ground ring, (fraction, colour) for the billboarded health bar.
+    // Two passes in one shader rather than two shaders because the overlay is one
+    // material asset and the instance matrices already put each kind in its own plane.
     //
     // Cull Off and ZWrite Off are load-bearing, not taste: the ring and bar quads are
     // generated in code (UnitOverlayGeometry), the bar flips to face the camera so its
     // winding changes with the view, and neither overlay should ever hide anything.
+    // The depth test is load-bearing too, and it is the one thing the two kinds cannot
+    // share — see the passes.
     Properties
     {
         _RingThickness("Ring thickness", Range(0.02, 0.5)) = 0.12
@@ -28,6 +30,10 @@ Shader "GlobalFront/Unit Overlay"
 
         Cull Off
         ZWrite Off
+        // Depth-tested for the ring, which lies on the ground and must go under the
+        // terrain it is drawn on. Overridden to Always by the health bar pass below:
+        // a bar is interface, and an interface that a unit's own hull can hide is not
+        // readable.
         ZTest LEqual
         Blend SrcAlpha OneMinusSrcAlpha
 
@@ -113,6 +119,14 @@ Shader "GlobalFront/Unit Overlay"
         {
             Name "UnitOverlayHealthBar"
             Tags { "LightMode" = "UnitOverlayHealthBar" }
+
+            // The SubShader's LEqual is wrong for a bar and cannot be fixed by raising
+            // the anchor: the prototype hulls this slice builds are 2.2 m (scout) and
+            // 2.6 m (tank) above a ground-pinned origin, with turrets to 2.95 m, so any
+            // single height constant that clears one archetype is inside another. A bar
+            // that is drawn over the unit it reports on is the behaviour every RTS of
+            // this genre ships, and ZWrite Off above keeps it from hiding anything else.
+            ZTest Always
 
             HLSLPROGRAM
             #pragma target 3.0

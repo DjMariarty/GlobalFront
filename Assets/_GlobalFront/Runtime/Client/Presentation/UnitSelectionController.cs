@@ -66,6 +66,36 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         public const float DefaultMinimumPickRadiusMetres = 1f;
 
+        /// <summary>
+        /// Camera height that widens the pick floor by one copy of itself, so the
+        /// clickable circle keeps its size <em>on screen</em> rather than on the ground.
+        ///
+        /// The pointer's ground point comes from a ray-plane intersection, so a pixel
+        /// of mouse travel buys more metres of ground the higher the camera sits: at the
+        /// slice's 150 m overview one metre is a couple of pixels, and the floor above
+        /// stops being a floor there — the player aims at a unit, clicks half a unit
+        /// away, and loses their whole selection to the empty-ground rule. Dividing the
+        /// altitude by this keeps one metre of reach per 35 m of height, which is where
+        /// the default floor already sat at the low zoom the constant was tuned for.
+        /// </summary>
+        public const float PickRadiusAltitudeStepMetres = 35f;
+
+        /// <summary>
+        /// Ceiling on the altitude-widened pick floor, in metres.
+        ///
+        /// The widening exists so a unit stays clickable from the slice's 260 m
+        /// overview, and it is a <em>selection</em> forgiveness: a player who clicks
+        /// beside a tank meant the tank. Kept uncapped it also becomes a targeting
+        /// rule, because the same reach is what decides whether a right-click names a
+        /// unit or a patch of ground — at 150 m the floor is 4.3 m and at 260 m it is
+        /// 7.4 m, while the armies' own formation grid is 8.5 m, so a click on free
+        /// ground between two files is inside the reach of whichever unit sits in the
+        /// next row and reads as an attack order on an enemy. Capped here, the
+        /// forgiveness still covers the pixel a unit occupies on screen at any zoom
+        /// without ever claiming ground that is visibly empty.
+        /// </summary>
+        public const float MaxSelectionPickRadiusMetres = 3.5f;
+
         /// <summary>Gap between two clicks on one unit that still counts as a double-click.</summary>
         public const double DefaultDoubleClickWindowSeconds = 0.30;
 
@@ -177,6 +207,10 @@ namespace GlobalFront.Client.Presentation
         /// Floor on the pick radius, so small footprints stay clickable. Sanitised like
         /// <see cref="DragThresholdPixels"/>; it is a compare bound, so a NaN would make
         /// every unit unclickable rather than throw.
+        ///
+        /// A base rather than the whole answer: through a camera projector it is widened
+        /// with the camera's altitude, per <see cref="PickRadiusAltitudeStepMetres"/>, and
+        /// that widening is bounded by <see cref="MaxSelectionPickRadiusMetres"/>.
         /// </summary>
         public float MinimumPickRadiusMetres
         {
@@ -452,7 +486,12 @@ namespace GlobalFront.Client.Presentation
                 return;
             }
 
-            _hoveredEntity = TryPickUnit(screenPixels, projector, friendlyOnly: true, out _);
+            _hoveredEntity = TryPickUnit(
+                screenPixels,
+                projector,
+                friendlyOnly: true,
+                widenForAltitude: true,
+                out _);
 
             if (!_pointerHeld)
             {
@@ -589,7 +628,12 @@ namespace GlobalFront.Client.Presentation
                 return _selectedCount;
             }
 
-            var picked = TryPickUnit(screenPixels, projector, friendlyOnly: true, out var slot);
+            var picked = TryPickUnit(
+                screenPixels,
+                projector,
+                friendlyOnly: true,
+                widenForAltitude: true,
+                out var slot);
             if (!picked.IsValid)
             {
                 // Empty ground. Shift holds the selection together: the modifier is the
@@ -751,6 +795,12 @@ namespace GlobalFront.Client.Presentation
         /// move to the ground under it. Friendly units and empty ground both move, which
         /// is the Generals behaviour — clicking your own tank to move past it should not
         /// do nothing.
+        ///
+        /// The move is not a suggestion the old order can overrule: a unit that was
+        /// fighting holds a combat target and <c>AutoAcquireEnemies</c>, and the server's
+        /// <c>MatchServer.ExecuteMove</c> clears both on the way to writing the move
+        /// target, so the squad leaves the melee it was drawn into instead of pursuing
+        /// its target over the new destination.
         /// </summary>
         /// <returns>True when a command was handed to the sink.</returns>
         public bool TryIssueCommandAtPointer(
@@ -767,7 +817,17 @@ namespace GlobalFront.Client.Presentation
                 return false;
             }
 
-            var target = TryPickUnit(screenPixels, projector, friendlyOnly: false, out var targetSlot);
+            // Deliberately without the altitude widening that hover and selection use.
+            // This pick decides the order's type, so a reach that names an enemy four
+            // metres off the cursor is not a forgiving click but an attack order the
+            // player never asked for — and it is the one order that cannot be undone by
+            // the next click, because it re-arms acquisition for the whole squad.
+            var target = TryPickUnit(
+                screenPixels,
+                projector,
+                friendlyOnly: false,
+                widenForAltitude: false,
+                out var targetSlot);
             if (target.IsValid && IsEnemy(targetSlot))
             {
                 return Emit(GameCommandType.Attack, default, target, requestedTick, sink);
@@ -825,10 +885,20 @@ namespace GlobalFront.Client.Presentation
         /// to the same one on every client rather than to whichever the slot table
         /// happened to reach first.
         /// </summary>
+        /// <param name="widenForAltitude">
+        /// Whether the pick floor follows <see cref="PickRadiusAltitudeStepMetres"/>.
+        /// True for hover and selection, where the question is "which unit did the
+        /// player aim at"; false for the pick that decides an order's type, where the
+        /// question is "is there a unit under this cursor at all" and an answer of yes
+        /// about a unit four metres away turns an intended move into an attack. Without
+        /// the widening the reach is the unit's own footprint, so clicking a hull always
+        /// names it and clicking ground never does.
+        /// </param>
         private EntityId TryPickUnit(
             Vector2 screenPixels,
             IUnitPointerProjector projector,
             bool friendlyOnly,
+            bool widenForAltitude,
             out int pickedSlot)
         {
             pickedSlot = NoSlot;
@@ -841,6 +911,12 @@ namespace GlobalFront.Client.Presentation
             var bestEntity = 0UL;
             var bestDistance = 0f;
             var bestSlot = NoSlot;
+
+            // Resolved once per query rather than per slot: the walk measures every
+            // candidate against the same ground, and a camera cannot move inside it.
+            var minReach = widenForAltitude
+                ? SelectionPickFloorMetres(projector)
+                : MinimumPickRadiusMetres;
 
             for (var slot = 0; slot < _binder.SlotCount; slot++)
             {
@@ -855,9 +931,9 @@ namespace GlobalFront.Client.Presentation
                 var distance = deltaX * deltaX + deltaZ * deltaZ;
 
                 var reach = view.RadiusMillimetres * UnitView.MillimetresToMetres;
-                if (reach < MinimumPickRadiusMetres)
+                if (reach < minReach)
                 {
-                    reach = MinimumPickRadiusMetres;
+                    reach = minReach;
                 }
 
                 if (distance > reach * reach)
@@ -877,6 +953,49 @@ namespace GlobalFront.Client.Presentation
 
             pickedSlot = bestSlot;
             return bestSlot == NoSlot ? default : new EntityId(bestEntity);
+        }
+
+        /// <summary>
+        /// The pick floor this frame's selection queries are measured against: the
+        /// configured <see cref="MinimumPickRadiusMetres"/> widened with the camera's
+        /// altitude so a unit keeps its size <em>on screen</em>, and capped by
+        /// <see cref="MaxSelectionPickRadiusMetres"/> so the widening stays a forgiveness
+        /// rather than becoming a claim on visible empty ground.
+        ///
+        /// A projection the caller supplies by hand (a test, or a future minimap or
+        /// replay view) states its own mapping from pixel to ground, so widening its
+        /// reach by a camera height it never had would be a rule invented for the wrong
+        /// caller. Only the camera-backed projector carries the altitude the pixel-to-metre
+        /// scale comes from, and only it gets the compensation.
+        /// </summary>
+        private float SelectionPickFloorMetres(IUnitPointerProjector projector)
+        {
+            var floor = MinimumPickRadiusMetres;
+
+            if (!(projector is CameraUnitPointerProjector cameraProjector) ||
+                cameraProjector.Camera == null)
+            {
+                return floor;
+            }
+
+            var compensation = cameraProjector.Camera.transform.position.y / PickRadiusAltitudeStepMetres;
+
+            // Below one is a camera closer than the altitude the floor was tuned for, and
+            // the floor is the floor. A poisoned transform would hand a NaN to
+            // <c>Mathf.Max</c>, which passes it straight through, and every unit on the
+            // battlefield would then fail the reach test at once.
+            if (!IsFinite(compensation) || compensation <= 1f)
+            {
+                return floor;
+            }
+
+            var widened = floor * compensation;
+
+            // The cap bounds the widening, never a floor the caller asked for on purpose:
+            // a hand-set 4 m floor is 4 m whatever the altitude.
+            var bounded = widened < MaxSelectionPickRadiusMetres ? widened : MaxSelectionPickRadiusMetres;
+
+            return bounded > floor ? bounded : floor;
         }
 
         /// <summary>
@@ -945,15 +1064,23 @@ namespace GlobalFront.Client.Presentation
         // ------------------------------------------------------------------- commands
 
         /// <summary>
-        /// Freezes the current selection into one request: the head of an
-        /// already-sorted array, so the subset the server sees is the lowest-numbered
-        /// entities rather than an accident of drag order.
+        /// Freezes the current selection into the requests it needs: an already-sorted
+        /// array walked in blocks, so whichever units the server orders first are the
+        /// lowest-numbered ones rather than an accident of drag order.
         ///
         /// Pruning is part of this rather than the callers' chore, because every one of
         /// them works from a selection it captured earlier: a unit that died, or whose
         /// slot was recycled since then, would otherwise be named in the payload, and
         /// the stranger's position would be read into the centroid that decides which
         /// way the formation faces.
+        ///
+        /// <b>A selection bigger than the payload ceiling is several commands.</b>
+        /// <see cref="SimulationConstants.MaxSelectedEntities"/> bounds a command, not an
+        /// order, so a 200-unit drag used to be truncated to its first hundred: the player
+        /// watched a hundred units walk and the other hundred stand still, and nothing on
+        /// either side reported the difference. Every block of the selection is now
+        /// submitted, each with its own sequence, because the host answers a repeated
+        /// sequence with <c>DuplicateSequence</c> rather than ignoring it.
         /// </summary>
         private bool Emit(
             GameCommandType type,
@@ -964,45 +1091,25 @@ namespace GlobalFront.Client.Presentation
         {
             PruneStaleSelection();
 
-            var count = _selectedCount;
-            if (count == 0)
+            var totalCount = _selectedCount;
+            if (totalCount == 0)
             {
                 return false;
             }
 
-            if (count > _commandEntities.Length)
-            {
-                count = _commandEntities.Length;
-            }
-
-            for (var index = 0; index < count; index++)
-            {
-                _commandEntities[index] = new EntityId(_selectedEntities[index]);
-            }
-
-            var sequence = _nextSequence++;
-            if (_nextSequence == 0)
-            {
-                // CommandHeader.Validate answers a Sequence of 0 with MissingSequence, and
-                // stepping over it serves that rule alone. MatchServer's own requirement
-                // is per player and monotonic — a sequence must beat the last one accepted
-                // from this player or it is a DuplicateSequence — which a wrapped counter
-                // cannot satisfy either way. That wrap takes 4 billion commands from one
-                // client, so no match reaches it; 0 is the only value worth guarding.
-                _nextSequence = 1;
-            }
-
-            var header = new CommandHeader(LocalPlayerId, sequence, requestedTick, type);
+            var batchCapacity = _commandEntities.Length;
 
             // Only a move is laid out into a formation. Attack and Stop ignore both the
             // layout and the destination, so working out a centroid for them means
             // reading every selected unit's position to derive a facing nobody reads.
             var formation = default(FormationSpec);
+            var batchFacing = default(CardinalFacing);
+            var blockStrideMillimetres = 0L;
             if (type == GameCommandType.Move)
             {
                 var centreXMillimetres = 0L;
                 var centreZMillimetres = 0L;
-                for (var index = 0; index < count; index++)
+                for (var index = 0; index < totalCount; index++)
                 {
                     if (_world.TryGetSlotState(_selectedSlots[index], out var state))
                     {
@@ -1011,22 +1118,98 @@ namespace GlobalFront.Client.Presentation
                     }
                 }
 
-                formation = new FormationSpec(
-                    0,
-                    FormationSpacingMillimetres,
-                    ChooseFacing(
-                        (long)destination.X - centreXMillimetres / count,
-                        (long)destination.Z - centreZMillimetres / count));
+                // The centroid is the whole army's and the facing is derived from it once,
+                // because which way the formation faces is one decision the player made,
+                // not one per block.
+                batchFacing = ChooseFacing(
+                    (long)destination.X - centreXMillimetres / totalCount,
+                    (long)destination.Z - centreZMillimetres / totalCount);
+                formation = new FormationSpec(0, FormationSpacingMillimetres, batchFacing);
+
+                // How deep a full block runs along the facing: <see cref="FormationLayout"/>
+                // gives a 100-unit payload auto columns, so that is the column count the
+                // next block has to clear.
+                blockStrideMillimetres =
+                    (long)FormationLayout.GetAutoColumnCount(batchCapacity) * FormationSpacingMillimetres;
             }
 
-            sink.Submit(new IssuedCommand(
-                header,
-                _commandEntities,
-                count,
-                destination,
-                target,
-                formation));
+            for (var start = 0; start < totalCount; start += batchCapacity)
+            {
+                var count = Math.Min(batchCapacity, totalCount - start);
+                for (var index = 0; index < count; index++)
+                {
+                    _commandEntities[index] = new EntityId(_selectedEntities[start + index]);
+                }
+
+                var sequence = _nextSequence++;
+                if (_nextSequence == 0)
+                {
+                    // CommandHeader.Validate answers a Sequence of 0 with MissingSequence, and
+                    // stepping over it serves that rule alone. MatchServer's own requirement
+                    // is per player and monotonic — a sequence must beat the last one accepted
+                    // from this player or it is a DuplicateSequence — which a wrapped counter
+                    // cannot satisfy either way. That wrap takes 4 billion commands from one
+                    // client, so no match reaches it; 0 is the only value worth guarding.
+                    _nextSequence = 1;
+                }
+
+                var header = new CommandHeader(LocalPlayerId, sequence, requestedTick, type);
+                sink.Submit(new IssuedCommand(
+                    header,
+                    _commandEntities,
+                    count,
+                    type == GameCommandType.Move
+                        ? RearwardBatchDestination(
+                            destination,
+                            batchFacing,
+                            start / batchCapacity,
+                            blockStrideMillimetres)
+                        : destination,
+                    target,
+                    formation));
+            }
+
             return true;
+        }
+
+        /// <summary>
+        /// Where one move block is aimed: the clicked point stepped back along the
+        /// formation's facing by one block depth per batch.
+        ///
+        /// <see cref="FormationLayout"/> assigns slots by position in the payload, so two
+        /// blocks that share a destination are handed the same positions and the second
+        /// hundred files itself into the holes the first is standing in. Stepping backwards
+        /// rather than forwards is what keeps the tail on ground the army is already
+        /// crossing — an order clicked at the edge of the battlefield would otherwise push
+        /// the later blocks off the map. Batch 0 keeps the clicked point exactly, so a
+        /// selection that fits one command is unaffected.
+        /// </summary>
+        private static WorldPointMm RearwardBatchDestination(
+            WorldPointMm destination,
+            CardinalFacing facing,
+            int batchIndex,
+            long blockStrideMillimetres)
+        {
+            if (batchIndex == 0)
+            {
+                return destination;
+            }
+
+            // Bounded by the selection's own ceiling: a destination inside
+            // SimulationConstants.MaxWorldCoordinateMm, stepped back by at most a handful
+            // of blocks of at most 100 000 mm each, is nowhere near the end of an int.
+            var offset = (long)batchIndex * blockStrideMillimetres;
+            switch (facing)
+            {
+                case CardinalFacing.North:
+                    return new WorldPointMm(destination.X, checked((int)(destination.Z - offset)));
+                case CardinalFacing.East:
+                    return new WorldPointMm(checked((int)(destination.X - offset)), destination.Z);
+                case CardinalFacing.South:
+                    return new WorldPointMm(destination.X, checked((int)(destination.Z + offset)));
+                default: // West
+                    return new WorldPointMm(checked((int)(destination.X + offset)), destination.Z);
+            }
         }
 
         /// <summary>

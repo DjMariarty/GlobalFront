@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using GlobalFront.Client;
 using GlobalFront.Client.Catalog;
 using GlobalFront.Client.Presentation;
@@ -14,6 +15,7 @@ using GlobalFront.Server;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools.Constraints;
+using UnityEngine.UI;
 using EntityId = GlobalFront.Core.Model.EntityId;
 using GcAssert = UnityEngine.TestTools.Constraints.Is;
 using Is = NUnit.Framework.Is;
@@ -2392,6 +2394,558 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             Assert.That(presenter.TextMutationCount, Is.EqualTo(0));
             presenter.RegisterBlockingRects(null);
             Assert.That(presenter.DisplayedCount, Is.Null, "nothing has been displayed yet");
+        }
+
+        /// <summary>
+        /// Both tactical canvases scale against one reference frame. Without a scaler an
+        /// overlay canvas keeps its authored pixel size at any window size, so the
+        /// minimap-command-bar-inspector stack stops being a corner widget and becomes a
+        /// sheet of opaque HUD over whatever the player is trying to click — in a small or
+        /// free-aspect window, over the friendly army's own spawn quadrant.
+        /// </summary>
+        [Test]
+        public void HudCanvases_ScaleAgainstAReferenceResolution()
+        {
+            var harness = BuildHarness();
+
+            AssertScaler(
+                harness.Permanent.MinimapTransform.GetComponentInParent<CanvasScaler>(),
+                "permanent");
+            AssertScaler(
+                harness.Dynamic.PanelTransform.GetComponentInParent<CanvasScaler>(),
+                "dynamic");
+
+            // The third canvas is the one that must stay unscaled. The marquee's rectangle
+            // arrives from Camera.WorldToScreenPoint in real screen pixels, so a scaler
+            // would draw the rubber band somewhere other than under the pointer that
+            // dragged it — and then select units the box plainly is not around.
+            var marquee = Component<SelectionMarqueePresenter>("Marquee");
+            Assert.That(marquee.Build(), Is.True);
+            Assert.That(
+                marquee.transform.GetComponentInChildren<CanvasScaler>(true),
+                Is.Null,
+                "the marquee tracks raw screen pixels and must not be scaled with the panels");
+        }
+
+        /// <summary>
+        /// The scaler belongs to the canvas object, so releasing the HUD takes the scaler
+        /// down with it. A scaler left on the presenter's own GameObject would keep
+        /// rewriting the scale factor of a canvas that no longer exists — and the next
+        /// <see cref="PermanentHudPresenter.Build"/> after a reconnect would be measured
+        /// against a HUD nobody released.
+        /// </summary>
+        [Test]
+        public void HudCanvases_ReleaseTakesTheScalerDownWithTheCanvas()
+        {
+            var harness = BuildHarness();
+            Assert.That(_root.GetComponentsInChildren<CanvasScaler>(true).Length, Is.EqualTo(2));
+
+            harness.Permanent.Release();
+            harness.Dynamic.Release();
+
+            Assert.That(
+                _root.GetComponentsInChildren<CanvasScaler>(true),
+                Is.Empty,
+                "a scaler that outlives its canvas outlives the HUD it was sizing");
+        }
+
+        /// <summary>
+        /// The three panels the pointer blocker refuses clicks for have to be worth
+        /// refusing: laid out side by side along the bottom of the reference frame rather
+        /// than stacked up it. Overlap is decided in authored pixels because one scale
+        /// factor multiplies every panel the same way — which panels collide does not
+        /// depend on the window, only how much of it they take.
+        /// </summary>
+        [Test]
+        public void HudPanels_SitSideBySideInTheBottomStripWithoutOverlapping()
+        {
+            var harness = BuildHarness();
+
+            var minimap = AuthoredRect(harness.Permanent.MinimapTransform, "minimap");
+            var commandBar = AuthoredRect(harness.Permanent.CommandBarTransform, "command bar");
+            var inspector = AuthoredRect(harness.Dynamic.PanelTransform, "selection inspector");
+
+            Assert.That(commandBar.Overlaps(minimap), Is.False, "the bar under the radar");
+            Assert.That(inspector.Overlaps(minimap), Is.False, "the inspector beside the radar");
+            Assert.That(
+                inspector.Overlaps(commandBar), Is.False,
+                "an inspector stacked above the command bar overlaps it, and the pair together " +
+                "reaches further up the screen than either does alone");
+
+            var stackTop = Mathf.Max(minimap.yMax, Mathf.Max(commandBar.yMax, inspector.yMax));
+            Assert.That(
+                stackTop, Is.LessThanOrEqualTo(MaxHudStackHeightPixels),
+                $"the HUD owns the bottom {stackTop:0} px of a " +
+                $"{PermanentHudPresenter.ReferenceResolutionPixels.y:0} px frame; everything above " +
+                "it has to stay battlefield, which is where the army the player is clicking belongs");
+        }
+
+        /// <summary>
+        /// A <see cref="Text"/> with no font generates no geometry, so a HUD built before
+        /// content arrives does not show unstyled labels — it shows none, and the player
+        /// reads a panel of blank boxes as a broken HUD. Labels therefore fall back to the
+        /// built-in runtime font, and a content pass that hands back no font must not put
+        /// the blanks back.
+        /// </summary>
+        [Test]
+        public void PermanentHud_LabelsAreReadableWithoutContent()
+        {
+            var harness = BuildHarness();
+            AssertLabelsHaveFonts(harness.Permanent.MinimapTransform, "permanent HUD", 3);
+
+            // Content that arrives and then hands back nothing is the reconnect case: the
+            // panel had readable numbers before it and has to keep them.
+            harness.Permanent.SetContent(null, null);
+            AssertLabelsHaveFonts(harness.Permanent.MinimapTransform, "permanent HUD after a content pass", 3);
+        }
+
+        /// <summary>
+        /// The dynamic canvas is the one carrying the counts a player actually reads —
+        /// how many units, how healthy, what the last order did — and on a procedural build
+        /// it has no font any more than the permanent one does.
+        /// </summary>
+        [Test]
+        public void SelectionHud_RowsAreReadableWithoutContent()
+        {
+            var harness = BuildHarness();
+            AssertLabelsHaveFonts(harness.Dynamic.PanelTransform, "selection panel", 18);
+
+            Assert.That(
+                harness.Dynamic.CountValue.font,
+                Is.SameAs(harness.Permanent.HeaderValueText.font),
+                "both canvases fall back to the one built-in font, not to one per canvas");
+        }
+
+        private const float MaxHudStackHeightPixels = 320f;
+
+        // ------------------------------------------------- playing-capture findings (part 5)
+
+        /// <summary>
+        /// Playing-capture defect: the minimap was an opaque square with no blips in it.
+        ///
+        /// <b>The mechanism, stated from uGUI's source rather than from the report.</b> An
+        /// <see cref="Image"/> with no sprite does not generate nothing —
+        /// <c>Image.OnPopulateMesh</c> falls through to <c>Graphic.OnPopulateMesh</c> and
+        /// emits a solid quad in the image's own colour. That is what makes the dark panels
+        /// below visible at all, and it is also the defect: the frame is authored to
+        /// <em>stretch across the whole radar and draw after it</em>, so before content
+        /// supplies a border it paints a sheet over every blip and over the camera
+        /// footprint. The fix is therefore the widget's enabled state, not its colour.
+        /// </summary>
+        [Test]
+        public void PermanentHud_WithoutBorderArt_NothingIsDrawnOverTheRadar()
+        {
+            var harness = BuildHarness();
+            var minimap = harness.Permanent.MinimapTransform;
+            Assert.That(harness.Permanent.Radar, Is.Not.Null, "the HUD built no radar overlay");
+
+            var radarArea = Mathf.Max(1f, minimap.rect.width * minimap.rect.height);
+            var examined = 0;
+
+            // Sibling order is paint order on a canvas, so anything after the radar is
+            // something the blips have to show through.
+            for (var index = harness.Permanent.Radar.transform.GetSiblingIndex() + 1;
+                 index < minimap.childCount;
+                 index++)
+            {
+                var graphic = minimap.GetChild(index).GetComponent<Graphic>();
+                if (graphic == null)
+                {
+                    continue;
+                }
+
+                examined++;
+
+                if (!graphic.enabled)
+                {
+                    continue;
+                }
+
+                var rect = ((RectTransform)graphic.transform).rect;
+                var coverage = rect.width * rect.height / radarArea;
+                var vertices = GeneratedVertexCount(graphic);
+
+                Assert.That(
+                    vertices == 0 || coverage < 0.9f,
+                    Is.True,
+                    $"{graphic.name} draws {vertices} vertices across {coverage:P0} of the radar, so " +
+                    "whatever the blips are is decided by whatever this paints over them; a widget " +
+                    "with no art of its own has to be switched off, not left as a sheet");
+            }
+
+            // The sweep has to have looked at the widgets that sit above the radar, or an
+            // empty list would read as a clean bill of health for a HUD that built nothing.
+            // One is enough now: the camera footprint moved below the blips precisely
+            // because it was the sheet this rule condemns, so the frame is the only widget
+            // left that draws after the radar.
+            Assert.That(
+                examined,
+                Is.GreaterThanOrEqualTo(1),
+                "the minimap has no widgets drawn after the radar at all, so this sweep is not " +
+                "looking at what covers it");
+        }
+
+        /// <summary>
+        /// The other half of the finding: the frame is a border the player should get once
+        /// content exists, so switching it off without art must be exactly as reversible as
+        /// switching it on — including when a reconnect hands back nothing.
+        /// </summary>
+        [Test]
+        public void PermanentHud_BorderArtReturnsTheFrameAndTakingItAwayHidesItAgain()
+        {
+            var harness = BuildHarness();
+            var frame = ChildGraphic(minimap: harness.Permanent.MinimapTransform, name: "Frame");
+            Assert.That(frame.enabled, Is.False, "the sheet is still covering the radar");
+
+            var sprite = Sprite.Create(Texture2D.whiteTexture, new Rect(0f, 0f, 4f, 4f), Vector2.zero);
+            try
+            {
+                harness.Permanent.SetContent(sprite, null);
+                Assert.That(frame.enabled, Is.True, "a HUD that has its border art draws it");
+                Assert.That(frame.sprite, Is.SameAs(sprite));
+
+                // The reconnect case: content comes back empty-handed and the panel has to
+                // go back to being a radar rather than a frame around nothing.
+                harness.Permanent.SetContent(null, null);
+                Assert.That(frame.enabled, Is.False, "art taken away has to take the sheet back with it");
+            }
+            finally
+            {
+                Object.DestroyImmediate(sprite);
+            }
+        }
+
+        /// <summary>
+        /// Playing-capture defect: the minimap was a grey square with no unit dots in it.
+        ///
+        /// <b>The mechanism.</b> uGUI generates a graphic's vertices in the widget's own
+        /// local space, and that space's origin is the rect's <em>pivot</em>. The radar
+        /// resolved its layout rect as <c>(0, 0, width, height)</c>, which describes only a
+        /// bottom-left pivot; <see cref="PermanentHudPresenter"/> builds the radar as a
+        /// stretched rect and never sets a pivot, so the widget keeps Unity's default
+        /// (0.5, 0.5) and its rect really starts at -width/2. Every blip was therefore
+        /// drawn half a panel up and to the right of the point its unit stands for, and the
+        /// whole north-east half of the map fell off the widget entirely.
+        ///
+        /// <b>Why no test caught it.</b> Every radar in this file is built by
+        /// <see cref="Widget"/>, which pins the pivot to zero — so the assumption held for
+        /// every rect a test made and failed for the one the game builds.
+        /// </summary>
+        [Test]
+        public void RadarBlips_LandInsideTheWidgetRectThePresenterActuallyBuilt()
+        {
+            var harness = BuildHarness();
+            var radar = harness.Permanent.Radar;
+
+            // Units at opposite corners of the map plus one in the middle, so a mapping
+            // that is out by half the widget puts at least one corner demonstrably outside
+            // the box it is drawn in.
+            Spawn(1, -MapHalfMm + 1_000, -MapHalfMm + 1_000);
+            Spawn(2, MapHalfMm - 1_000, MapHalfMm - 1_000, owner: Enemy);
+            Spawn(3, Ax, RowZ);
+            Assert.That(_radar.Rebuild(), Is.EqualTo(3));
+
+            Assert.That(radar.PublishFromModel(), Is.True, "the overlay has to pull the snapshot it was given");
+
+            var rect = ((RectTransform)radar.transform).rect;
+            Assert.That(
+                rect.xMin,
+                Is.LessThan(0f),
+                "the presenter's radar keeps Unity's default centred pivot, which is the case " +
+                "this asserts about; a test that built the widget with a zero pivot would prove " +
+                "nothing about it");
+
+            var corners = GeneratedVertexPositions(radar);
+
+            // Six positions per blip, not four: VertexHelper hands back a triangle list,
+            // and the stream expands each quad's two triangles into its own three corners.
+            Assert.That(corners.Count, Is.EqualTo(18), "three blips, six streamed vertices each");
+
+            foreach (var corner in corners)
+            {
+                Assert.That(
+                    corner.x >= rect.xMin && corner.x <= rect.xMax &&
+                    corner.y >= rect.yMin && corner.y <= rect.yMax,
+                    Is.True,
+                    $"a blip vertex at ({corner.x:0.#}, {corner.y:0.#}) falls outside the radar rect " +
+                    $"{rect.xMin:0.#}..{rect.xMax:0.#} by {rect.yMin:0.#}..{rect.yMax:0.#}, so the unit it " +
+                    "stands for is drawn off the panel the player is reading");
+            }
+        }
+
+        /// <summary>
+        /// The other half of the same grey square. The camera footprint is an
+        /// <see cref="Image"/> with no border art, which is a solid translucent quad, and
+        /// it was created <em>after</em> the radar — so it painted over the blips. From the
+        /// slice's 150 m overview the camera's own ground rect is wider than the 400 m map,
+        /// so the normalised footprint clamps to the full width of the radar and the sheet
+        /// covered the whole panel rather than a corner of it.
+        ///
+        /// The footprint is still switched on whenever the model has one — that half of the
+        /// report's ask was already satisfied, and
+        /// <see cref="PermanentHud_ViewportIndicatorTracksTheCamerasFootprint"/> pins it.
+        /// What changed is that it is lit <em>under</em> the overlay that answers for the
+        /// units.
+        /// </summary>
+        [Test]
+        public void CameraFootprint_IsLitUnderTheBlipsRatherThanOverThem()
+        {
+            var harness = BuildHarness();
+            var radar = harness.Permanent.Radar;
+            var indicator = harness.Permanent.ViewportIndicatorTransform;
+            Spawn(1, Ax, RowZ);
+
+            // Far larger than the map, so the mapped rect clamps to the whole radar: the
+            // overview case, and the only one where the indicator is a sheet rather than a
+            // box the blips mostly escape.
+            _radar.SetCameraViewGroundRect(new Rect(-800f, -800f, 1600f, 1600f));
+            Assert.That(_radar.Rebuild(), Is.GreaterThan(0));
+            harness.Permanent.ManualUpdate(0.0);
+
+            var image = indicator.GetComponent<Image>();
+            Assert.That(image, Is.Not.Null, "the footprint indicator is not an image at all");
+            Assert.That(
+                image.enabled,
+                Is.True,
+                "a valid camera footprint has to light the indicator — the defect is where it " +
+                "is drawn, not whether it is drawn");
+
+            var radarRect = radar.rectTransform.rect;
+            var coverage = indicator.rect.width * indicator.rect.height /
+                           Mathf.Max(1f, radarRect.width * radarRect.height);
+            Assert.That(
+                coverage,
+                Is.GreaterThan(0.9f),
+                "this fixture is only worth making if the footprint really does span the radar; " +
+                "if it does not, nothing was covering the blips and the sibling order below proves nothing");
+
+            Assert.That(
+                indicator.GetSiblingIndex(),
+                Is.LessThan(radar.transform.GetSiblingIndex()),
+                $"the footprint covers {coverage:P0} of the radar and is its sibling at index " +
+                $"{indicator.GetSiblingIndex()}, while the blips are at " +
+                $"{radar.transform.GetSiblingIndex()} — sibling order is paint order, so the sheet " +
+                "decided what the player could see through it");
+        }
+
+        /// <summary>
+        /// The vertices a graphic hands the canvas, read back through the same protected
+        /// <c>OnPopulateMesh</c> <see cref="GeneratedVertexCount"/> uses. Positions are the
+        /// whole point here: a count cannot see a blip drawn half a widget off.
+        /// </summary>
+        private static List<Vector3> GeneratedVertexPositions(Graphic graphic)
+        {
+            var populate = typeof(Graphic).GetMethod(
+                "OnPopulateMesh",
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                null,
+                new[] { typeof(VertexHelper) },
+                null);
+            Assert.That(
+                populate,
+                Is.Not.Null,
+                "uGUI no longer exposes OnPopulateMesh(VertexHelper), so nothing here can see where a widget draws");
+
+            var helper = new VertexHelper();
+            populate.Invoke(graphic, new object[] { helper });
+
+            var stream = new List<UIVertex>();
+            helper.GetUIVertexStream(stream);
+
+            var positions = new List<Vector3>(stream.Count);
+            foreach (var vertex in stream)
+            {
+                positions.Add(vertex.position);
+            }
+
+            return positions;
+        }
+
+        /// <summary>
+        /// Playing-capture defect: the inspector's rows sat up to 186 px above the panel
+        /// they belong to, over the battlefield, because they were laid out by descending
+        /// from the panel's top with an <em>upward</em> offset. An anchored rect whose
+        /// anchor and pivot are both the top edge measures downward with a negative Y.
+        /// </summary>
+        [Test]
+        public void SelectionHud_RowsLieInsideThePanelTheyDescribe()
+        {
+            var harness = BuildHarness();
+            var panel = harness.Dynamic.PanelTransform;
+            var height = panel.rect.height;
+            Assert.That(height, Is.GreaterThan(0f), "the inspector has no height to fit rows inside");
+
+            var texts = panel.GetComponentsInChildren<Text>(true);
+            Assert.That(texts.Length, Is.EqualTo(18), "nine rows, a label and a value each");
+
+            foreach (var text in texts)
+            {
+                var rect = text.rectTransform;
+
+                // The derivation only holds for the convention CreateText authors, so it is
+                // asserted rather than assumed: anchoredPosition.y is then the row's top edge
+                // measured from the panel's top, positive being off the panel altogether.
+                Assert.That(rect.anchorMin, Is.EqualTo(new Vector2(0f, 1f)), $"{text.name} is not top-anchored");
+                Assert.That(rect.anchorMax, Is.EqualTo(new Vector2(0f, 1f)), $"{text.name} is not top-anchored");
+                Assert.That(rect.pivot, Is.EqualTo(new Vector2(0f, 1f)), $"{text.name} does not hang from that edge");
+
+                var top = rect.anchoredPosition.y;
+                var bottom = top - rect.rect.height;
+                Assert.That(
+                    top <= 0f && bottom >= -height,
+                    Is.True,
+                    $"{text.name} spans y {top:0}..{bottom:0} against a panel of {height:0} px whose top " +
+                    "edge is 0, so it is drawn outside the box the player is reading it in");
+            }
+        }
+
+        /// <summary>
+        /// The rows also have to stay in the order the panel was built: one per
+        /// <see cref="SelectionHudPresenter.RowPitchPixels"/>, descending, with each value
+        /// on the same line as its own label. A layout that packs them in a column from the
+        /// bottom would put "Refused" above "Selected".
+        /// </summary>
+        [Test]
+        public void SelectionHud_RowsDescendOneLinePerRowWithTheirValues()
+        {
+            var harness = BuildHarness();
+            var panel = harness.Dynamic.PanelTransform;
+
+            // The order Build() lays them out in, read off the widget names the presenter
+            // gives its rows.
+            var labels = new[]
+            {
+                "Selected", "Scout", "Tank", "Structure", "Health", "Order", "Result", "Issued", "Refused",
+            };
+
+            for (var index = 0; index < labels.Length; index++)
+            {
+                var value = RowText(panel, "Value", labels[index]);
+                var label = RowText(panel, "Label", labels[index]);
+
+                var y = value.rectTransform.anchoredPosition.y;
+
+                Assert.That(
+                    y,
+                    Is.EqualTo(-(SelectionHudPresenter.TopPaddingPixels +
+                               index * SelectionHudPresenter.RowPitchPixels)),
+                    $"the {labels[index]} row is not where the panel's own pitch puts it");
+
+                Assert.That(
+                    label.rectTransform.anchoredPosition.y,
+                    Is.EqualTo(y),
+                    $"the {labels[index]} label and its value are on different lines");
+            }
+        }
+
+        private static Text RowText(RectTransform panel, string column, string label)
+        {
+            var found = panel.Find(column + " " + label);
+            Assert.That(found, Is.Not.Null, $"the inspector has no {column.ToLower()} column for {label}");
+            var text = found.GetComponent<Text>();
+            Assert.That(text, Is.Not.Null, $"the inspector's {column} {label} widget is not a label at all");
+            return text;
+        }
+
+        /// <summary>
+        /// How many vertices a graphic hands the canvas when it rebuilds. uGUI generates
+        /// geometry through the protected <c>OnPopulateMesh</c>, which is the only place the
+        /// claim "this widget draws nothing" is decided — and EditMode never runs a canvas
+        /// batch, so reading the mesh back from the <c>CanvasRenderer</c> is not available.
+        /// </summary>
+        private static int GeneratedVertexCount(Graphic graphic)
+        {
+            var populate = typeof(Graphic).GetMethod(
+                "OnPopulateMesh",
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                null,
+                new[] { typeof(VertexHelper) },
+                null);
+            Assert.That(
+                populate,
+                Is.Not.Null,
+                "uGUI no longer exposes OnPopulateMesh(VertexHelper), so nothing here can see what a widget draws");
+
+            var helper = new VertexHelper();
+            populate.Invoke(graphic, new object[] { helper });
+            return helper.currentVertCount;
+        }
+
+        private static Image ChildGraphic(RectTransform minimap, string name)
+        {
+            var child = minimap.Find(name);
+            Assert.That(child, Is.Not.Null, $"the minimap has no {name} widget");
+            var graphic = child.GetComponent<Image>();
+            Assert.That(graphic, Is.Not.Null, $"the minimap's {name} widget is not an image at all");
+            return graphic;
+        }
+
+        private static void AssertScaler(CanvasScaler scaler, string label)
+        {
+            Assert.That(
+                scaler,
+                Is.Not.Null,
+                $"the {label} canvas has no scaler, so its panels keep their authored pixel " +
+                "size whatever window the match is played in");
+            Assert.That(
+                scaler.uiScaleMode,
+                Is.EqualTo(CanvasScaler.ScaleMode.ScaleWithScreenSize),
+                $"the {label} canvas is not sized by the screen it is drawn on");
+
+            // Named numbers rather than the presenter's own constants: the layout is
+            // authored against 1920x1080 and half-matched, and a test that read the
+            // constants would follow a change to them instead of catching it.
+            Assert.That(scaler.referenceResolution, Is.EqualTo(new Vector2(1920f, 1080f)),
+                $"the {label} canvas scales against a different reference frame");
+            Assert.That(scaler.matchWidthOrHeight, Is.EqualTo(0.5f).Within(1e-4f),
+                $"the {label} canvas matches one axis of the window instead of both");
+        }
+
+        /// <summary>
+        /// A panel rect in authored pixels. Every tactical panel anchors and pivots at the
+        /// canvas's bottom-left corner, which is what makes <c>anchoredPosition</c> the
+        /// lower-left corner and <c>sizeDelta</c> the size — asserted here rather than
+        /// assumed, because the derivation is silently wrong for any other pivot.
+        /// </summary>
+        private static Rect AuthoredRect(RectTransform panel, string label)
+        {
+            Assert.That(panel.anchorMin, Is.EqualTo(Vector2.zero), $"{label} is not corner-anchored");
+            Assert.That(panel.anchorMax, Is.EqualTo(Vector2.zero), $"{label} is not corner-anchored");
+            Assert.That(panel.pivot, Is.EqualTo(Vector2.zero), $"{label} does not pivot at that corner");
+
+            var rect = new Rect(
+                panel.anchoredPosition.x,
+                panel.anchoredPosition.y,
+                panel.sizeDelta.x,
+                panel.sizeDelta.y);
+            Assert.That(rect.width, Is.GreaterThan(0f), $"{label} has no width to overlap with");
+            Assert.That(rect.height, Is.GreaterThan(0f), $"{label} has no height to overlap with");
+            return rect;
+        }
+
+        /// <summary>
+        /// Every label on the canvas <paramref name="widget"/> lives on has a font. Scoped to
+        /// that canvas so a failure names the presenter that lost the fallback rather than
+        /// the first label in the scene.
+        /// </summary>
+        private static void AssertLabelsHaveFonts(RectTransform widget, string label, int expectedLabels)
+        {
+            var canvas = widget.GetComponentInParent<Canvas>();
+            Assert.That(canvas, Is.Not.Null, $"{label} panel is not on a canvas");
+
+            var texts = canvas.GetComponentsInChildren<Text>(true);
+            Assert.That(
+                texts.Length,
+                Is.GreaterThanOrEqualTo(expectedLabels),
+                $"{label} does not carry the {expectedLabels} labels this sweep expects");
+
+            for (var index = 0; index < texts.Length; index++)
+            {
+                Assert.That(
+                    texts[index].font,
+                    Is.Not.Null,
+                    $"{label}/{texts[index].name} has no font, so it draws a blank box instead of a number");
+            }
         }
 
         // ===================================================================== 8. zero GC

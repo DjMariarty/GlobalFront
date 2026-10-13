@@ -68,12 +68,21 @@ namespace GlobalFront.Client
         /// slice opens on a battle. Both halves are needed: a marched army has its
         /// automatic acquisition cleared by the move order, so converging without
         /// engaging parks two silent lines facing each other.
+        ///
+        /// False by default, because that is the state a player needs to be dropped
+        /// into: the march destinations are 14 m apart and the server's automatic
+        /// acquisition range is 18 m, so opening on a battle means the two armies
+        /// annihilate each other in about half a minute, before the first order can be
+        /// given. Standing still is genuinely quiet — the armies start 80 m apart in
+        /// their own quadrants and only the enemy is autonomous — so the roster waits
+        /// for orders untouched. Tests and the benchmark harness that want a fight ask
+        /// for the march explicitly.
         /// </param>
         /// <param name="createVisuals">Build the battlefield and unit meshes.</param>
         /// <returns>The running slice.</returns>
         public static TacticalVerticalSliceRunner ActivateTacticalVerticalSlice(
             int unitCount = TacticalVerticalSliceRunner.DefaultUnitCount,
-            bool issueInitialConvergenceMarch = true,
+            bool issueInitialConvergenceMarch = false,
             bool createVisuals = true)
         {
             var previous = GameObject.Find(TacticalSliceRootName);

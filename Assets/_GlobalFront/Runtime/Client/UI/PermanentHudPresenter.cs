@@ -27,11 +27,28 @@ namespace GlobalFront.Client.UI
     /// supply its 9-slice border — and this component owns the frame, the overlay and
     /// the cadence that drives them.
     ///
-    /// <b>Fonts and sprites are optional, and that is deliberate.</b> A
-    /// <see cref="Text"/> with no font and an <see cref="Image"/> with no sprite
-    /// generate no geometry, so a HUD built before content loads is a HUD carrying live,
-    /// correct, invisible controls rather than one that logs every frame. It is the same
-    /// posture <c>UnitViewPool</c> takes toward mesh prototypes.
+    /// <b>Sprites are optional, and that is deliberate.</b> A widget whose art has not
+    /// arrived keeps its controls live and its geometry empty — but "empty geometry" is
+    /// only true of a <see cref="Text"/> with no font. An <see cref="Image"/> with no
+    /// sprite falls through to <c>Graphic.OnPopulateMesh</c>, which emits a solid quad in
+    /// <see cref="Image.color"/>, so an untextured <c>Image</c> is a coloured panel, not an
+    /// invisible one. That is what the dark HUD surfaces below are, and it is also why a
+    /// decorative frame that spans the radar has to be switched off until its art exists:
+    /// left enabled it paints over the blips it is supposed to sit around.
+    ///
+    /// <b>Fonts are not optional.</b> The same reasoning would leave every label blank —
+    /// but unlike a border, text is not decoration the player can do without, and a panel
+    /// of blank boxes reads as a broken HUD rather than a pending one. <see cref="ResolveFont"/>
+    /// therefore falls back to the built-in legacy runtime font when content has not
+    /// supplied one.
+    ///
+    /// <b>The layout is authored in reference pixels.</b> A screen-space overlay canvas
+    /// without a <see cref="CanvasScaler"/> keeps its authored pixel size at any window
+    /// size, so this HUD's bottom-left stack — minimap, command bar and the panel above
+    /// them — grows until it swallows the quadrant under it in a small or free-aspect
+    /// window. Both tactical canvases scale against
+    /// <see cref="ReferenceResolutionPixels"/> so the panels keep their fraction of the
+    /// screen instead of their fraction of the pixel budget.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class PermanentHudPresenter : MonoBehaviour
@@ -60,6 +77,20 @@ namespace GlobalFront.Client.UI
         /// <summary>Distance the bottom-left-anchored panels sit from the screen corner.</summary>
         public static readonly Vector2 DefaultCornerOffset = new Vector2(16f, 16f);
 
+        /// <summary>
+        /// Screen size every tactical canvas authors its pixel layout against. Both canvases
+        /// scale against it, so a panel that occupies a quarter of the screen height at
+        /// 1920x1080 occupies a quarter of it at 1280x720 too — which is the difference
+        /// between a HUD in the corner and a HUD over the army the player is trying to click.
+        /// </summary>
+        public static readonly Vector2 ReferenceResolutionPixels = new Vector2(1920f, 1080f);
+
+        /// <summary>
+        /// Half way between matching width and matching height, so neither a wide window nor
+        /// a tall one gets a HUD sized for the axis it did not ask about.
+        /// </summary>
+        public const float ReferenceMatchWidthOrHeight = 0.5f;
+
         [Header("Layout (pixels, applied at build)")]
         [SerializeField] private Vector2 minimapCornerOffset = DefaultCornerOffset;
         [SerializeField] private float minimapSize = DefaultMinimapSizePixels;
@@ -82,6 +113,12 @@ namespace GlobalFront.Client.UI
         [SerializeField] private Camera viewportCamera;
 
         private readonly Vector3[] _corners = new Vector3[4];
+
+        /// <summary>
+        /// The built-in label font, resolved the first time a HUD is built without content.
+        /// Shared between canvases because they all ask <c>Resources</c> for the same one.
+        /// </summary>
+        private static Font _builtinFont;
 
         private GameObject _canvasObject;
         private Canvas _canvas;
@@ -121,6 +158,9 @@ namespace GlobalFront.Client.UI
 
         /// <summary>The minimap widget's rect transform, once built.</summary>
         public RectTransform MinimapTransform => _minimapRect;
+
+        /// <summary>The command bar strip's rect transform, once built.</summary>
+        public RectTransform CommandBarTransform => _commandBarRect;
 
         /// <summary>The widget the camera's ground footprint is drawn on.</summary>
         public RectTransform ViewportIndicatorTransform => _viewportRect;
@@ -170,6 +210,14 @@ namespace GlobalFront.Client.UI
             _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             _canvas.sortingOrder = sortingOrder;
 
+            // The scaler goes on before any widget is laid out under this canvas. It lives
+            // on the canvas object, so Release() takes it down with the panel tree it
+            // scales — no separate teardown and no orphaned preWillRenderCanvases hook.
+            var scaler = _canvasObject.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = ReferenceResolutionPixels;
+            scaler.matchWidthOrHeight = ReferenceMatchWidthOrHeight;
+
             // Anchored to the bottom-left, because the minimap and the command bar are
             // the two things on screen that always live in the player's peripheral
             // corner. Anchoring there keeps them under the hands through a window resize
@@ -190,8 +238,21 @@ namespace GlobalFront.Client.UI
                 Image.Type.Simple);
             _terrainImage.sprite = terrainSprite;
 
-            _radar = CreateRadarOverlay(_minimapRect);
+            // The baked map is the radar's backdrop, so before it exists the panel's own
+            // colour has to be what sits behind the blips. An untextured Image is a solid
+            // quad of its colour — and this one is authored white, so left enabled it would
+            // paint the whole radar white under the blips.
+            _terrainImage.enabled = terrainSprite != null;
 
+            // The camera footprint is built before the radar, and that order is the
+            // widget's whole design question: sibling order is paint order, so anything
+            // created after the radar draws over the blips. Before content supplies the
+            // 9-slice border that would make this a hollow frame it is an untextured
+            // Image, which is a solid translucent quad — and from the slice's 150 m
+            // overview the camera's own ground rect is wider than the map, so its
+            // normalised form covers the full width of the radar and washes out every
+            // unit dot in it. A lit region under the blips still says "this is the view"
+            // and says it truthfully; over them it says nothing at all.
             _viewportImage = CreateImage(
                 "ViewportIndicator",
                 _minimapRect,
@@ -207,6 +268,8 @@ namespace GlobalFront.Client.UI
             _viewportImage.enabled = false;
             _cachedHasViewport = false;
 
+            _radar = CreateRadarOverlay(_minimapRect);
+
             _frameImage = CreateImage(
                 "Frame",
                 _minimapRect,
@@ -215,6 +278,11 @@ namespace GlobalFront.Client.UI
                 frameColor,
                 Image.Type.Sliced);
             _frameImage.sprite = frameSprite;
+
+            // This widget is stretched across the whole radar and drawn after it, so an
+            // untextured frame is an opaque sheet over every blip. It earns its place back
+            // when SetContent supplies the 9-slice art that makes it a border.
+            _frameImage.enabled = frameSprite != null;
 
             _commandBarRect = CreatePanel(
                 "CommandBar",
@@ -330,6 +398,10 @@ namespace GlobalFront.Client.UI
             if (_terrainImage != null)
             {
                 _terrainImage.sprite = sprite;
+
+                // Same rule as the frame, in the other direction: the white quad this
+                // widget becomes without art is a backdrop nobody asked for.
+                _terrainImage.enabled = sprite != null;
             }
         }
 
@@ -342,6 +414,10 @@ namespace GlobalFront.Client.UI
             if (_frameImage != null)
             {
                 _frameImage.sprite = frame;
+
+                // An untextured Image draws a solid quad of its colour, so a frame that
+                // spans the radar with no border art to draw is a sheet over the blips.
+                _frameImage.enabled = frame != null;
             }
 
             if (_viewportImage != null)
@@ -693,9 +769,9 @@ namespace GlobalFront.Client.UI
 
         private Button CreateButton(string name, Transform parent, string label)
         {
-            // A Button needs a graphic as its surface, and an Image with a null sprite
-            // generates no geometry at all — which is how a HUD can carry a live,
-            // clickable, invisible control while content is still supplying its art.
+            // A Button needs a graphic as its surface. With no sprite the Image is a solid
+            // quad of its colour, which is a legible button rather than an empty one; the
+            // art content supplies later only restyles it.
             var buttonObject = new GameObject(name, typeof(RectTransform));
             buttonObject.transform.SetParent(parent, false);
             buttonObject.layer = parent.gameObject.layer;
@@ -752,7 +828,7 @@ namespace GlobalFront.Client.UI
             var text = textObject.AddComponent<Text>();
             text.fontSize = 18;
             text.color = Color.white;
-            text.font = font;
+            text.font = ResolveFont(font);
             text.text = label;
 
             // raycastTarget defaults to true on Text, which for a label over a panel
@@ -786,8 +862,38 @@ namespace GlobalFront.Client.UI
             var texts = _canvasObject.GetComponentsInChildren<Text>(true);
             for (var index = 0; index < texts.Length; index++)
             {
-                texts[index].font = font;
+                texts[index].font = ResolveFont(font);
             }
+        }
+
+        /// <summary>
+        /// <paramref name="preferred"/> when content has supplied a font, and the built-in
+        /// legacy runtime font when it has not.
+        ///
+        /// A <see cref="Text"/> with no font generates no geometry, so the null-font HUD is
+        /// not merely unstyled — every label, count and stat in it is invisible, and the
+        /// player reads that as a broken panel rather than as art that has not arrived.
+        /// Resolved once and cached because a HUD builds its labels one by one, and asking
+        /// <c>Resources</c> per widget would repeat the same lookup for the same font.
+        /// Public because <see cref="SelectionHudPresenter"/> builds its rows on the same
+        /// canvas family and must not disagree about what a readable label is.
+        /// </summary>
+        public static Font ResolveFont(Font preferred)
+        {
+            // Unity's comparison, not the built-in one: a font asset content handed back
+            // can have been destroyed, and a destroyed reference still feeds a Text that
+            // draws nothing.
+            if (preferred != null)
+            {
+                return preferred;
+            }
+
+            if (_builtinFont == null)
+            {
+                _builtinFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            }
+
+            return _builtinFont;
         }
     }
 }

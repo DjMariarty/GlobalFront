@@ -40,8 +40,22 @@ namespace GlobalFront.Client.UI
         /// <summary>Row pitch, in pixels.</summary>
         public const float RowPitchPixels = 22f;
 
+        /// <summary>
+        /// Gap between the panel's top edge and the first row's, in pixels. Nine rows at
+        /// <see cref="RowPitchPixels"/> leave ten over in the default panel, and all of
+        /// them go here: a panel that grows a tenth row pushes it past the bottom edge,
+        /// which is the visible failure, rather than squeezing the ones the player reads.
+        /// </summary>
+        public const float TopPaddingPixels = 10f;
+
         [Header("Layout")]
-        [SerializeField] private Vector2 panelPosition = new Vector2(16f, 296f);
+        // Alongside the minimap rather than above the command bar: this panel is 208 px
+        // tall, so stacked at the corner it pushed the HUD's top edge to 504 px of a
+        // 1080 px frame — and the friendly army spawns in exactly that bottom-left
+        // quadrant, under an opaque panel the pointer blocker rightly calls HUD. In the
+        // bottom strip the three panels sit side by side and the battlefield above them is
+        // open.
+        [SerializeField] private Vector2 panelPosition = new Vector2(312f, 16f);
         [SerializeField] private Vector2 panelSize = new Vector2(240f, 208f);
         [SerializeField] private int sortingOrder = PermanentHudPresenter.SelectionCanvasSortingOrder;
 
@@ -121,6 +135,14 @@ namespace GlobalFront.Client.UI
             _canvas = _canvasObject.AddComponent<Canvas>();
             _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             _canvas.sortingOrder = sortingOrder;
+
+            // The same reference frame as the permanent canvas: two canvases that scaled
+            // differently would put this panel's rows at a different pixel size than the
+            // minimap beside them, and resize the HUD by half.
+            var scaler = _canvasObject.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = PermanentHudPresenter.ReferenceResolutionPixels;
+            scaler.matchWidthOrHeight = PermanentHudPresenter.ReferenceMatchWidthOrHeight;
 
             var panelObject = new GameObject("SelectionPanel", typeof(RectTransform));
             panelObject.transform.SetParent(_canvasObject.transform, false);
@@ -348,7 +370,13 @@ namespace GlobalFront.Client.UI
             // Rows counted down from the panel's top rather than up from its bottom, so
             // adding a row appends at the bottom instead of shifting everything the
             // player has learned to read.
-            var y = panelSize.y - (rowIndex + 1) * RowPitchPixels;
+            //
+            // The offset itself is negative, because that is what "down from the top"
+            // means to a rect whose anchor and pivot are both the panel's top edge: a
+            // positive Y measures upward from there, and laid the panel's own height
+            // above it, so every row sat out over the battlefield instead of inside the
+            // box the player was looking at.
+            var y = -(TopPaddingPixels + rowIndex * RowPitchPixels);
 
             return (
                 CreateText("Label " + label, parent, new Vector2(8f, y), new Vector2(120f, 20f), label),
@@ -369,7 +397,7 @@ namespace GlobalFront.Client.UI
             var component = textObject.AddComponent<Text>();
             component.fontSize = 16;
             component.color = Color.white;
-            component.font = font;
+            component.font = PermanentHudPresenter.ResolveFont(font);
             component.text = text;
             component.raycastTarget = false;
 

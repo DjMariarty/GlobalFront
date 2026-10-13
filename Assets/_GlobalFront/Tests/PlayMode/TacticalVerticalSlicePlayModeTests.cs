@@ -6,6 +6,7 @@ using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
+using GlobalFront.Server;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
@@ -69,6 +70,14 @@ namespace GlobalFront.Tests.PlayMode
         private const float RealTimeTimeoutSeconds = 20f;
 
         /// <summary>
+        /// Bound on the wait for the launch tick — the tick the switcher's own army orders
+        /// are scheduled for. Two seconds of frames at the player's fastest plausible rate
+        /// is minutes' worth of the 50 ms tick interval, so hitting it means the frame loop
+        /// is not feeding the driver at all, which is a failure rather than a slow run.
+        /// </summary>
+        private const int MaxFramesToWaitForLaunchTick = 120;
+
+        /// <summary>
         /// Bound on the manual fight. The EditMode attrition fixture measures contact at
         /// well under 700 ticks for the same quadrant layout, so this is that plus the reap
         /// grace and a margin; reaching it is a failure, not a quiet exit.
@@ -77,6 +86,13 @@ namespace GlobalFront.Tests.PlayMode
 
         /// <summary>Manual ticks between two real frames, so the fight still spans frames.</summary>
         private const int TicksPerFrame = 8;
+
+        /// <summary>
+        /// Ticks of marching: enough for every unit to cover a few metres toward its block
+        /// and so prove it was ordered, far short of the several hundred the two armies need
+        /// to reach contact.
+        /// </summary>
+        private const int MarchTicks = 24;
 
         /// <summary>Tolerance for a camera focus the minimap set from a projected world point.</summary>
         private const float CameraToleranceMetres = 0.01f;
@@ -492,7 +508,173 @@ namespace GlobalFront.Tests.PlayMode
         }
 
         // ----------------------------------------------------------------
-        // 6 — the switcher, last because it edits the shared scene
+        // 6 — a selection bigger than one command, across frames
+        // ----------------------------------------------------------------
+
+        /// <summary>
+        /// The 200-unit move that step 3.7's command batching exists for, proven on the
+        /// slice rather than on a fake sink: the drag's tail has to reach the authoritative
+        /// roster as an accepted order, or a hundred units stand still in front of the
+        /// player while the client believes it gave one order for everyone.
+        /// </summary>
+        [UnityTest]
+        [Order(6)]
+        public IEnumerator VerticalSlice_TwoHundredUnitMove_OrdersEveryFriendlyUnitAcrossRealFrames()
+        {
+            // Manual ticks for the same reason the fight takes them: two hundred units
+            // crossing a 400 m battlefield is minutes of wall clock at 20 ticks a second,
+            // and this test only needs the orders to land, not the army to arrive.
+            var runner = BuildSlice(FullRoster, autoStartRealTime: false);
+
+            var selected = SelectEveryLocalUnit(runner);
+            Assert.That(selected, Is.EqualTo(HalfFullRoster), "the slice splits its roster in two");
+            Assert.That(
+                runner.Selection.SelectedCount,
+                Is.GreaterThan(SimulationConstants.MaxSelectedEntities),
+                "the defect only shows on a selection one command cannot carry");
+
+            var attemptedBefore = runner.CommandSink.AttemptedCount;
+            var submittedBefore = runner.CommandSink.SubmittedCount;
+            Assert.That(
+                runner.Selection.IssueMove(new WorldPointMm(0, 60_000), runner.CurrentTick + 1ul, runner.CommandSink),
+                Is.True);
+
+            Assert.That(
+                runner.CommandSink.AttemptedCount,
+                Is.EqualTo(attemptedBefore + 2),
+                "a two-hundred-unit drag hands the channel two orders, not one truncated one");
+            Assert.That(
+                runner.CommandSink.SubmittedCount,
+                Is.EqualTo(submittedBefore + 2),
+                "and the host accepts both: a second order it refuses is a hundred units left behind");
+            Assert.That(runner.CommandSink.LastRejection, Is.EqualTo(MatchCommandRejection.None));
+
+            // One tick applies the scheduled orders, one real frame lets the replication
+            // and presentation that follow it run in the loop a player gets.
+            runner.StepSimulationTick();
+            yield return null;
+            runner.StepPresentationFrame(TickSeconds, Time.unscaledTimeAsDouble);
+
+            var withDestination = 0;
+            var destinations = new HashSet<WorldPointMm>();
+            foreach (var entity in LocalEntities(runner))
+            {
+                Assert.That(runner.Host.TryGetUnit(entity, out var unit), Is.True, $"{entity} left the roster");
+                if (unit.HasMoveTarget)
+                {
+                    withDestination++;
+                    destinations.Add(unit.MoveTarget);
+                }
+            }
+
+            Assert.That(withDestination, Is.EqualTo(HalfFullRoster), "no friendly unit may be left standing");
+
+            // The witness that the two blocks were not aimed at the same ground: a shared
+            // destination would hand FormationLayout the same hundred slots twice, so 200
+            // units would be ordered onto 100 positions and two would file into each.
+            Assert.That(
+                destinations.Count,
+                Is.EqualTo(HalfFullRoster),
+                "every ordered unit has ground of its own; blocks that share a destination " +
+                "give two units the same slot");
+
+            var enemyWithDestination = 0;
+            var world = runner.World;
+            for (var slot = 0; slot < world.Capacity; slot++)
+            {
+                if (!world.TryGetSlotState(slot, out var state) ||
+                    !state.IsLive ||
+                    state.Owner == runner.LocalPlayer)
+                {
+                    continue;
+                }
+
+                Assert.That(runner.Host.TryGetUnit(state.Entity, out var unit), Is.True);
+                if (unit.HasMoveTarget)
+                {
+                    enemyWithDestination++;
+                }
+            }
+
+            Assert.That(enemyWithDestination, Is.EqualTo(0), "batching the player's army must not order someone else's");
+        }
+
+        // ----------------------------------------------------------------
+        // 7 — the sandbox march [M] issues, across frames
+        // ----------------------------------------------------------------
+
+        /// <summary>
+        /// What the <c>[M]</c> key does: the two entry points that put the whole battlefield
+        /// into motion. The key itself is a hardware read the suite cannot make — mock mode
+        /// pins a headless slice's inputs by design — so this proves the orders behind it
+        /// reach all 400 units and that all 400 of them actually start walking.
+        /// </summary>
+        [UnityTest]
+        [Order(7)]
+        public IEnumerator VerticalSlice_ConvergenceMarch_PutsEveryUnitOfBothArmiesInMotion()
+        {
+            var runner = BuildSlice(FullRoster, autoStartRealTime: false);
+
+            // The slice opens peaceful: both armies stand in their own quadrant, so a tester
+            // has exactly one key to press to start the battle.
+            Assert.That(runner.FriendlyAliveCount, Is.EqualTo(HalfFullRoster));
+            Assert.That(runner.EnemyAliveCount, Is.EqualTo(HalfFullRoster));
+
+            var positionsAtStart = SnapshotAuthoritativePositions(runner);
+            var frameCount = Time.frameCount;
+            Assert.That(
+                runner.IssueConvergenceMarch(),
+                Is.EqualTo(FullRoster / SimulationConstants.MaxSelectedEntities),
+                "two armies of two hundred is four orders at the command ceiling");
+
+            // Manual ticks, real frames between them: the march has to run through the same
+            // loop the player watches.
+            var presentationClock = (double)Time.unscaledTimeAsDouble;
+            for (var tick = 0; tick < MarchTicks; tick++)
+            {
+                runner.StepSimulationTick();
+                if (tick % TicksPerFrame != 0)
+                {
+                    continue;
+                }
+
+                yield return null;
+                presentationClock += (double)SimulationConstants.ServerTickDurationSeconds * TicksPerFrame;
+                runner.StepPresentationFrame(TickSeconds, presentationClock);
+            }
+
+            var moved = 0;
+            var withDestination = 0;
+            var world = runner.World;
+            for (var slot = 0; slot < world.Capacity; slot++)
+            {
+                if (!world.TryGetSlotState(slot, out var state) || !state.IsLive)
+                {
+                    continue;
+                }
+
+                Assert.That(runner.Host.TryGetUnit(state.Entity, out var unit), Is.True);
+                if (unit.HasMoveTarget)
+                {
+                    withDestination++;
+                }
+
+                if (unit.Position != positionsAtStart[slot])
+                {
+                    moved++;
+                }
+            }
+
+            Assert.That(withDestination, Is.EqualTo(FullRoster), "the march orders every unit on the battlefield");
+            Assert.That(moved, Is.EqualTo(FullRoster), "and every one of them is actually travelling");
+            Assert.That(
+                Time.frameCount,
+                Is.GreaterThan(frameCount),
+                "the march must have spanned real Unity frames, not only a tick loop");
+        }
+
+        // ----------------------------------------------------------------
+        // 8 — the switcher, last because it edits the shared scene
         // ----------------------------------------------------------------
 
         [UnityTest]
@@ -522,16 +704,36 @@ namespace GlobalFront.Tests.PlayMode
             Assert.That(runner.Binder.DestroyedViewCount, Is.EqualTo(0L));
 
             var bootFrame = Time.frameCount;
-            yield return null;
-            yield return null;
-            yield return null;
+            var bootTick = runner.CurrentTick;
+
+            // The switcher's army orders are scheduled for the tick *after* the one the
+            // slice was built on, so the roster reads below need that tick to have actually
+            // run. A fixed three frames is not that: a -batchmode player can burn three
+            // frames inside one 50 ms tick interval, and then neither the march nor the
+            // engagement has reached the roster and the asserts answer the question "did
+            // the machine feel like ticking yet" rather than "did the switcher arm the
+            // armies". Measured: three frames is 0 or 1 ticks, and the pass rate was half.
+            // Bounded, so a driver that never ticks fails this test instead of hanging it.
+            var framesWaitedForTick = 0;
+            while (runner.CurrentTick == bootTick &&
+                   framesWaitedForTick < MaxFramesToWaitForLaunchTick)
+            {
+                yield return null;
+                framesWaitedForTick++;
+            }
+
+            Assert.That(
+                runner.CurrentTick,
+                Is.GreaterThan(bootTick),
+                $"the launched slice never advanced its host in {framesWaitedForTick} frames, " +
+                "so nothing here can say whether its orders were applied");
 
             Assert.That(GameObject.Find(GlobalFrontRuntimeBootstrap.TacticalSliceRootName) != null,
                 Is.True, "the slice must be a live scene root after the switch");
             Assert.That(
                 GameObject.Find(PrototypeWorldName) == null, Is.True,
-                "Object.Destroy runs at the end of a frame, so three real frames later the " +
-                "40-unit prototype world must be gone");
+                "Object.Destroy runs at the end of a frame, so once the launch tick has " +
+                "passed the 40-unit prototype world must be gone");
             Assert.That(
                 Object.FindAnyObjectByType<PrototypeRtsController>() == null, Is.True,
                 "and the legacy controller with it: two hosts pacing two matches into one " +
@@ -647,8 +849,65 @@ namespace GlobalFront.Tests.PlayMode
         }
 
         // ----------------------------------------------------------------
+        // 8 — canvas scaling, which only a real frame can show
+        // ----------------------------------------------------------------
+
+        /// <summary>
+        /// The canvas scaler computes its factor when the component enables, and component
+        /// enablement is a Play Mode event: an EditMode test can read the settings written on
+        /// the component but never sees them applied to the canvas. This is the half of the
+        /// layout fix the player actually gets — that the two tactical canvases occupy the
+        /// same fraction of whatever window the match runs in, while the marquee, whose
+        /// rectangle arrives in raw screen pixels, keeps one unit to one pixel.
+        /// </summary>
+        [UnityTest]
+        [Order(8)]
+        public IEnumerator VerticalSlice_TacticalCanvases_ScaleToTheDisplayTheyAreDrawnOn()
+        {
+            var runner = BuildSlice(CompactRoster, autoStartRealTime: false);
+            yield return null;
+
+            AssertScaledAgainstTheDisplay(runner.PermanentHud.MinimapTransform, "permanent");
+            AssertScaledAgainstTheDisplay(runner.SelectionHud.PanelTransform, "dynamic");
+
+            var marqueeCanvas = runner.MarqueePresenter.transform.GetComponentInChildren<Canvas>();
+            Assert.That(marqueeCanvas, Is.Not.Null, "the marquee presenter builds no canvas");
+            Assert.That(
+                marqueeCanvas.scaleFactor,
+                Is.EqualTo(1f).Within(1e-3f),
+                "the marquee is drawn in the pixel space the pointer moves in, so scaling it " +
+                "with the panels would draw the rubber band somewhere else entirely");
+        }
+
+        // ----------------------------------------------------------------
         // helpers
         // ----------------------------------------------------------------
+
+        /// <summary>
+        /// The canvas a panel lives on scales by the geometric mean of the display's width
+        /// and height ratios against the 1920x1080 frame the HUD is authored for — the
+        /// half-way ("match 0.5") rule the canvas scaler implements, restated here so a
+        /// canvas left at its authored pixels, or measured against a different reference,
+        /// is a finding rather than a screenshot someone has to squint at.
+        /// </summary>
+        private static void AssertScaledAgainstTheDisplay(RectTransform panel, string label)
+        {
+            var canvas = panel.GetComponentInParent<Canvas>();
+            Assert.That(canvas, Is.Not.Null, $"the {label} panel is not on a canvas");
+
+            var display = canvas.renderingDisplaySize;
+            Assert.That(
+                display.x > 0f && display.y > 0f,
+                Is.True,
+                $"{label} canvas reports no display to scale against");
+
+            var expected = Mathf.Sqrt((display.x / 1920f) * (display.y / 1080f));
+            Assert.That(
+                canvas.scaleFactor,
+                Is.EqualTo(expected).Within(1e-3f),
+                $"the {label} canvas is not scaled to the screen it is drawn on: expected " +
+                $"{expected:F4} for a {display.x}x{display.y} display against 1920x1080");
+        }
 
         private TacticalVerticalSliceRunner BuildSlice(int unitCount, bool autoStartRealTime)
         {
@@ -752,6 +1011,74 @@ namespace GlobalFront.Tests.PlayMode
             slot = -1;
             Assert.Fail($"the slice has no living local unit of archetype {kind}");
             return default;
+        }
+
+        /// <summary>
+        /// Selects every live unit the local player owns: entity and slot together, which is
+        /// the pair the selection API asks for because its table is keyed by slot. This is the
+        /// drag-over-the-whole-army a tester makes, without depending on where the overview
+        /// camera happens to point.
+        /// </summary>
+        /// <returns>How many units the selection now holds.</returns>
+        private static int SelectEveryLocalUnit(TacticalVerticalSliceRunner runner)
+        {
+            var selected = 0;
+            var world = runner.World;
+            for (var slot = 0; slot < world.Capacity; slot++)
+            {
+                if (!world.TryGetSlotState(slot, out var state) ||
+                    !state.IsLive ||
+                    state.Owner != runner.LocalPlayer)
+                {
+                    continue;
+                }
+
+                runner.Selection.AddSelected(state.Entity, slot);
+                selected++;
+            }
+
+            Assert.That(runner.Selection.SelectedCount, Is.EqualTo(selected));
+            return selected;
+        }
+
+        /// <summary>Every live unit the local player owns, as the replicated world sees it.</summary>
+        private static List<CoreEntityId> LocalEntities(TacticalVerticalSliceRunner runner)
+        {
+            var entities = new List<CoreEntityId>();
+            var world = runner.World;
+            for (var slot = 0; slot < world.Capacity; slot++)
+            {
+                if (world.TryGetSlotState(slot, out var state) &&
+                    state.IsLive &&
+                    state.Owner == runner.LocalPlayer)
+                {
+                    entities.Add(state.Entity);
+                }
+            }
+
+            return entities;
+        }
+
+        /// <summary>
+        /// The authoritative position of every live unit, indexed by the world slot it sits
+        /// in — the same index <see cref="SnapshotHealth"/> uses, so a march can be measured
+        /// as ground covered rather than as a order count.
+        /// </summary>
+        private static WorldPointMm[] SnapshotAuthoritativePositions(TacticalVerticalSliceRunner runner)
+        {
+            var world = runner.World;
+            var positions = new WorldPointMm[world.Capacity];
+            for (var slot = 0; slot < world.Capacity; slot++)
+            {
+                if (world.TryGetSlotState(slot, out var state) &&
+                    state.IsLive &&
+                    runner.Host.TryGetUnit(state.Entity, out var unit))
+                {
+                    positions[slot] = unit.Position;
+                }
+            }
+
+            return positions;
         }
 
         /// <summary>The world-slot health of every live unit, taken before a fight starts.</summary>

@@ -14,6 +14,7 @@ using GlobalFront.Server;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools.Constraints;
+using UnityEngine.UI;
 using EntityId = GlobalFront.Core.Model.EntityId;
 using GcAssert = UnityEngine.TestTools.Constraints.Is;
 using Is = NUnit.Framework.Is;
@@ -702,7 +703,7 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         }
 
         [Test]
-        public void SelectionBiggerThanTheCommandCeiling_IsCappedInCanonicalOrder()
+        public void SelectionBiggerThanTheCommandCeiling_IsBatchedInCanonicalOrder()
         {
             const int Units = 120;
             for (var index = 0; index < Units; index++)
@@ -721,12 +722,132 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
 
             Assert.That(_selection.IssueStop(604, _sink), Is.True);
 
-            var issued = _sink.Only.Entities;
-            Assert.That(issued.Length, Is.EqualTo(SimulationConstants.MaxSelectedEntities));
-            for (var index = 0; index < issued.Length; index++)
+            // The ceiling is per command, so the extra twenty are a second order rather
+            // than twenty units that never hear the stop.
+            Assert.That(_sink.Count, Is.EqualTo(2));
+            Assert.That(_sink.issues[0].Entities.Length, Is.EqualTo(SimulationConstants.MaxSelectedEntities));
+            Assert.That(_sink.issues[1].Entities.Length, Is.EqualTo(Units - SimulationConstants.MaxSelectedEntities));
+
+            var expectedEntity = 1UL;
+            for (var batch = 0; batch < _sink.Count; batch++)
             {
-                Assert.That(issued[index], Is.EqualTo(new EntityId((ulong)(index + 1))), $"slot {index}");
+                Assert.That(_sink.issues[batch].Header.Type, Is.EqualTo(GameCommandType.Stop), $"batch {batch}");
+                foreach (var entity in _sink.issues[batch].Entities)
+                {
+                    Assert.That(
+                        entity,
+                        Is.EqualTo(new EntityId(expectedEntity)),
+                        $"batch {batch} must carry the next hundred in canonical order");
+                    expectedEntity++;
+                }
             }
+
+            Assert.That(expectedEntity, Is.EqualTo((ulong)Units + 1), "every selected unit is ordered, once");
+        }
+
+        /// <summary>
+        /// Defect A: a 200-unit drag used to be truncated to its first hundred, so the
+        /// second hundred stood still while the player watched the order answered. One
+        /// command per block of <see cref="SimulationConstants.MaxSelectedEntities"/>, each
+        /// with its own sequence, is what makes the whole selection move.
+        /// </summary>
+        [Test]
+        public void IssueMove_WithMoreThan100Units_BatchesCommandsSequentially()
+        {
+            const int Units = 200;
+            for (var index = 0; index < Units; index++)
+            {
+                Spawn(
+                    (ulong)(index + 1),
+                    MetresToMillimetres(-11f + (index % 14) * 2f),
+                    MetresToMillimetres(-9f + (index / 14) * 2f));
+            }
+
+            for (var entity = 1UL; entity <= Units; entity++)
+            {
+                _selection.AddSelected(new EntityId(entity), SlotOf(entity));
+            }
+
+            Assert.That(_selection.SelectedCount, Is.EqualTo(Units));
+
+            // Straight north of the army's centroid, so the chosen facing is North and
+            // the second block's stepped destination is an equality rather than a guess.
+            var destination = new WorldPointMm(0, 60_000);
+            Assert.That(_selection.IssueMove(destination, 605, _sink), Is.True);
+
+            Assert.That(_sink.Count, Is.EqualTo(2), "two hundreds are two orders, not one truncated one");
+
+            Assert.That(_sink.issues[0].Entities.Length, Is.EqualTo(SimulationConstants.MaxSelectedEntities));
+            Assert.That(_sink.issues[1].Entities.Length, Is.EqualTo(SimulationConstants.MaxSelectedEntities));
+            Assert.That(_sink.issues[0].Header.Sequence, Is.EqualTo(1u));
+            Assert.That(_sink.issues[1].Header.Sequence, Is.EqualTo(2u), "a replayed sequence is a refused order");
+
+            var expectedEntity = 1UL;
+            for (var batch = 0; batch < _sink.Count; batch++)
+            {
+                var issued = _sink.issues[batch];
+                Assert.That(issued.Header.Type, Is.EqualTo(GameCommandType.Move), $"batch {batch}");
+                Assert.That(issued.Header.Player, Is.EqualTo(new PlayerId(Local)), $"batch {batch}");
+                Assert.That(issued.Header.RequestedTick, Is.EqualTo(605UL), $"batch {batch}");
+                Assert.That(issued.Formation.IsValid, Is.True, $"batch {batch}");
+                Assert.That(
+                    issued.Formation.Facing,
+                    Is.EqualTo(CardinalFacing.North),
+                    $"batch {batch} faces the way the whole army was aimed, not its own way");
+
+                foreach (var entity in issued.Entities)
+                {
+                    Assert.That(
+                        entity,
+                        Is.EqualTo(new EntityId(expectedEntity)),
+                        $"batch {batch} must carry the next hundred in canonical order");
+                    expectedEntity++;
+                }
+            }
+
+            Assert.That(expectedEntity, Is.EqualTo((ulong)Units + 1), "all two hundred are ordered, exactly once");
+
+            // The clicked point is where the first block forms up, unchanged from a
+            // selection that fits one command. The second falls in behind it, one full
+            // block depth per batch: FormationLayout hands out positions by index in the
+            // payload, so two blocks on one destination would be given the same ground.
+            Assert.That(_sink.issues[0].Destination, Is.EqualTo(destination));
+            Assert.That(
+                _sink.issues[1].Destination,
+                Is.EqualTo(new WorldPointMm(
+                    destination.X,
+                    destination.Z - FormationLayout.GetAutoColumnCount(SimulationConstants.MaxSelectedEntities) *
+                        _selection.FormationSpacingMillimetres)));
+        }
+
+        /// <summary>
+        /// The other half of the ceiling rule: a selection that fits one command must
+        /// still be one command, aimed at exactly the point the player clicked.
+        /// </summary>
+        [Test]
+        public void IssueMove_WithExactlyOneBatchUnit_SubmitsOneCommandAtTheClickedPoint()
+        {
+            const int Units = SimulationConstants.MaxSelectedEntities;
+            for (var index = 0; index < Units; index++)
+            {
+                Spawn(
+                    (ulong)(index + 1),
+                    MetresToMillimetres(-11f + (index % 10) * 2f),
+                    MetresToMillimetres(-9f + (index / 10) * 2f));
+            }
+
+            for (var entity = 1UL; entity <= Units; entity++)
+            {
+                _selection.AddSelected(new EntityId(entity), SlotOf(entity));
+            }
+
+            var destination = new WorldPointMm(0, 60_000);
+            Assert.That(_selection.IssueMove(destination, 606, _sink), Is.True);
+
+            Assert.That(_sink.Count, Is.EqualTo(1), "batching must not split an army that already fits");
+            Assert.That(_sink.issues[0].Destination, Is.EqualTo(destination));
+            Assert.That(_sink.issues[0].Entities.Length, Is.EqualTo(Units));
+            Assert.That(_sink.issues[0].Header.Sequence, Is.EqualTo(1u));
         }
 
         [Test]
@@ -1417,6 +1538,86 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         }
 
         /// <summary>
+        /// Playing-capture defect: dragging the left button drew no rubber band, and the
+        /// report blamed <c>Image.Type.Sliced</c> over a null sprite for generating no
+        /// vertices. uGUI decides otherwise — <c>Image.OnPopulateMesh</c> falls through to
+        /// <c>Graphic.OnPopulateMesh</c> when there is no sprite and emits a solid quad — so
+        /// a box was being drawn: a 35%-alpha green sheet in the same colour family as the
+        /// terrain under it, waiting for a bordered 9-slice that nothing ever supplies.
+        ///
+        /// The assertion is therefore the property the player needs rather than the
+        /// mechanism the report guessed at: a shown marquee carries geometry of its own,
+        /// from a sprite it owns, in a colour that separates it from the battlefield, and it
+        /// does not depend on the untextured fall-through to be anything.
+        /// </summary>
+        [Test]
+        public void MarqueePresenter_WithNoContent_PresentsABoxThatCarriesItsOwnGeometry()
+        {
+            var host = new GameObject("Marquee");
+            var presenter = host.AddComponent<SelectionMarqueePresenter>();
+            Assert.That(presenter.Build(), Is.True);
+
+            var frame = presenter.transform.GetChild(0).GetChild(0).GetComponent<Image>();
+            Assert.That(frame, Is.Not.Null, "the marquee canvas has no frame image");
+
+            try
+            {
+                presenter.Present(true, new Rect(120f, 200f, 340f, 260f));
+                Assert.That(presenter.IsVisible, Is.True, "the presenter never showed the box");
+
+                Assert.That(
+                    frame.sprite,
+                    Is.Not.Null,
+                    "with no border art the drag box exists only as Image's null-sprite fall-through, " +
+                    "which is a coloured sheet rather than a rubber band");
+                Assert.That(
+                    frame.type,
+                    Is.EqualTo(Image.Type.Simple),
+                    "slicing a sprite with no borders costs nine quads for the same stretched fill");
+                Assert.That(
+                    GeneratedVertexCount(frame),
+                    Is.GreaterThanOrEqualTo(4),
+                    "the shown marquee generates no geometry, so there is nothing on screen to drag with");
+
+                // Translucent so the squad inside the box stays visible, and opaque enough to
+                // read against ground, units and the dark of the HUD behind it.
+                Assert.That(
+                    frame.color.a,
+                    Is.GreaterThanOrEqualTo(0.3f).And.LessThan(1f),
+                    $"the marquee's alpha is {frame.color.a:0.00}, which is either an invisible sheet " +
+                    "or a blindfold over the units being boxed");
+            }
+            finally
+            {
+                presenter.Release();
+                Object.DestroyImmediate(host);
+            }
+        }
+
+        /// <summary>
+        /// How many vertices a graphic hands the canvas when it rebuilds. uGUI decides
+        /// that inside the protected <c>OnPopulateMesh</c>, and EditMode runs no canvas
+        /// batch, so the mesh cannot be read back off the <see cref="CanvasRenderer"/>.
+        /// </summary>
+        private static int GeneratedVertexCount(Graphic graphic)
+        {
+            var populate = typeof(Graphic).GetMethod(
+                "OnPopulateMesh",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+                null,
+                new[] { typeof(VertexHelper) },
+                null);
+            Assert.That(
+                populate,
+                Is.Not.Null,
+                "uGUI no longer exposes OnPopulateMesh(VertexHelper), so nothing here can see what a widget draws");
+
+            var helper = new VertexHelper();
+            populate.Invoke(graphic, new object[] { helper });
+            return helper.currentVertCount;
+        }
+
+        /// <summary>
         /// P3-14: a camera swap retargets the projector the frame loop already holds. The
         /// per-frame budget is not the point a test can see; object identity is, and it is
         /// the same claim — no new projection object per swap.
@@ -1587,6 +1788,318 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
 
                 _selection.OnPrimaryClick(projected, additive: false, 0.0, projector);
                 Assert.That(_selection.IsSelected(new EntityId(1)), Is.True, "the box and the click agree about the same unit");
+            }
+            finally
+            {
+                Object.DestroyImmediate(camera.gameObject);
+                target.Release();
+                Object.DestroyImmediate(target);
+            }
+        }
+
+        // ------------------------------------------------------- altitude-aware picking (part 5)
+
+        /// <summary>
+        /// Playing-capture defect: from the slice's 150 m overview, clicking a unit meant
+        /// hitting a couple of pixels, and a click that missed cleared the selection
+        /// instead. The pointer's ground point is a ray-plane intersection, so a pixel of
+        /// mouse travel buys more ground the higher the camera sits — which is exactly why
+        /// a floor stated in metres stops being a floor up there.
+        /// </summary>
+        [Test]
+        public void RealCamera_ClickBesideAUnit_SelectsItFromOverviewAltitude()
+        {
+            const float OverviewAltitudeMetres = 150f;
+            const float MissDistanceMetres = 3f;
+
+            var target = new RenderTexture(800, 600, 24);
+            var camera = MakeGroundCamera(
+                target,
+                new Vector3(0f, OverviewAltitudeMetres, 0f),
+                Quaternion.LookRotation(Vector3.down),
+                orthographic: false);
+
+            try
+            {
+                var projector = new CameraUnitPointerProjector(camera);
+
+                // A scout's own footprint reaches 1.5 m, so a click 3 m off its centre is a
+                // miss by every rule this fixture had before the altitude reached it.
+                Spawn(1, 0, 0);
+                Spawn(2, 8000, 0);
+
+                var pixel = projector.ProjectToScreen(new Vector3(MissDistanceMetres, 0f, 0f));
+                Assert.That(projector.TryGetGroundPoint(pixel, out var ground), Is.True);
+                Assert.That(ground.x, Is.EqualTo(MissDistanceMetres).Within(0.05f), "the click must really land beside the unit");
+
+                _selection.OnPrimaryClick(pixel, additive: false, 0.0, projector);
+
+                Assert.That(
+                    _selection.IsSelected(new EntityId(1)),
+                    Is.True,
+                    $"one metre of reach per {UnitSelectionController.PickRadiusAltitudeStepMetres} m of " +
+                    $"altitude puts the floor at " +
+                    $"{OverviewAltitudeMetres / UnitSelectionController.PickRadiusAltitudeStepMetres:0.0} m, " +
+                    "so a unit 3 m from the clicked ground point is the unit that was clicked");
+
+                // The widening has to stay a reach, not become a rubber band: the second
+                // unit is 5 m from the pixel, which is outside the same floor.
+                Assert.That(_selection.SelectedCount, Is.EqualTo(1), "a wider pick still selects one unit, not the crowd around it");
+            }
+            finally
+            {
+                Object.DestroyImmediate(camera.gameObject);
+                target.Release();
+                Object.DestroyImmediate(target);
+            }
+        }
+
+        /// <summary>
+        /// The same click at the altitude the floor was tuned for. The compensation is a
+        /// function of height, not a licence to click anywhere: near the ground a 3 m miss
+        /// is a 3 m miss, and the empty-ground rule that clears the selection has to stay
+        /// reachable or deselecting becomes impossible.
+        /// </summary>
+        [Test]
+        public void RealCamera_ClickBesideAUnit_DoesNotReachAcrossTheGroundAtLowAltitude()
+        {
+            const float LowAltitudeMetres = 21f;
+
+            var target = new RenderTexture(800, 600, 24);
+            var camera = MakeGroundCamera(
+                target,
+                new Vector3(0f, LowAltitudeMetres, 0f),
+                Quaternion.LookRotation(Vector3.down),
+                orthographic: false);
+
+            try
+            {
+                var projector = new CameraUnitPointerProjector(camera);
+                Spawn(1, 0, 0);
+
+                var pixel = projector.ProjectToScreen(new Vector3(3f, 0f, 0f));
+
+                _selection.OnPrimaryClick(pixel, additive: false, 0.0, projector);
+
+                Assert.That(
+                    _selection.SelectedCount,
+                    Is.EqualTo(0),
+                    $"at {LowAltitudeMetres} m a 3 m miss is 74 pixels of open ground, so it has to read " +
+                    "as the empty-ground click it is");
+                Assert.That(_selection.IsSelected(new EntityId(1)), Is.False);
+            }
+            finally
+            {
+                Object.DestroyImmediate(camera.gameObject);
+                target.Release();
+                Object.DestroyImmediate(target);
+            }
+        }
+
+        // ------------------------------------------------ command reach (part 6 capture)
+
+        /// <summary>
+        /// Playing-capture defect: a right-click on free ground issued an attack order
+        /// instead of a move, and the squad kept breaking into the melee it was already
+        /// in instead of walking to the clicked point.
+        ///
+        /// <b>The mechanism.</b> One pick decides an order's type — an enemy under the
+        /// cursor means Attack, anything else means Move — and that pick was sharing the
+        /// <em>selection's</em> altitude-widened reach. The widening is a forgiveness for
+        /// "which unit did I aim at", and at the slice's 150 m overview it is
+        /// 150 / 35 = 4.3 m, or 7.4 m at the 260 m ceiling, while the armies' own
+        /// formation grid is 8.5 m. Once the two sides were interleaved, every patch of
+        /// ground between two files was inside an enemy's reach, so the click the player
+        /// made to pull them out of the fight re-armed the fight instead. A command pick
+        /// now uses a unit's own footprint, so hull means hull and visible empty ground
+        /// means ground.
+        /// </summary>
+        [Test]
+        public void RightClick_BesideAnEnemyAtOverviewAltitude_IssuesMoveNotAttack()
+        {
+            const float OverviewAltitudeMetres = 150f;
+            const float EnemyCentreMetres = 1f;
+            const float ClickMetres = 4f;
+
+            var target = new RenderTexture(800, 600, 24);
+            var camera = MakeGroundCamera(
+                target,
+                new Vector3(0f, OverviewAltitudeMetres, 0f),
+                Quaternion.LookRotation(Vector3.down),
+                orthographic: false);
+
+            try
+            {
+                var projector = new CameraUnitPointerProjector(camera);
+
+                // The enemy is 3 m from the clicked ground point: far outside its own
+                // 0.5 m footprint, well inside the reach this camera's altitude used to
+                // report. The player's squad sits on the far side so only the enemy could
+                // be misread as the thing under the cursor.
+                Spawn(1, -10_000, 0);
+                Spawn(2, (int)(EnemyCentreMetres * 1000f), 0, owner: Enemy);
+                _selection.SelectSingle(new EntityId(1), SlotOf(1));
+
+                var pixel = projector.ProjectToScreen(new Vector3(ClickMetres, 0f, 0f));
+                Assert.That(
+                    projector.TryGetGroundPoint(pixel, out var ground),
+                    Is.True,
+                    "the click has to have ground under it, or this fixture is testing the refusal path");
+                Assert.That(
+                    ground.x,
+                    Is.EqualTo(ClickMetres).Within(0.05f),
+                    "and the clicked point really is the open ground beside the enemy");
+
+                Assert.That(
+                    _selection.TryIssueCommandAtPointer(pixel, projector, 700, _sink),
+                    Is.True);
+
+                var issued = _sink.Only;
+                Assert.That(
+                    issued.Header.Type,
+                    Is.EqualTo(GameCommandType.Move),
+                    $"a click {ClickMetres - EnemyCentreMetres:0} m off an enemy is free ground, but the " +
+                    $"selection's widened floor at {OverviewAltitudeMetres:0} m reaches " +
+                    $"{OverviewAltitudeMetres / UnitSelectionController.PickRadiusAltitudeStepMetres:0.0} m and " +
+                    "named it — an attack order, which re-arms acquisition for the whole squad");
+                Assert.That(
+                    issued.Target.IsValid,
+                    Is.False,
+                    "a move order that also carries a target is the attack order this click was not");
+                Assert.That(issued.Destination.X, Is.EqualTo(4000).Within(1), "the squad walks to the pixel it was clicked on");
+                Assert.That(issued.Destination.Z, Is.EqualTo(0).Within(1));
+            }
+            finally
+            {
+                Object.DestroyImmediate(camera.gameObject);
+                target.Release();
+                Object.DestroyImmediate(target);
+            }
+        }
+
+        /// <summary>
+        /// The other side of the same rule, and the guard against tightening it too far:
+        /// taming the reach must not cost the player the ability to order an attack at
+        /// all. A cursor on an enemy's own footprint still names it.
+        /// </summary>
+        [Test]
+        public void RightClick_OnAnEnemyHullAtOverviewAltitude_StillIssuesAttack()
+        {
+            var target = new RenderTexture(800, 600, 24);
+            var camera = MakeGroundCamera(
+                target,
+                new Vector3(0f, 150f, 0f),
+                Quaternion.LookRotation(Vector3.down),
+                orthographic: false);
+
+            try
+            {
+                var projector = new CameraUnitPointerProjector(camera);
+
+                Spawn(1, -10_000, 0);
+                Spawn(2, 1000, 0, owner: Enemy);
+                _selection.SelectSingle(new EntityId(1), SlotOf(1));
+
+                // 0.4 m off the enemy's centre — inside its footprint, outside the
+                // 0.5 m radius only by a hair, so a pick bounded by hulls alone still
+                // has to reach it.
+                var pixel = projector.ProjectToScreen(new Vector3(1.4f, 0f, 0f));
+
+                Assert.That(
+                    _selection.TryIssueCommandAtPointer(pixel, projector, 701, _sink),
+                    Is.True);
+                Assert.That(_sink.Only.Header.Type, Is.EqualTo(GameCommandType.Attack));
+                Assert.That(_sink.Only.Target, Is.EqualTo(new EntityId(2)));
+            }
+            finally
+            {
+                Object.DestroyImmediate(camera.gameObject);
+                target.Release();
+                Object.DestroyImmediate(target);
+            }
+        }
+
+        /// <summary>
+        /// The forgiveness half, at the zoom ceiling: uncapped, the altitude widening put
+        /// 7.4 m of reach on a 1 m footprint, which is nearly a whole grid cell — a click
+        /// on obviously empty ground selected the unit next to it and the player could not
+        /// deselect. Capped at <see cref="UnitSelectionController.MaxSelectionPickRadiusMetres"/>
+        /// the click reads as the empty ground it is.
+        /// </summary>
+        [Test]
+        public void RealCamera_ClickFiveMetresFromAUnitAtZoomCeiling_ClearsInsteadOfSelecting()
+        {
+            const float CeilingAltitudeMetres = 260f;
+            const float MissDistanceMetres = 5f;
+
+            var target = new RenderTexture(800, 600, 24);
+            var camera = MakeGroundCamera(
+                target,
+                new Vector3(0f, CeilingAltitudeMetres, 0f),
+                Quaternion.LookRotation(Vector3.down),
+                orthographic: false);
+
+            try
+            {
+                var projector = new CameraUnitPointerProjector(camera);
+                Spawn(1, (int)(MissDistanceMetres * 1000f), 0);
+
+                var pixel = projector.ProjectToScreen(new Vector3(0f, 0f, 0f));
+
+                _selection.OnPrimaryClick(pixel, additive: false, 0.0, projector);
+
+                Assert.That(
+                    _selection.SelectedCount,
+                    Is.EqualTo(0),
+                    $"one metre of reach per " +
+                    $"{UnitSelectionController.PickRadiusAltitudeStepMetres} m put the floor at " +
+                    $"{CeilingAltitudeMetres / UnitSelectionController.PickRadiusAltitudeStepMetres:0.0} m at this " +
+                    $"altitude, so a click {MissDistanceMetres} m from a unit with nothing under it selected that " +
+                    "unit and the player lost the ability to deselect");
+                Assert.That(
+                    _selection.IsSelected(new EntityId(1)),
+                    Is.False,
+                    $"and it was the unit {MissDistanceMetres} m away that got the ring");
+            }
+            finally
+            {
+                Object.DestroyImmediate(camera.gameObject);
+                target.Release();
+                Object.DestroyImmediate(target);
+            }
+        }
+
+        /// <summary>
+        /// The cap has to stay above the pixel a unit occupies on screen, or it is a
+        /// regression of the part-5 finding rather than a bound on it: 3 m at 260 m is
+        /// about nine pixels of open ground, still the same intended click.
+        /// </summary>
+        [Test]
+        public void RealCamera_ClickThreeMetresFromAUnitAtZoomCeiling_StillSelectsIt()
+        {
+            const float CeilingAltitudeMetres = 260f;
+
+            var target = new RenderTexture(800, 600, 24);
+            var camera = MakeGroundCamera(
+                target,
+                new Vector3(0f, CeilingAltitudeMetres, 0f),
+                Quaternion.LookRotation(Vector3.down),
+                orthographic: false);
+
+            try
+            {
+                var projector = new CameraUnitPointerProjector(camera);
+                Spawn(1, 3000, 0);
+
+                var pixel = projector.ProjectToScreen(new Vector3(0f, 0f, 0f));
+
+                _selection.OnPrimaryClick(pixel, additive: false, 0.0, projector);
+
+                Assert.That(
+                    _selection.IsSelected(new EntityId(1)),
+                    Is.True,
+                    $"the cap is {UnitSelectionController.MaxSelectionPickRadiusMetres:0.0} m, so a unit 3 m off " +
+                    "the cursor is still the unit that was clicked");
             }
             finally
             {

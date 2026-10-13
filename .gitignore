@@ -69,3 +69,5 @@ crashlytics-build.properties
 !/Artifacts/Logs/.gitkeep
 /Artifacts/TestResults/*
 !/Artifacts/TestResults/.gitkeep
+/PlayModeTestResults*.xml
+/ProjectSettings/Packages/

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using GlobalFront.Client;
 using GlobalFront.Client.Catalog;
 using GlobalFront.Client.Presentation;
@@ -12,6 +13,7 @@ using GlobalFront.Core.Simulation;
 using GlobalFront.Server;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.TestTools.Constraints;
 using EntityId = GlobalFront.Core.Model.EntityId;
 using GcAssert = UnityEngine.TestTools.Constraints.Is;
@@ -936,6 +938,118 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                 "the surviving slice root is the one the switcher just created");
         }
 
+        /// <summary>
+        /// Playing-capture defect: launching the slice dropped the player into a battle
+        /// that was already decided. Both armies were marched onto the same 14 m patch —
+        /// the convergence destinations are (+5, +5) m and (-5, -5) m — and then ordered
+        /// into each other, well inside the 18 m at which the server lets a unit acquire
+        /// targets on its own, so four hundred units destroyed one another in about thirty
+        /// seconds and no frame ever arrived in which the player was commanding anything.
+        ///
+        /// <b>Why the assertions are made this way.</b> The orders are enqueued for the
+        /// next tick, so reading the roster the instant the switch returns proves nothing —
+        /// a client that has not yet been replicated to looks identical either way. The
+        /// host's own snapshots are read instead, after the ticks that would have applied
+        /// them, which is also what makes the witness bite: a reverted default lands move
+        /// targets on the whole roster within two ticks. The separation half is the reason
+        /// standing still is genuinely quiet rather than merely un-ordered: the quadrants
+        /// put the closest pair 113 m apart, six times the acquisition range.
+        /// </summary>
+        [Test]
+        public void ActivateTacticalVerticalSlice_WithNoArguments_HandsThePlayerQuietArmies()
+        {
+            // No march argument at all: this is the call the F9 key and the prototype HUD's
+            // button make, so the default is the gameplay the player is handed.
+            var runner = GlobalFrontRuntimeBootstrap.ActivateTacticalVerticalSlice(
+                SmallRoster,
+                createVisuals: false);
+            _runners.Add(runner);
+
+            var before = runner.Host.GetAllSnapshots();
+            Assert.That(before.Length, Is.EqualTo(SmallRoster));
+
+            // The launched slice paces itself; two seconds of deterministic ticks needs the
+            // driver back on manual, which is what the switch leaves behind it.
+            runner.Host.StopRealTime();
+            for (var tick = 0; tick < 40; tick++)
+            {
+                Assert.That(runner.Host.TickOnce(), Is.True, "the manual driver must advance on request");
+            }
+
+            var after = runner.Host.GetAllSnapshots();
+            var commanded = 0;
+            var moved = 0;
+            var wounded = 0;
+            var closestSquaredMillimetres = long.MaxValue;
+
+            for (var index = 0; index < after.Length; index++)
+            {
+                var unit = after[index];
+                var spawned = before[index];
+                Assert.That(
+                    unit.Entity,
+                    Is.EqualTo(spawned.Entity),
+                    "the snapshot tables are compared positionally here, so an unstable order would " +
+                    "measure two different units and answer nothing");
+
+                if (unit.HasMoveTarget || unit.AttackTarget.IsValid)
+                {
+                    commanded++;
+                }
+
+                if (unit.CurrentHealth < spawned.CurrentHealth)
+                {
+                    wounded++;
+                }
+
+                if (unit.Position.X != spawned.Position.X || unit.Position.Z != spawned.Position.Z)
+                {
+                    moved++;
+                }
+
+                var friendly = unit.Owner == runner.LocalPlayer;
+                for (var other = 0; other < after.Length; other++)
+                {
+                    var rival = after[other];
+                    if ((rival.Owner == runner.LocalPlayer) == friendly)
+                    {
+                        continue;
+                    }
+
+                    var nearX = (long)unit.Position.X - rival.Position.X;
+                    var nearZ = (long)unit.Position.Z - rival.Position.Z;
+                    var squared = nearX * nearX + nearZ * nearZ;
+                    if (squared < closestSquaredMillimetres)
+                    {
+                        closestSquaredMillimetres = squared;
+                    }
+                }
+            }
+
+            var closestApproachMillimetres = (long)System.Math.Sqrt((double)closestSquaredMillimetres);
+
+            Assert.That(
+                commanded,
+                Is.EqualTo(0),
+                $"{commanded} of {SmallRoster} units hold an order two seconds after a slice that was " +
+                "launched with no arguments — the switch is starting the battle for the player, and " +
+                "the first thing a right-click does then is fail to matter");
+            Assert.That(
+                moved,
+                Is.EqualTo(0),
+                $"{moved} units left the formation they were spawned in");
+            Assert.That(
+                wounded,
+                Is.EqualTo(0),
+                $"{wounded} units lost health while standing in their own quadrant");
+            Assert.That(
+                closestApproachMillimetres,
+                Is.GreaterThan(4L * SimulationConstants.AutoAcquireRangeMm),
+                $"the two armies start {closestApproachMillimetres} mm apart against an automatic " +
+                $"acquisition range of {SimulationConstants.AutoAcquireRangeMm} mm; standing still is " +
+                "only quiet if nobody is in range to shoot");
+        }
+
         [Test]
         public void UnitsReachingTheirDestination_KeepTheStateChecksumInSyncAcrossTheLoopback()
         {
@@ -1276,6 +1390,136 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             Assert.That(runner.IsInitialized, Is.False);
         }
 
+        // ------------------------------------------- overlay drawing hook (playing capture)
+
+        /// <summary>
+        /// Playing-capture defect: the selection rings and the health bars were built,
+        /// drawn and never seen. <c>LateUpdate</c> runs before the camera renders, and the
+        /// camera opens its own frame by clearing it, so a command buffer executed from
+        /// there is gone a few hundred microseconds after it was submitted. The overlay
+        /// belongs on the pipeline's camera-end callback — the slot URP's own
+        /// <c>PixelPerfectCamera</c> uses, which fires once the camera has finished with
+        /// its context and onto the target about to be shown.
+        ///
+        /// <b>What EditMode can and cannot observe.</b> A headless run draws nothing, so
+        /// the pixels are out of reach; the wiring is not. This asserts the subscription
+        /// exists, that it is released again, and — below — that the pre-camera hook is gone
+        /// rather than kept alongside it.
+        /// </summary>
+        [Test]
+        public void OverlayDrawing_IsSubscribedToThePipelineCameraEndCallbackAndReleasedAgain()
+        {
+            var runner = BuildRunner();
+            var enable = DeclaredRunnerMethod(runner, "OnEnable");
+            var disable = DeclaredRunnerMethod(runner, "OnDisable");
+
+            Assert.That(
+                enable,
+                Is.Not.Null,
+                "the runner has no OnEnable, so it never subscribes to the render pipeline and " +
+                "the overlays it draws are cleared by the camera that renders after them");
+            Assert.That(
+                disable,
+                Is.Not.Null,
+                "the callback is a static one, so a runner with no OnDisable leaves its handler " +
+                "in the pipeline's list and keeps being called after its match has shut down");
+
+            Assert.That(CountCameraEndHandlers(runner), Is.EqualTo(0), "a fresh runner is already subscribed");
+            try
+            {
+                enable.Invoke(runner, null);
+                Assert.That(
+                    CountCameraEndHandlers(runner),
+                    Is.EqualTo(1),
+                    "the runner declares an OnEnable that never reaches endCameraRendering");
+            }
+            finally
+            {
+                disable.Invoke(runner, null);
+            }
+
+            Assert.That(CountCameraEndHandlers(runner), Is.EqualTo(0), "the handler outlived its OnDisable");
+        }
+
+        /// <summary>
+        /// The other half of the same finding: hooking the camera-end callback while
+        /// <c>LateUpdate</c> still drew too would put the rings on screen twice per frame —
+        /// and one of those draws is the invisible one that produced the report.
+        /// </summary>
+        [Test]
+        public void OverlayDrawing_IsNotHookedToLateUpdate()
+        {
+            Assert.That(
+                typeof(TacticalVerticalSliceRunner).GetMethod(
+                    "LateUpdate",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly),
+                Is.Null,
+                "TacticalVerticalSliceRunner still has a LateUpdate: a command buffer executed " +
+                "before the camera renders is wiped by that camera's own clear, so the overlay " +
+                "draw must live on the pipeline's camera-end callback and nowhere else");
+        }
+
+        /// <summary>
+        /// <see cref="TacticalVerticalSliceRunner"/>'s own declaration of a Unity message.
+        /// Scoped to the type rather than inherited, because a base class hook is not this
+        /// slice's hook.
+        /// </summary>
+        private static MethodInfo DeclaredRunnerMethod(
+            TacticalVerticalSliceRunner runner,
+            string name)
+        {
+            Assert.That(runner, Is.Not.Null, $"no runner to look for {name} on");
+            return runner.GetType().GetMethod(
+                name,
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+        }
+
+        /// <summary>
+        /// How many times <paramref name="runner"/> appears in the pipeline's camera-end
+        /// list. The event is a private static delegate on
+        /// <see cref="RenderPipelineManager"/>, so it is read by
+        /// reflection — the alternative is asserting nothing about the one mechanism the
+        /// fix consists of.
+        /// </summary>
+        private static int CountCameraEndHandlers(TacticalVerticalSliceRunner runner)
+        {
+            var fields = typeof(RenderPipelineManager).GetFields(
+                BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+
+            foreach (var field in fields)
+            {
+                if (!typeof(Delegate).IsAssignableFrom(field.FieldType) ||
+                    field.Name.IndexOf(
+                        "EndCameraRendering",
+                        StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                var subscribers = field.GetValue(null) as Delegate;
+                if (subscribers == null)
+                {
+                    return 0;
+                }
+
+                var matches = 0;
+                foreach (var subscriber in subscribers.GetInvocationList())
+                {
+                    if (ReferenceEquals(subscriber.Target, runner))
+                    {
+                        matches++;
+                    }
+                }
+
+                return matches;
+            }
+
+            Assert.Fail(
+                "RenderPipelineManager exposes no camera-end delegate field to read, so the " +
+                "subscription cannot be observed here at all");
+            return 0;
+        }
+
         // ----------------------------------------------------------- borrowed scene state
 
         /// <summary>
@@ -1340,9 +1584,65 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                 "mock inputs left in the shared manager would steer whoever reads it next");
             input.SetMockMode(mockModeBefore);
 
+            Assert.That(controller.InputManager, Is.SameAs(input),
+                "the rig is left reading the manager the slice stepped, not whatever it held " +
+                "before adoption — a slice that hands back a dead binding leaves a camera " +
+                "that answers nothing");
+
             Assert.That(runner.CameraController, Is.Null);
             Assert.That(runner.InputManager, Is.Null);
             Assert.That(runner.ViewportCamera, Is.Null);
+        }
+
+        /// <summary>
+        /// The rig reads its pointer from a manager it latched in <c>Awake</c>, which is not
+        /// necessarily the manager this slice ends up holding: a manager that has since been
+        /// destroyed is fake-null to the controller, and <c>ProcessInput</c> then returns
+        /// before it touches pan, zoom or rotation. The slice steps the rig itself, so it has
+        /// to bind the manager it steps — otherwise the player drags across a battlefield
+        /// that answers nothing and no log line says why.
+        /// </summary>
+        [Test]
+        public void ResolveCameraRig_RebindsTheAdoptedRigToTheManagerTheSliceSteps()
+        {
+            var staleHost = new GameObject("SliceTest_ManagerTheRigFoundFirst");
+            _created.Add(staleHost);
+            var stale = staleHost.AddComponent<RtsInputManager>();
+
+            var rig = new GameObject("SliceTest_RigOnASceneCamera");
+            _created.Add(rig);
+            rig.AddComponent<Camera>();
+            var controller = rig.AddComponent<RtsCameraController>();
+
+            // The binding a played scene's Awake would have left. EditMode does not invoke
+            // Awake, so the state adoption starts from is written here rather than waited
+            // for; the runner cannot tell the two apart and must not have to.
+            controller.SetInputManager(stale);
+            Object.DestroyImmediate(staleHost);
+            Assert.That(controller.InputManager == null, Is.True,
+                "Unity's comparison: the rig now holds a manager that is gone");
+
+            var runner = BuildSlice(SmallRoster);
+            Assert.That(runner.CameraController == controller, Is.True,
+                "the slice took a different rig than the one this test rigged up, so nothing below " +
+                "is measuring the adoption path");
+            Assert.That(runner.InputManager, Is.Not.Null);
+            Assert.That(runner.InputManager.gameObject == runner.gameObject, Is.True,
+                "with no live manager anywhere the slice adds one to its own root, which is the " +
+                "manager the rig has to be pointed at");
+            Assert.That(
+                controller.InputManager,
+                Is.SameAs(runner.InputManager),
+                "the rig has to read the manager the slice is stepping");
+
+            // The same property as the behaviour a player gets: mock input on the slice's
+            // manager moves the borrowed rig's focus.
+            runner.InputManager.SetMockMoveInput(new Vector2(0f, 1f));
+            runner.StepPresentationFrame(FrameSeconds, 1.0);
+            Assert.That(
+                controller.TargetFocusPoint.z,
+                Is.GreaterThan(0f),
+                "a pan the player asked for and the rig refused to make");
         }
 
         /// <summary>

@@ -74,15 +74,38 @@ namespace GlobalFront.Client.Presentation
         /// belongs on the catalog row when real roster art exists; until then every
         /// archetype is the prototype footprint, so one constant cannot read wrong for
         /// one kind and right for another.
+        ///
+        /// Above the tallest <em>vehicle</em> the slice builds — a scout's turret tops
+        /// out at 2.6 m and a tank's at 2.95 m over a hull whose origin is pinned to the
+        /// ground — because the bar is an overlay on the unit, not a stripe across it. It
+        /// does not clear the 6.5 m structure, and it is not meant to: the structure is a
+        /// building, and its bar belongs on its own roof row when the catalog carries
+        /// heights. Visibility no longer depends on this constant either way, because the
+        /// health bar pass ignores depth.
         /// </summary>
-        public const float HealthBarHeightMetres = 1.1f;
+        public const float HealthBarHeightMetres = 2.5f;
 
-        /// <summary>Bar height as a fraction of its own width, in metres.</summary>
-        public const float HealthBarThicknessMetres = 0.16f;
+        /// <summary>
+        /// Bar height as a fraction of its own width, in metres.
+        ///
+        /// Stated in metres, so it has to survive the projection: the slice's overview
+        /// sits at 150 m and zooms out to 260 m with a 60 degree vertical field of view,
+        /// where one metre of the bar's plane is 5.6 and 3.4 screen pixels respectively at
+        /// 1080p. The 0.16 m this constant used to carry is therefore under one pixel at
+        /// the overview and half a pixel at the ceiling — a quad that alpha-blends across
+        /// one line and reads as nothing at all, whatever the depth test allows.
+        /// </summary>
+        public const float HealthBarThicknessMetres = 0.45f;
 
         /// <summary>
         /// Bar width in unit footprints. Wider than the hull so the bar reads as an
         /// overlay rather than a stripe painted on the unit.
+        ///
+        /// Left where it was: the span was never the axis that disappeared. A scout's
+        /// bar is 3.75 m across, which is 21 screen pixels at the slice's 150 m overview
+        /// and 13 at the 260 m ceiling on a 1080p screen, while its 0.16 m of thickness
+        /// was under one pixel on the same screen — see
+        /// <see cref="HealthBarThicknessMetres"/>.
         /// </summary>
         public const float HealthBarWidthInDiameters = 1.25f;
 

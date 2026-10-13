@@ -702,10 +702,15 @@ namespace GlobalFront.Client.Presentation
 
         /// <summary>
         /// One presentation frame for the whole slice, in the order the layers
-        /// require: the camera settles, views sample the tick buffer, the driver
-        /// reads the pointer against the settled camera, the overlay batch is
-        /// built from the positions that sampling just wrote, and only then do
+        /// require: the pointer is sampled, the camera settles, views sample the tick
+        /// buffer, the driver reads the pointer against the settled camera, the overlay
+        /// batch is built from the positions that sampling just wrote, and only then do
         /// the two HUD canvases refresh.
+        ///
+        /// The input manager steps first because everything below reads the state it
+        /// produces: a rig and a driver that consume last frame's pointer sample the mouse
+        /// one frame behind wherever the player actually moved it, and a drag started this
+        /// frame is not visible to the gate deciding it.
         ///
         /// There is no render-tick argument because there is nothing to pass:
         /// the render clock belongs to <see cref="UnitViewTickBuffer"/> and is
@@ -715,6 +720,10 @@ namespace GlobalFront.Client.Presentation
         public void StepPresentationFrame(float deltaTimeSeconds, double unscaledTimeSeconds)
         {
             EnsureInitialized();
+
+            // Mock mode short-circuits this, so a headless slice steps nothing it is not
+            // told to; a played one reads the hardware once, before its readers run.
+            _inputManager.ManualUpdate(deltaTimeSeconds);
 
             _cameraController.ManualUpdate(deltaTimeSeconds);
             _binder.Render(deltaTimeSeconds);
@@ -738,34 +747,75 @@ namespace GlobalFront.Client.Presentation
         }
 
         /// <summary>
-        /// Draws the built overlay batches directly, for a Play Mode session
-        /// whose active URP asset has no <see cref="UnitOverlayRendererFeature"/>
-        /// on its renderer. When the feature is live it owns these batches and
-        /// drawing here too would be the double-draw the legacy prototype bars
-        /// still suffer from, so this returns without touching them.
+        /// Draws the built overlay batches into the frame of the camera they are seen
+        /// through, for a Play Mode session whose active URP asset has no
+        /// <see cref="UnitOverlayRendererFeature"/> on its renderer. When the feature is
+        /// live it owns these batches and drawing here too would be the double-draw the
+        /// legacy prototype bars still suffer from, so this returns without touching them.
         ///
         /// It reuses the render pass's own chunking: an instanced draw reads the
         /// first <c>count</c> entries of the array it is handed, so a batch past
         /// the shader's instance ceiling has to be copied down per draw.
+        ///
+        /// <b>Why the pipeline's camera-end callback rather than <c>LateUpdate</c>.</b>
+        /// <c>LateUpdate</c> runs before the camera renders, and the camera opens its own
+        /// frame by clearing it, so a command buffer executed from there is wiped a few
+        /// hundred microseconds after it was submitted — the rings and bars are built,
+        /// drawn and never seen. <see cref="RenderPipelineManager.endCameraRendering"/>
+        /// fires once the camera has finished with its context, onto the target that is
+        /// about to be shown. This is the same slot URP's own
+        /// <c>PixelPerfectCamera</c> uses.
         /// </summary>
         public void DrawOverlaysDirect()
         {
-            if (!_overlayResourcesUsable || _createVisuals == false || _overlayCommandBuffer == null)
+            if (!FillOverlayCommandBuffer())
             {
                 return;
+            }
+
+            Graphics.ExecuteCommandBuffer(_overlayCommandBuffer);
+        }
+
+        /// <summary>
+        /// <see cref="DrawOverlaysDirect()"/> for the render context that is presenting the
+        /// camera right now: the commands go into that context and are submitted with it,
+        /// which is what puts them in the frame rather than in front of it.
+        /// </summary>
+        private void DrawOverlaysDirect(ScriptableRenderContext context)
+        {
+            if (!FillOverlayCommandBuffer())
+            {
+                return;
+            }
+
+            context.ExecuteCommandBuffer(_overlayCommandBuffer);
+            context.Submit();
+        }
+
+        /// <summary>
+        /// Records the ring and bar chunks, and reports whether there was anything to
+        /// record. False leaves the command buffer untouched — the passes that draw the
+        /// overlays of a camera that is not this one's have to leave the previous
+        /// camera's work alone rather than clear it.
+        /// </summary>
+        private bool FillOverlayCommandBuffer()
+        {
+            if (!_overlayResourcesUsable || _createVisuals == false || _overlayCommandBuffer == null)
+            {
+                return false;
             }
 
             var feature = UnitOverlayRendererFeature.Active;
             if (feature != null && feature.IsReady)
             {
-                return;
+                return false;
             }
 
             var ringCount = _overlayBatcher.SelectionRingCount;
             var barCount = _overlayBatcher.HealthBarCount;
             if (ringCount == 0 && barCount == 0)
             {
-                return;
+                return false;
             }
 
             var cmd = _overlayCommandBuffer;
@@ -796,7 +846,7 @@ namespace GlobalFront.Client.Presentation
                     _barChunks);
             }
 
-            Graphics.ExecuteCommandBuffer(cmd);
+            return true;
         }
 
         /// <summary>
@@ -981,6 +1031,25 @@ namespace GlobalFront.Client.Presentation
                 return;
             }
 
+            // [M] is the sandbox's single key for "start the battle": it sends both armies
+            // to the centre and re-arms acquisition on each other, which is the one input a
+            // tester needs, because the slice opens on 400 units standing still — the march
+            // points are 14 m apart inside an 18 m auto-acquire range, so a slice that
+            // opened fighting would end before anyone could give an order.
+            //
+            // Mock mode gates it rather than the null check alone: a slice whose pointer is
+            // pinned by a test stays pinned, so a measured frame is still decided by what the
+            // test sets and not by whatever someone types into the editor meanwhile.
+            if (!_inputManager.IsMockMode)
+            {
+                var keyboard = UnityEngine.InputSystem.Keyboard.current;
+                if (keyboard != null && keyboard.mKey.wasPressedThisFrame)
+                {
+                    IssueConvergenceMarch();
+                    IssueEngagementOrders();
+                }
+            }
+
             _clockSeconds += Time.unscaledDeltaTime;
             _host.AdvanceRealTime(Time.unscaledDeltaTime);
             PumpReplication();
@@ -988,16 +1057,40 @@ namespace GlobalFront.Client.Presentation
 #endif
         }
 
-        private void LateUpdate()
+        /// <summary>
+        /// Subscribes to the pipeline's camera-end callback, which is where the overlays
+        /// have to be drawn: see <see cref="DrawOverlaysDirect()"/>.
+        ///
+        /// Declared rather than inferred from <c>LateUpdate</c> because a frame that runs
+        /// before the camera renders is a frame that gets cleared by it.
+        /// </summary>
+        private void OnEnable()
         {
-#if !UNITY_SERVER
-            if (!_isInitialized)
+            RenderPipelineManager.endCameraRendering += OnEndCameraRendering;
+        }
+
+        private void OnDisable()
+        {
+            // The callback is a static one, so a slice that unsubscribed on nothing would
+            // leave this handler in the pipeline's list: the next camera frame would call
+            // into a runner that has already shut its match down.
+            RenderPipelineManager.endCameraRendering -= OnEndCameraRendering;
+        }
+
+        /// <summary>
+        /// Draws this slice's overlays onto the camera they were built for. Every other
+        /// camera in the frame — a reflection probe, a second view, the scene view — gets
+        /// left alone, because the batches describe what <see cref="ViewportCamera"/>
+        /// looks at and drawing them twice would stack a second set of rings on the first.
+        /// </summary>
+        private void OnEndCameraRendering(ScriptableRenderContext context, Camera camera)
+        {
+            if (camera != _viewportCamera)
             {
                 return;
             }
 
-            DrawOverlaysDirect();
-#endif
+            DrawOverlaysDirect(context);
         }
 
         private void OnDestroy() => Shutdown();
@@ -1308,6 +1401,18 @@ namespace GlobalFront.Client.Presentation
                 _inputManager = gameObject.AddComponent<RtsInputManager>();
                 _ownsInputManager = true;
             }
+
+            // Bound by hand rather than left to the rig's own discovery. An adopted rig
+            // latches its manager in Awake, and every path above can hand this slice a
+            // different one — a manager that has since been destroyed reads as null to the
+            // controller, which then swallows pan, zoom and rotation input without a word.
+            // The runner steps the rig, so the rig has to read the manager the runner holds.
+            //
+            // Deliberately not part of the borrowed-rig lease in RestoreBorrowedRig: the
+            // only manager a rig can have been holding that differs from this one is a dead
+            // or a missing one, so handing the old binding back would return a camera that
+            // answers nothing and would benefit nobody.
+            _cameraController.SetInputManager(_inputManager);
 
             // The runner owns the frame loop, so the rig does not step itself.
             _cameraController.enabled = false;

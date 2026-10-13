@@ -7,7 +7,7 @@ namespace GlobalFront.Client
     /// Tactical RTS Camera Controller (Phase 3, Step 3.1).
     /// Operates strictly within the client/presentation layer.
     /// Features:
-    /// - Smooth pan / movement (WASD, arrows, screen edge panning).
+    /// - Smooth pan / movement (WASD, arrows, screen edge panning), scaled with camera altitude.
     /// - Zoom with strict height limits [15f, 80f] and dynamic pitch (40° near ground -> 70° high above).
     /// - Yaw rotation around focus point (MMB or Alt + mouse drag) with quick reset to North (Home or ~).
     /// - Map bounds enforcement (default Rect(-200, -200, 400, 400)).
@@ -95,6 +95,32 @@ namespace GlobalFront.Client
         private const float DefaultMaxHeight = 80f;
         private const float DefaultMinPitch = 40f;
         private const float DefaultMaxPitch = 70f;
+
+        /// <summary>
+        /// Altitude at which pan runs at exactly <see cref="moveSpeed"/>. The rig derives its
+        /// pitch from height, so the ground a screen-full of pixels covers widens with
+        /// altitude: a fixed metres-per-second pan is precise at 20 m and takes eleven
+        /// seconds to cross a 400 m map from the slice's 150 m overview. Scaling the pan with
+        /// the height keeps the *felt* speed — how much of the visible battlefield a second
+        /// of held key covers — roughly constant at both ends.
+        /// </summary>
+        private const float PanAltitudeReferenceMetres = 45f;
+
+        /// <summary>Pan floor, so zooming in close never makes the camera sluggish.</summary>
+        private const float PanAltitudeMinScale = 0.5f;
+
+        /// <summary>Pan ceiling, so an extreme overview height cannot fling the focus across the map.</summary>
+        private const float PanAltitudeMaxScale = 3.5f;
+
+        /// <summary>
+        /// Altitude at which one wheel notch is exactly one <see cref="zoomStep"/>. Below it
+        /// the step stays at one because a fixed step at 20 m already moves the view a large
+        /// fraction of the screen; above it the step grows for the same reason the pan does.
+        /// </summary>
+        private const float ZoomAltitudeReferenceMetres = 40f;
+
+        /// <summary>Zoom step ceiling, so zooming out from an extreme height is not a jump to the floor.</summary>
+        private const float ZoomAltitudeMaxScale = 3f;
 
         /// <summary>
         /// Lowest zoom height. Clamped through the setter because the pitch is derived
@@ -234,7 +260,14 @@ namespace GlobalFront.Client
             {
                 var yawRot = Quaternion.Euler(0f, _targetYaw, 0f);
                 var moveDir = yawRot * new Vector3(move.x, 0f, move.y);
-                var advanced = _targetFocusPoint + moveDir * (moveSpeed * deltaTime);
+
+                // See PanAltitudeReferenceMetres: the same held key has to cross the same
+                // fraction of what the player is looking at, whatever the zoom.
+                var altitudeScale = Mathf.Clamp(
+                    _targetHeight / PanAltitudeReferenceMetres,
+                    PanAltitudeMinScale,
+                    PanAltitudeMaxScale);
+                var advanced = _targetFocusPoint + moveDir * (moveSpeed * altitudeScale * deltaTime);
 
                 // Commit only a finite result, silently: moveSpeed is a serialized
                 // tuning field, and one NaN through it would otherwise stick in the
@@ -251,7 +284,15 @@ namespace GlobalFront.Client
             var zoom = inputManager.ZoomInput;
             if (Mathf.Abs(zoom) > 0.0001f)
             {
-                var height = _targetHeight - zoom * zoomStep;
+                // See ZoomAltitudeReferenceMetres: one notch of the wheel is a constant of
+                // the gesture, not a constant of the view, so the step has to widen with the
+                // ground the screen is showing or zooming out from overview takes a dozen
+                // notches to reach the ceiling.
+                var zoomScale = Mathf.Clamp(
+                    _targetHeight / ZoomAltitudeReferenceMetres,
+                    1f,
+                    ZoomAltitudeMaxScale);
+                var height = _targetHeight - zoom * (zoomStep * zoomScale);
                 if (IsFinite(height))
                 {
                     _targetHeight = Mathf.Clamp(height, minHeight, maxHeight);
@@ -430,6 +471,13 @@ namespace GlobalFront.Client
 
         private static bool IsFinite(in Vector3 value) =>
             IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+
+        /// <summary>
+        /// The manager this rig reads pan, zoom and rotation from. Read alongside
+        /// <see cref="SetInputManager"/> because a caller that hands this rig a manager of
+        /// its own has to be able to say which one the rig ended up with.
+        /// </summary>
+        public RtsInputManager InputManager => inputManager;
 
         public void SetInputManager(RtsInputManager manager)
         {

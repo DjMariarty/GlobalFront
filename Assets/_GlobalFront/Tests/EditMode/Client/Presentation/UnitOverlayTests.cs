@@ -1262,5 +1262,194 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                 Is.EqualTo(0),
                 "P3-2: the instance buffer gets +0.0, never the sign-bit form of the same number");
         }
+
+        // ------------------------------------------------ playing-capture findings (part 6)
+
+        /// <summary>
+        /// The altitudes the tactical slice flies at, and the depth test that made its
+        /// health bars invisible: the rings drew and the bars did not.
+        ///
+        /// <b>The mechanism.</b> Both passes inherited the SubShader's <c>ZTest LEqual</c>,
+        /// and a bar is authored <em>inside</em> the hull it reports on — this slice's
+        /// prototypes are boxes standing on the ground plane, 2.2 m (scout) and 2.6 m
+        /// (tank) tall, with turrets to 2.95 m, over a bar anchored at 1.1 m. The fix is
+        /// the bar pass's own depth state, because no single anchor height clears every
+        /// archetype: the 6.5 m structure would swallow any constant a vehicle is happy
+        /// with.
+        ///
+        /// <b>What this can and cannot observe.</b> No Unity API reports a pass's render
+        /// state — <c>ShaderUtil.ShaderInfo</c> enumerates passes, not their depth tests —
+        /// and a -nographics run renders no camera at all, so <c>endCameraRendering</c>
+        /// never fires and no pixels exist to count. The only reachable witness is the
+        /// source the compiler is handed. This proves the bar pass overrides the state and
+        /// the ring pass does not; it does not prove the bar reached the framebuffer, and
+        /// nothing in this suite can.
+        /// </summary>
+        [Test]
+        public void HealthBarPass_IgnoresDepthBecauseEveryHullOutTowersIt()
+        {
+            var source = ReadOverlayShaderSource();
+
+            var barPass = PassSource(source, "UnitOverlayHealthBar");
+            Assert.That(
+                CountOccurrences(barPass, "ZTest Always"),
+                Is.EqualTo(1),
+                "the health bar pass has to override the SubShader's LEqual: the prototype hulls " +
+                "stand 2.2 m and 2.6 m over a ground-pinned origin, so a depth-tested bar is " +
+                "hidden inside the tank it exists to report on");
+
+            var ringPass = PassSource(source, "UnitOverlayRing");
+            Assert.That(
+                ringPass,
+                Does.Not.Contain("ZTest"),
+                "a ring lies on the terrain it is drawn on and keeps the SubShader's depth test; " +
+                "one that ignores depth would mark units the player cannot see, through hills");
+
+            // The SubShader default still has to be the tested one, ahead of both passes:
+            // moving the override up there is the mistake that would fix the bars by
+            // breaking the rings.
+            var firstPass = source.IndexOf("Name \"", StringComparison.Ordinal);
+            Assert.That(
+                source.IndexOf("ZTest LEqual", StringComparison.Ordinal),
+                Is.GreaterThanOrEqualTo(0).And.LessThan(firstPass),
+                "the shader-level depth test is no longer the LEqual both passes are written " +
+                "against, so this file's per-pass overrides are doing something else entirely");
+        }
+
+        /// <summary>
+        /// The second, independent reason the same bars read as absent: at the slice's own
+        /// overview the bar was 0.16 m tall against roughly 5.6 screen pixels per metre, so
+        /// it was under one pixel — and half a pixel at the zoom ceiling. An alpha-blended
+        /// quad that thin is not a thin bar, it is nothing. Measured through the rig that
+        /// actually decides the pitch-at-altitude relation, not from a restated formula.
+        /// </summary>
+        [Test]
+        public void HealthBar_CoversWholeScreenPixelsAtTheSliceAltitudes()
+        {
+            var view = SpawnUnit(1);
+            view.SetSelected(true);
+
+            var rigObject = new GameObject("Overlay Screen Rig");
+            var camera = rigObject.AddComponent<Camera>();
+            camera.fieldOfView = 60f;
+            camera.nearClipPlane = 0.3f;
+            camera.farClipPlane = 900f;
+            camera.aspect = ScreenWidthPixels / ScreenHeightPixels;
+
+            var input = rigObject.AddComponent<GlobalFront.Client.RtsInputManager>();
+            input.SetMockMode(true);
+            input.SetTargetCamera(camera);
+
+            var rig = rigObject.AddComponent<GlobalFront.Client.RtsCameraController>();
+            rig.SetInputManager(input);
+            rig.InitializeState();
+
+            // The band the tactical slice installs on the borrowed rig.
+            rig.MapBounds = new Rect(-200f, -200f, 400f, 400f);
+            rig.MinHeight = 20f;
+            rig.MaxHeight = 260f;
+            rig.MinPitch = 55f;
+            rig.MaxPitch = 70f;
+
+            try
+            {
+                var samples = new[]
+                {
+                    (Altitude: 150f, MinimumPixels: 2.0f),
+                    (Altitude: 260f, MinimumPixels: 1.4f),
+                };
+
+                foreach (var sample in samples)
+                {
+                    rig.SetFocusPoint(Vector3.zero, immediate: true);
+                    rig.SetHeight(sample.Altitude, immediate: true);
+                    rig.ManualUpdate(0.1f);
+
+                    _batcher.BuildBatches(_binder, camera.transform.rotation);
+                    Assert.That(_batcher.HealthBarCount, Is.EqualTo(1));
+                    var matrix = _batcher.HealthBarMatrices[0];
+
+                    var bottom = camera.WorldToViewportPoint(
+                        matrix.MultiplyPoint3x4(new Vector3(0f, -0.5f, 0f)));
+                    var top = camera.WorldToViewportPoint(
+                        matrix.MultiplyPoint3x4(new Vector3(0f, 0.5f, 0f)));
+
+                    Assert.That(bottom.z, Is.GreaterThan(0f),
+                        $"the bar has to be in front of the lens at {sample.Altitude} m to be drawn at all");
+
+                    var thicknessPixels = Mathf.Abs(top.y - bottom.y) * ScreenHeightPixels;
+
+                    Assert.That(
+                        thicknessPixels,
+                        Is.GreaterThanOrEqualTo(sample.MinimumPixels),
+                        $"{UnitOverlayBatcher.HealthBarThicknessMetres:0.##} m of bar is {thicknessPixels:0.00} " +
+                        $"pixels tall at {sample.Altitude:0} m and {rig.CurrentPitch:0.0} degrees of pitch on a " +
+                        $"1920x1080 screen; anything under one pixel is not a bar the player can read, whatever " +
+                        "the depth test allows");
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(rigObject);
+            }
+        }
+
+        private const float ScreenWidthPixels = 1920f;
+        private const float ScreenHeightPixels = 1080f;
+
+        private static string ReadOverlayShaderSource()
+        {
+            var path = System.IO.Path.Combine(
+                Application.dataPath,
+                "_GlobalFront",
+                "Runtime",
+                "Client",
+                "Presentation",
+                "UnitOverlay.shader");
+            Assert.That(
+                System.IO.File.Exists(path),
+                Is.True,
+                $"the overlay shader is no longer at {path}, so nothing here can read the render " +
+                "states the overlay is actually compiled with");
+
+            return System.IO.File.ReadAllText(path);
+        }
+
+        /// <summary>
+        /// One pass's own source: from its <c>Name</c> line to its <c>ENDHLSL</c>. That is
+        /// exactly the region a per-pass render state can live in, and it excludes the
+        /// SubShader-level block above the first pass, which is the state being overridden.
+        /// </summary>
+        private static string PassSource(string shaderSource, string passName)
+        {
+            var marker = "Name \"" + passName + "\"";
+            var start = shaderSource.IndexOf(marker, StringComparison.Ordinal);
+            Assert.That(
+                start,
+                Is.GreaterThanOrEqualTo(0),
+                $"the overlay shader has no pass named {passName}, so the draw path's FindPass " +
+                "cannot be finding either, and the claim under test is about a pass that does not exist");
+
+            var end = shaderSource.IndexOf("ENDHLSL", start, StringComparison.Ordinal);
+            Assert.That(
+                end,
+                Is.GreaterThan(start),
+                $"the {passName} pass has no ENDHLSL, so its body could not be bounded");
+
+            return shaderSource.Substring(start, end - start);
+        }
+
+        private static int CountOccurrences(string haystack, string needle)
+        {
+            var count = 0;
+            for (var at = haystack.IndexOf(needle, StringComparison.Ordinal);
+                 at >= 0;
+                 at = haystack.IndexOf(needle, at + needle.Length, StringComparison.Ordinal))
+            {
+                count++;
+            }
+
+            return count;
+        }
     }
 }

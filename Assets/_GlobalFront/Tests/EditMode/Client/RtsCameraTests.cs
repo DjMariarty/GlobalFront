@@ -389,6 +389,10 @@ namespace GlobalFront.Tests.EditMode.Client
             // more than one zoom step per frame. The mock path used to forward its argument
             // verbatim, which let a test drive 24 m where hardware drives 8 m — the two models
             // of the same gesture disagreed, and every zoom assertion inherited that.
+            //
+            // Driven from 40 m, the altitude at which one notch is exactly one step. The step
+            // widens above it (see Camera_ZoomStepWidensWithAltitudeWithinItsBand) and a test
+            // authored at 45 m would be measuring that scaling, not the gesture.
             var zoomStep = _cameraController.ZoomStep;
 
             _inputManager.SetMockZoomInput(3f);
@@ -403,24 +407,111 @@ namespace GlobalFront.Tests.EditMode.Client
                 "a partial wheel stays partial; only the range is bounded");
 
             _inputManager.SetMockZoomInput(3f);
-            _cameraController.SetHeight(45f, immediate: true);
+            _cameraController.SetHeight(40f, immediate: true);
             _cameraController.ManualUpdate(0.016f);
-            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - zoomStep).Within(1e-3f),
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(40f - zoomStep).Within(1e-3f),
                 "positive zoom means the camera descends, by exactly one step");
 
             _cameraController.ManualUpdate(0.016f);
-            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - 2f * zoomStep).Within(1e-3f),
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(40f - 2f * zoomStep).Within(1e-3f),
                 "one step per frame, not one scaled by the injected magnitude");
 
             _inputManager.SetMockZoomInput(-1f);
             _cameraController.ManualUpdate(0.016f);
-            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - zoomStep).Within(1e-3f),
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(40f - zoomStep).Within(1e-3f),
                 "negative zoom means the camera climbs");
 
             _inputManager.SetMockZoomInput(0f);
             _cameraController.ManualUpdate(0.016f);
-            Assert.That(_cameraController.TargetHeight, Is.EqualTo(45f - zoomStep).Within(1e-3f),
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(40f - zoomStep).Within(1e-3f),
                 "zero holds");
+        }
+
+        /// <summary>
+        /// A held pan key has to cross roughly the same part of what the player is looking
+        /// at whatever the zoom. The rig's ground coverage grows with altitude, so a fixed
+        /// metres-per-second pan is precise at 20 m and takes eleven seconds to cross a 400 m
+        /// map from the slice's 150 m overview. The scale is clamped at both ends: it must
+        /// not make close work sluggish, and it must not fling the focus off the map from an
+        /// extreme height.
+        /// </summary>
+        [Test]
+        public void Camera_PanSpeedScalesWithAltitudeWithinAClamp()
+        {
+            const float Step = 0.1f;
+            var moveSpeed = _cameraController.MoveSpeed;
+            _cameraController.MaxHeight = 260f;
+            _inputManager.SetMockMoveInput(new Vector2(0f, 1f));
+
+            AssertPanAdvance(45f, Step * moveSpeed, "at the reference altitude the pan is the tuned speed");
+            AssertPanAdvance(
+                150f,
+                Step * moveSpeed * (150f / 45f),
+                "an overview pan keeps up with the ground an overview is showing");
+            AssertPanAdvance(
+                20f,
+                Step * moveSpeed * 0.5f,
+                "zoomed in, the floor keeps fine control instead of turning into a lurch");
+            AssertPanAdvance(
+                260f,
+                Step * moveSpeed * 3.5f,
+                "the ceiling holds: past it one tap of the key would sweep the map");
+            AssertPanAdvance(
+                15f,
+                Step * moveSpeed * 0.5f,
+                "and the floor holds below the altitude that would scale it further down");
+        }
+
+        /// <summary>
+        /// The zoom counterpart of
+        /// <see cref="Camera_PanSpeedScalesWithAltitudeWithinAClamp"/>: one wheel notch is a
+        /// constant of the gesture, not of the view, so the step widens with altitude and
+        /// stops at three notches' worth rather than turning overview zoom into a dozen
+        /// clicks of the wheel.
+        /// </summary>
+        [Test]
+        public void Camera_ZoomStepWidensWithAltitudeWithinAClamp()
+        {
+            var zoomStep = _cameraController.ZoomStep;
+            _cameraController.MaxHeight = 260f;
+            _inputManager.SetMockZoomInput(1f);
+
+            AssertZoomStep(40f, zoomStep, "at or below the reference altitude one notch is one step");
+            AssertZoomStep(
+                150f,
+                zoomStep * 3f,
+                "from an overview one notch covers the ground an overview shows");
+            AssertZoomStep(260f, zoomStep * 3f, "and the step stops widening there");
+
+            _inputManager.SetMockZoomInput(-1f);
+            _cameraController.SetHeight(150f, immediate: true);
+            _cameraController.ManualUpdate(0.016f);
+            Assert.That(_cameraController.TargetHeight, Is.EqualTo(150f + zoomStep * 3f).Within(1e-3f),
+                "zooming out widens the same way zooming in does");
+        }
+
+        /// <summary>Pans one frame from <paramref name="height"/> and checks the travel.</summary>
+        private void AssertPanAdvance(float height, float expectedMetres, string label)
+        {
+            _cameraController.SetHeight(height, immediate: true);
+            _cameraController.SetFocusPoint(Vector3.zero, immediate: true);
+            _cameraController.ManualUpdate(0.1f);
+
+            Assert.That(
+                _cameraController.TargetFocusPoint.z,
+                Is.EqualTo(expectedMetres).Within(1e-3f),
+                $"pan at {height} m: {label}");
+        }
+
+        private void AssertZoomStep(float height, float expectedStep, string label)
+        {
+            _cameraController.SetHeight(height, immediate: true);
+            _cameraController.ManualUpdate(0.016f);
+
+            Assert.That(
+                _cameraController.TargetHeight,
+                Is.EqualTo(height - expectedStep).Within(1e-3f),
+                $"one notch down from {height} m: {label}");
         }
 
         [Test]

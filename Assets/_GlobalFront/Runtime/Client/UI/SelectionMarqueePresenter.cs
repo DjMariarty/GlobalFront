@@ -15,10 +15,19 @@ namespace GlobalFront.Client.UI
     /// a second along with it. Isolated here, one <see cref="Image"/> is the only thing
     /// that ever rebuilds.
     ///
-    /// One sliced image is also the only geometry, which is what lets the per-frame
+    /// One image is also the only geometry, which is what lets the per-frame
     /// cost be two <see cref="RectTransform"/> writes and nothing else. No
     /// <see cref="GameObject"/> is created or destroyed while dragging, and no
     /// material, texture or mesh is touched.
+    ///
+    /// <b>What it draws without content.</b> A 9-slice border is content, and a drag box
+    /// that waits for it would be a rubber band the player cannot see during the very
+    /// first matches they play. Without art the widget falls back to a four-pixel white
+    /// sprite drawn <see cref="Image.Type.Simple"/> and tinted by
+    /// <see cref="frameColor"/> — one translucent quad, stretched to the rectangle the
+    /// pointer describes. <see cref="Image.Type.Sliced"/> is only asked for once there is
+    /// a bordered sprite to slice, because slicing a sprite with no borders produces the
+    /// same stretched fill with nine times the vertices.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class SelectionMarqueePresenter : MonoBehaviour
@@ -31,7 +40,11 @@ namespace GlobalFront.Client.UI
 
         [Header("Content (optional; assigned by the HUD scene)")]
         [SerializeField] private Sprite frameSprite;
-        [SerializeField] private Color frameColor = new Color(0.35f, 1f, 0.45f, 0.35f);
+
+        // A translucent cyan-blue: blue reads as "mine" against the green of friendly
+        // units and the terrain, and 35% keeps the squad inside the box visible while it
+        // is being boxed.
+        [SerializeField] private Color frameColor = new Color(0.25f, 0.75f, 1f, 0.35f);
         [SerializeField] private int sortingOrder = DefaultSortingOrder;
 
         private GameObject _canvasObject;
@@ -39,6 +52,13 @@ namespace GlobalFront.Client.UI
         private Image _frame;
         private RectTransform _frameRect;
         private bool _isVisible;
+
+        /// <summary>
+        /// The untextured drag box. Shared by every marquee in the process because it is
+        /// a four-pixel patch of the engine's own white texture, and a per-canvas copy
+        /// would be a native object leaked on every HUD rebuild.
+        /// </summary>
+        private static Sprite _fallbackMarqueeSprite;
 
         /// <summary>True once the transient canvas and its single frame image exist.</summary>
         public bool IsBuilt => _frame != null;
@@ -85,8 +105,8 @@ namespace GlobalFront.Client.UI
             _frameRect.pivot = Vector2.zero;
             _frameRect.localScale = Vector3.one;
 
-            _frame.type = Image.Type.Sliced;
-            _frame.sprite = frameSprite;
+            _frame.type = frameSprite != null ? Image.Type.Sliced : Image.Type.Simple;
+            _frame.sprite = ResolveFrameSprite(frameSprite);
             _frame.color = frameColor;
 
             // The marquee is a rubber band, not a control. Left clickable, it would
@@ -157,8 +177,39 @@ namespace GlobalFront.Client.UI
             frameSprite = sprite;
             if (_frame != null)
             {
-                _frame.sprite = sprite;
+                // Sprite and type travel together: content arriving turns the stretched
+                // fill into a bordered box, and content being taken away (a reconnect that
+                // hands back nothing) has to turn it back rather than leave a sliced
+                // nothing on screen.
+                _frame.type = sprite != null ? Image.Type.Sliced : Image.Type.Simple;
+                _frame.sprite = ResolveFrameSprite(sprite);
             }
+        }
+
+        /// <summary>
+        /// <paramref name="preferred"/> when content has supplied a border, and a shared
+        /// four-pixel patch of the engine's white texture when it has not.
+        /// </summary>
+        private static Sprite ResolveFrameSprite(Sprite preferred)
+        {
+            // Unity's comparison rather than the built-in one: a sprite content handed back
+            // can already have been destroyed, and the reference still reads as "supplied".
+            if (preferred != null)
+            {
+                return preferred;
+            }
+
+            if (_fallbackMarqueeSprite == null)
+            {
+                _fallbackMarqueeSprite = Sprite.Create(
+                    Texture2D.whiteTexture,
+                    new Rect(0f, 0f, 4f, 4f),
+                    new Vector2(0.5f, 0.5f));
+                _fallbackMarqueeSprite.name = "GlobalFront Marquee Fill";
+                _fallbackMarqueeSprite.hideFlags = HideFlags.DontSave;
+            }
+
+            return _fallbackMarqueeSprite;
         }
 
         /// <summary>
