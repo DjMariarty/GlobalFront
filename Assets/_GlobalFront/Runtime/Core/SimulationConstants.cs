@@ -11,6 +11,15 @@ namespace GlobalFront.Core.Simulation
         public const int MaxCatchUpTicksPerFrame = 4;
         public const int MaxPlayers = 10;
         public const int MaxSelectedEntities = 100;
+
+        /// <summary>
+        /// Hard ceiling on live units in one match. Every spawn path funnels
+        /// through <see cref="GlobalFront.Server.MatchServer"/>'s single roster
+        /// chokepoint, so this is what bounds the presentation snapshot buffers
+        /// that size themselves from it.
+        /// </summary>
+        public const int MaxUnitsPerMatch = 1024;
+
         public const int MaxFormationSpacingMm = 100_000;
         public const int MaxWorldCoordinateMm = 1_000_000_000;
 

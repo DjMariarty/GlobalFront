@@ -143,19 +143,27 @@ namespace GlobalFront.Tests.EditMode
         }
 
         /// <summary>
-        /// <c>TryEnqueueAttack</c> validates ownership of the attackers and the
-        /// target's existence, not hostility, so a player can order an ally to be
-        /// shot even when auto-acquire never proposes it. Only the cleared gates
-        /// stand between that order and friendly fire.
+        /// Since Phase 1.0 sprint 5 the command path validates hostility itself, so
+        /// an order to shoot a teammate is refused before it reaches the schedule and
+        /// never becomes an attack target at all.
         /// </summary>
+        /// <remarks>
+        /// Before the gate landed this test was the only scenario that could hand
+        /// <c>MatchServer.ClearInvalidAttackTargets</c> and
+        /// <c>CombatTickResolver.ClearInvalidTargets</c> an allied target, because the
+        /// command path accepted one. Both gates stay as defence in depth, but with
+        /// enqueue-time hostility validation and a hostility-gated auto-acquire scan
+        /// there is no longer a supported way to reach either one with an ally — the
+        /// resolver-side arm is still witnessed directly at
+        /// <c>CombatSimulationTests.Resolver_ClearsMissingDeadOrFriendlyTarget</c>.
+        /// </remarks>
         [Test]
         public void Match2v2_ManualAttackOrderOnAlly_NeverDealsDamage()
         {
             var server = new MatchServer(Team2v2CombatRelation.Instance);
 
             // Nothing auto-acquires: the ally target exists only because a player
-            // ordered it, so this test answers for the clear gates rather than the
-            // acquisition scan.
+            // ordered it, so this test answers for the command-path gate.
             var redOne = server.SpawnUnit(
                 RedOne, RedStats, new WorldPointMm(0, 0), 500);
             var ally = server.SpawnUnit(
@@ -172,8 +180,8 @@ namespace GlobalFront.Tests.EditMode
                     new CommandHeader(RedOne, 1, 1, GameCommandType.Attack),
                     new[] { redOne },
                     ally),
-                Is.EqualTo(MatchCommandRejection.None),
-                "the order has to be accepted for this to test the gates rather than the command path");
+                Is.EqualTo(MatchCommandRejection.FriendlyTarget),
+                "an order to shoot a teammate must be refused by the command path");
 
             server.ExecuteTicks(4);
 
@@ -181,14 +189,71 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(
                 alliedUnit.CurrentHealth,
                 Is.EqualTo(DurableStats.MaximumHealth),
-                "a manually ordered attack on an ally dealt damage: the hostility " +
-                "gates in MatchServer.ClearInvalidAttackTargets and " +
-                "CombatTickResolver.ClearInvalidTargets are not both rejecting it");
+                "an attack order on an ally dealt damage even though the command " +
+                "path was supposed to refuse it");
 
             Assert.That(
                 server.Outcome.IsTerminal,
                 Is.False,
                 "the match must stay in progress while both teams still have units");
+        }
+
+        [Test]
+        public void Match2v2_AttackOrderOnTeammate_ReturnsFriendlyTargetAndSchedulesNothing()
+        {
+            var server = new MatchServer(Team2v2CombatRelation.Instance);
+
+            var redOne = server.SpawnUnit(
+                RedOne, RedStats, new WorldPointMm(0, 0), 500);
+            var teammate = server.SpawnUnit(
+                RedTwo, DurableStats, new WorldPointMm(3000, 0), 500);
+            var hostile = server.SpawnUnit(
+                BlueOne, DurableStats, new WorldPointMm(40000, 0), 500);
+
+            Assert.That(
+                server.TryEnqueueAttack(
+                    new CommandHeader(RedOne, 1, 1, GameCommandType.Attack),
+                    new[] { redOne },
+                    teammate),
+                Is.EqualTo(MatchCommandRejection.FriendlyTarget));
+
+            server.ExecuteTicks(4);
+
+            Assert.That(server.TryGetUnit(redOne, out var shooter), Is.True);
+            Assert.That(
+                shooter.AttackTarget,
+                Is.EqualTo(default(EntityId)),
+                "the refused order still reached the shooter's attack target");
+            Assert.That(server.TryGetUnit(teammate, out var ally), Is.True);
+            Assert.That(ally.CurrentHealth, Is.EqualTo(DurableStats.MaximumHealth));
+
+            // CommitSequence runs only on the accepted path, so a refused order must
+            // leave the player's sequence window free for a valid order.
+            Assert.That(
+                server.TryEnqueueAttack(
+                    new CommandHeader(RedOne, 2, 5, GameCommandType.Attack),
+                    new[] { redOne },
+                    hostile),
+                Is.EqualTo(MatchCommandRejection.None));
+        }
+
+        [Test]
+        public void Match2v2_AttackOrderOnEnemyTeam_IsStillAccepted()
+        {
+            var server = new MatchServer(Team2v2CombatRelation.Instance);
+
+            var redOne = server.SpawnUnit(
+                RedOne, RedStats, new WorldPointMm(0, 0), 500);
+            var blueOne = server.SpawnUnit(
+                BlueOne, DurableStats, new WorldPointMm(6000, 0), 500);
+
+            Assert.That(
+                server.TryEnqueueAttack(
+                    new CommandHeader(RedOne, 1, 1, GameCommandType.Attack),
+                    new[] { redOne },
+                    blueOne),
+                Is.EqualTo(MatchCommandRejection.None),
+                "the hostility gate must not widen into refusing legitimate orders");
         }
     }
 }

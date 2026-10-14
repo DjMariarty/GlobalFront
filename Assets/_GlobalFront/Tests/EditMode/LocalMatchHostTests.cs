@@ -397,6 +397,47 @@ namespace GlobalFront.Tests.EditMode
                 "Pause drain must stay bounded per frame instead of walking the whole elapsed window.");
         }
 
+        /// <summary>
+        /// Witness for Phase 1.0 sprint 5: the drain budget was a plain <c>int</c> sum
+        /// of the configured grace window and the catch-up allowance, so a grace window
+        /// near <see cref="int.MaxValue"/> wrapped it negative. The loop condition then
+        /// failed before the first iteration and the grace window stopped elapsing
+        /// entirely — the host stayed paused forever. The sum is widened to
+        /// <c>long</c> and clamped back before it is used.
+        /// </summary>
+        [Test]
+        public void AdvanceRealTime_WhenPausedWithMaxValueGrace_StillDrainsPauseTicks()
+        {
+            var host = new LocalMatchHost(disconnectGraceTicks: int.MaxValue);
+            host.Pause();
+
+            // One frame of exactly one tick duration: the drain must take it.
+            Assert.That(
+                host.AdvanceRealTime(0.05),
+                Is.EqualTo(0),
+                "a paused host must still execute no live ticks");
+
+            Assert.That(
+                PausedGraceTicks(host),
+                Is.EqualTo(1UL),
+                "the pause budget wrapped negative, so the grace window stopped elapsing");
+            Assert.That(host.IsPaused, Is.True);
+        }
+
+        private static ulong PausedGraceTicks(LocalMatchHost host)
+        {
+            var field = typeof(LocalMatchHost).GetField(
+                "_pausedGraceTicks",
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic);
+            Assert.That(
+                field,
+                Is.Not.Null,
+                "LocalMatchHost renamed or removed its paused-grace counter");
+
+            return (ulong)field.GetValue(host);
+        }
+
         private static void RunTicks(LocalMatchHost host, int count)
         {
             for (var index = 0; index < count; index++)

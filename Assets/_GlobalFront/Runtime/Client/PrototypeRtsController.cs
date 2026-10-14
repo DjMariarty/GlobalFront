@@ -51,6 +51,14 @@ namespace GlobalFront.Client
                 cooldownTicks: 10);
 
         private readonly UnitRegistry _registry = new UnitRegistry();
+
+        /// <summary>
+        /// Reusable presentation snapshot buffer (Phase 1.0 sprint 5). Sized from
+        /// the server's own spawn cap, so <see cref="LocalMatchHost.CopySnapshots"/>
+        /// can never report that it did not fit.
+        /// </summary>
+        private readonly ServerUnitSnapshot[] _snapshotsBuffer =
+            new ServerUnitSnapshot[SimulationConstants.MaxUnitsPerMatch];
         private UnitSelection _selection;
         private PrototypeCommandQueue _commandQueue;
 
@@ -138,6 +146,17 @@ namespace GlobalFront.Client
 
                 if (_outcome.Kind == BattleOutcomeKind.Victory)
                 {
+                    // A team victory deliberately carries no winning player, so
+                    // comparing Winner against the local player would read every
+                    // such outcome as DEFEAT (Phase 1.0 sprint 5).
+                    if (_outcome.IsTeamVictory)
+                    {
+                        return MatchTopology2v2.GetTeamForPlayer(_localPlayer) ==
+                               _outcome.WinningTeam
+                            ? "VICTORY"
+                            : "DEFEAT";
+                    }
+
                     return _outcome.Winner == _localPlayer
                         ? "VICTORY"
                         : "DEFEAT";
@@ -410,14 +429,17 @@ namespace GlobalFront.Client
 
         /// <summary>
         /// Synchronizes every client presentation unit from the authoritative
-        /// server snapshots produced by the last authoritative tick.
+        /// server snapshots produced by the last authoritative tick. Reads into a
+        /// buffer owned by this component, because this runs on every tick for the
+        /// whole roster and an array per tick is per-frame garbage on the hot path
+        /// (Phase 1.0 sprint 5).
         /// </summary>
         private void ApplyHostSnapshots()
         {
-            var snapshots = _localHost.GetAllSnapshots();
-            for (var index = 0; index < snapshots.Length; index++)
+            var count = _localHost.CopySnapshots(_snapshotsBuffer);
+            for (var index = 0; index < count; index++)
             {
-                var snapshot = snapshots[index];
+                var snapshot = _snapshotsBuffer[index];
                 if (_registry.TryGetUnit(snapshot.Entity, out var unit))
                 {
                     unit.ApplyServerSnapshot(snapshot);

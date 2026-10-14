@@ -168,6 +168,39 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(attacker.HasAttackTarget, Is.False);
         }
 
+        /// <summary>
+        /// Witness for Phase 1.0 sprint 5: Resolve clears the roster scratch on
+        /// entry, so a relation implementation that calls back into the same
+        /// resolver would silently hand the outer tick a half-cleared roster. The
+        /// guard turns that corruption into a throw, and the finally releases the
+        /// instance for the next legitimate call.
+        /// </summary>
+        [Test]
+        public void Resolver_WhenRelationReentersResolve_ThrowsAndStaysUsable()
+        {
+            var stats = new CombatStats(100, 10, 5000, 3);
+            var attacker = CreateState(1, 1, stats);
+            var target = CreateState(2, 2, stats);
+            attacker.TryAssignTarget(target.Entity);
+            var pair = CreatePair(attacker, target, 1000);
+
+            var resolver = new CombatTickResolver();
+            var error = Assert.Throws<InvalidOperationException>(() =>
+                resolver.Resolve(pair, pair.Length, 1, new ReentrantRelation(resolver, pair)));
+
+            Assert.That(error.Message, Does.Contain("not reentrant"));
+            Assert.That(
+                target.CurrentHealth,
+                Is.EqualTo(100),
+                "the aborted resolve must not have applied any damage");
+
+            Assert.That(
+                resolver.Resolve(pair, pair.Length, 10).EventCount,
+                Is.EqualTo(1),
+                "a throwing resolve must release the guard, not lock the instance");
+            Assert.That(target.CurrentHealth, Is.EqualTo(90));
+        }
+
         [Test]
         public void Resolver_IsInvariantToInputOrder()
         {
@@ -248,5 +281,32 @@ namespace GlobalFront.Tests.EditMode
                 new CombatantTickInput(first, new WorldPointMm(0, 0)),
                 new CombatantTickInput(second, new WorldPointMm(distanceMm, 0))
             };
+
+        /// <summary>
+        /// A relation that calls back into the resolver it was handed, standing in
+        /// for the reentrancy the sprint 5 guard exists to refuse.
+        /// </summary>
+        private sealed class ReentrantRelation : ICombatRelation
+        {
+            private readonly CombatTickResolver _resolver;
+            private readonly CombatantTickInput[] _roster;
+
+            public ReentrantRelation(CombatTickResolver resolver, CombatantTickInput[] roster)
+            {
+                _resolver = resolver;
+                _roster = roster;
+            }
+
+            public bool AreEnemies(PlayerId left, PlayerId right)
+            {
+                _resolver.Resolve(_roster, _roster.Length, 1);
+                return true;
+            }
+
+            public BattleOutcome DetermineOutcome(
+                CombatantTickInput[] canonical,
+                int count) =>
+                BattleOutcome.InProgress;
+        }
     }
 }

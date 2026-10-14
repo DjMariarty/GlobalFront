@@ -30,7 +30,15 @@ namespace GlobalFront.Server
         /// identity mismatch, or match not running). The detailed reason is
         /// reported by the session layer as SessionRejection.
         /// </summary>
-        SessionRejected = 10
+        SessionRejected = 10,
+
+        /// <summary>
+        /// Phase 1.0 sprint 5: the attack target belongs to a player this
+        /// relation does not consider an enemy, so the order is refused at the
+        /// command path instead of relying on the downstream target-clearing
+        /// gates to suppress the damage.
+        /// </summary>
+        FriendlyTarget = 11
     }
 
     /// <summary>
@@ -241,7 +249,11 @@ namespace GlobalFront.Server
         /// Thrown when <paramref name="config"/> is null.
         /// </exception>
         /// <exception cref="InvalidOperationException">
-        /// Thrown when the match has already been initialized (units exist).
+        /// Thrown when the match has already been initialized (units exist), or when
+        /// <see cref="MatchConfig.UnitCount"/> exceeds
+        /// <see cref="SimulationConstants.MaxUnitsPerMatch"/>. The capacity check runs
+        /// before the first spawn, so a rejected template cannot leave a half-built
+        /// roster behind a match that can never be re-initialized.
         /// </exception>
         public EntityId[] InitializeMatch(MatchConfig config)
         {
@@ -254,6 +266,13 @@ namespace GlobalFront.Server
             {
                 throw new InvalidOperationException(
                     "Match has already been initialized. InitializeMatch can only be called on an empty server.");
+            }
+
+            if (config.UnitCount > SimulationConstants.MaxUnitsPerMatch)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot initialize match: template asks for {config.UnitCount} units " +
+                    $"and the match capacity is {SimulationConstants.MaxUnitsPerMatch}.");
             }
 
             var entityIds = new EntityId[config.UnitCount];
@@ -360,6 +379,15 @@ namespace GlobalFront.Server
             bool autoAcquire,
             byte unitKind)
         {
+            // The one chokepoint every spawn path shares, so the cap cannot be
+            // reached around by a caller that assigns its own entity ids.
+            if (_units.Count >= SimulationConstants.MaxUnitsPerMatch)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot spawn unit: match has reached capacity of " +
+                    $"{SimulationConstants.MaxUnitsPerMatch} units.");
+            }
+
             var record = new UnitRecord
             {
                 Combat = new CombatantState(entity, owner, stats),
@@ -510,6 +538,16 @@ namespace GlobalFront.Server
                 return MatchCommandRejection.EntityNotAlive;
             }
 
+            // Hostility is validated here, once, so an order against a teammate
+            // never enters the schedule at all. Runs after ValidateControllable,
+            // which is what guarantees both ids handed to AreEnemies are valid
+            // owners — the 2v2 relation throws on an invalid PlayerId. The
+            // target-clearing gates downstream stay as defence in depth.
+            if (!_combatRelation.AreEnemies(header.Player, targetRecord.Combat.Owner))
+            {
+                return MatchCommandRejection.FriendlyTarget;
+            }
+
             Schedule(new ScheduledCommand { Header = header, Attack = command }, header.RequestedTick);
             CommitSequence(header.Player, header.Sequence);
             return MatchCommandRejection.None;
@@ -578,6 +616,14 @@ namespace GlobalFront.Server
 
             if (Outcome.IsTerminal || UnitCount == 0)
             {
+                // Orders scheduled for a future tick can never run once this method
+                // stops executing them, so their buckets are released instead of
+                // sitting in the dictionary for the rest of the match.
+                if (Outcome.IsTerminal)
+                {
+                    _scheduledCommands.Clear();
+                }
+
                 return;
             }
 

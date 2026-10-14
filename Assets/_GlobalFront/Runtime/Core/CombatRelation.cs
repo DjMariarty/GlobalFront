@@ -26,7 +26,7 @@ namespace GlobalFront.Core.Combat
         /// Outcome for the living combatants in <c>canonical[0 .. count)</c>.
         /// </summary>
         /// <remarks>
-        /// <paramref name="canonical"/> is the resolver's shared static buffer:
+        /// <paramref name="canonical"/> is the resolver's instance scratch buffer:
         /// read only the first <paramref name="count"/> entries, never mutate
         /// them, and never retain the array past the call.
         /// </remarks>

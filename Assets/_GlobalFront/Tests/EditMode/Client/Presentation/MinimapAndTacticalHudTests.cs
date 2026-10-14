@@ -2020,6 +2020,11 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             Assert.That(
                 TacticalHudText.ForRejection(MatchCommandRejection.FormationOutOfBounds, true),
                 Is.EqualTo("Formation off map"));
+            Assert.That(
+                TacticalHudText.ForRejection(MatchCommandRejection.FriendlyTarget, true),
+                Is.EqualTo("Allied target"),
+                "the rejection table is indexed by enum value, so a member added without " +
+                "its own entry shows the player \"Unrecognised\" instead of a reason");
 
             // An enum member added by a later phase must fall through to a named entry
             // rather than throw at the one place the HUD is not allowed to fail.

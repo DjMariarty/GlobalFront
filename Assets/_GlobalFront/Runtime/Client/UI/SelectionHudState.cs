@@ -449,6 +449,7 @@ namespace GlobalFront.Client.UI
             "Unit is gone",      // EntityNotAlive
             "Formation off map", // FormationOutOfBounds
             "Session rejected",  // SessionRejected
+            "Allied target",     // FriendlyTarget
         };
 
         private const string Unrecognised = "Unrecognised";

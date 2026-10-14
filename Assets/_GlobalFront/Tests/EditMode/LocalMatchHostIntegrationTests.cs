@@ -1,13 +1,17 @@
 using System.Collections.Generic;
 using System.Reflection;
 using GlobalFront.Client;
+using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
+using GlobalFront.Core.Simulation;
 using GlobalFront.Server;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools.Constraints;
 using CoreEntityId = GlobalFront.Core.Model.EntityId;
+using Is = NUnit.Framework.Is;
 
 namespace GlobalFront.Tests.EditMode
 {
@@ -178,6 +182,143 @@ namespace GlobalFront.Tests.EditMode
                 Is.True);
             Assert.That(friendly.CurrentPosition, Is.EqualTo(snapshot.Position));
             Assert.That(friendly.CurrentPosition, Is.EqualTo(new WorldPointMm(350, 0)));
+        }
+
+        /// <summary>
+        /// Witness for Phase 1.0 sprint 5: the presentation read runs once per tick for
+        /// the whole roster, and <c>GetAllSnapshots</c> handed it a fresh array every
+        /// time. It now copies into a buffer owned by the controller.
+        /// </summary>
+        [Test]
+        public void ApplyHostSnapshots_ReadsTheReusableBufferWithoutAllocating()
+        {
+            var host = _controller.Host;
+            Assert.That(
+                host.TryEnqueueMove(
+                    new CommandHeader(LocalPlayer, 1, 1, GameCommandType.Move),
+                    new[] { new CoreEntityId(1) },
+                    new WorldPointMm(10000, 0),
+                    new FormationSpec(1, 2000, CardinalFacing.North)),
+                Is.EqualTo(MatchCommandRejection.None));
+
+            host.TickOnce();
+            var friendly = GetUnit(new CoreEntityId(1));
+
+            // Anti-vacuity: a silently renamed private method would be skipped by the
+            // reflection helper and would also "allocate nothing", so prove first that
+            // the path under test really moved the unit.
+            Assert.That(
+                friendly.CurrentPosition,
+                Is.EqualTo(new WorldPointMm(350, 0)),
+                "the measured tick did not reach presentation through the snapshot path");
+
+            // Bind once, outside the measurement window: MethodInfo.Invoke allocates
+            // per call, which would indict the code under test for the harness.
+            var applyHostSnapshots = PrivateAction(_controller, "ApplyHostSnapshots");
+
+            Assert.That(
+                () => applyHostSnapshots(),
+                UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory(),
+                "the per-tick presentation read allocates again instead of copying into " +
+                "the controller's reusable snapshot buffer");
+        }
+
+        /// <summary>
+        /// Pins the host's new zero-alloc snapshot contract, including the arm the
+        /// presentation layer relies on never happening: its buffer is exactly the
+        /// server's own spawn cap, so the server can never report that it did not fit.
+        /// </summary>
+        [Test]
+        public void HostCopySnapshots_ReportsTheWholeRosterAndRefusesATooSmallBuffer()
+        {
+            var host = _controller.Host;
+            Assert.That(host.UnitCount, Is.GreaterThan(0));
+
+            var buffer = new ServerUnitSnapshot[SimulationConstants.MaxUnitsPerMatch];
+            Assert.That(host.CopySnapshots(buffer), Is.EqualTo(host.UnitCount));
+            Assert.That(host.TryGetUnit(buffer[0].Entity, out _), Is.True);
+
+            Assert.That(
+                host.CopySnapshots(new ServerUnitSnapshot[host.UnitCount - 1]),
+                Is.EqualTo(-1),
+                "CopySnapshots must report that it copied nothing rather than half a roster");
+        }
+
+        /// <summary>
+        /// Witness for Phase 1.0 sprint 5: a team victory deliberately carries no
+        /// winning player, so comparing <c>Winner</c> against the local player reported
+        /// DEFEAT to the side that actually won.
+        /// </summary>
+        [Test]
+        public void BattleStatusMessage_TeamVictory_UsesTheWinningTeam()
+        {
+            SetPrivateField(_controller, "_localPlayer", LocalPlayer);
+
+            SetPrivateField(
+                _controller,
+                "_outcome",
+                BattleOutcome.TeamVictory(MatchTopology2v2.TeamRed));
+            Assert.That(
+                _controller.BattleStatusMessage,
+                Is.EqualTo("VICTORY"),
+                "player 1 won on the winning team but the banner reported defeat");
+
+            SetPrivateField(
+                _controller,
+                "_outcome",
+                BattleOutcome.TeamVictory(MatchTopology2v2.TeamBlue));
+            Assert.That(
+                _controller.BattleStatusMessage,
+                Is.EqualTo("DEFEAT"),
+                "the opposing team won and the local player is not on it");
+
+            // The player-victory arms must keep working: a team fix that made every
+            // outcome read through WinningTeam would report VICTORY for an enemy win.
+            SetPrivateField(_controller, "_outcome", BattleOutcome.Victory(EnemyPlayer));
+            Assert.That(_controller.BattleStatusMessage, Is.EqualTo("DEFEAT"));
+
+            SetPrivateField(_controller, "_outcome", BattleOutcome.Victory(LocalPlayer));
+            Assert.That(_controller.BattleStatusMessage, Is.EqualTo("VICTORY"));
+
+            SetPrivateField(_controller, "_outcome", BattleOutcome.Draw);
+            Assert.That(_controller.BattleStatusMessage, Is.EqualTo("DRAW"));
+
+            SetPrivateField(_controller, "_outcome", BattleOutcome.InProgress);
+            Assert.That(_controller.BattleStatusMessage, Is.EqualTo("BATTLE IN PROGRESS"));
+        }
+
+        private static void SetPrivateField(object target, string name, object value)
+        {
+            var field = target.GetType().GetField(
+                name,
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.That(
+                field,
+                Is.Not.Null,
+                $"{target.GetType().Name} renamed or removed the field {name}");
+
+            field.SetValue(target, value);
+        }
+
+        /// <summary>
+        /// Binds a private instance method once, outside a measurement window:
+        /// <c>MethodInfo.Invoke</c> allocates per call, so a zero-allocation claim
+        /// made through reflection would fail for the harness's own reason.
+        /// </summary>
+        private static System.Action PrivateAction(object target, string methodName)
+        {
+            var method = target.GetType().GetMethod(
+                methodName,
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.That(
+                method,
+                Is.Not.Null,
+                $"{target.GetType().Name} renamed or removed the method {methodName}");
+
+            return (System.Action)System.Delegate.CreateDelegate(
+                typeof(System.Action),
+                target,
+                method);
         }
 
         private PrototypeUnit SpawnUnit(PlayerId owner, Vector3 position)

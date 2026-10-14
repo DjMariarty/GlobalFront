@@ -233,9 +233,13 @@ namespace GlobalFront.Client
                     // frame. Pause accounting only ever exists to elapse the disconnect
                     // grace window — the host resumes on the tick past it — so the drain
                     // stops one catch-up unit beyond that window and the remainder stays
-                    // queued instead of freezing the frame (P0-1).
-                    var pauseBudget = _sessions.DisconnectGraceTicks +
-                                      SimulationConstants.MaxCatchUpTicksPerFrame;
+                    // queued instead of freezing the frame (P0-1). The sum is widened
+                    // before it is clamped, because a configured grace near int.MaxValue
+                    // would otherwise wrap negative and drain nothing at all (P1-5).
+                    var totalGraceBudget = (long)_sessions.DisconnectGraceTicks +
+                                           SimulationConstants.MaxCatchUpTicksPerFrame;
+                    var pauseBudget = (int)Math.Clamp(
+                        totalGraceBudget, 0L, (long)int.MaxValue);
                     while (_pausedSecondsAccumulator >= _tickDriver.TickDurationSeconds &&
                            pauseBudget-- > 0)
                     {
@@ -586,6 +590,17 @@ namespace GlobalFront.Client
 #pragma warning disable CS0618
         public ServerUnitSnapshot[] GetAllSnapshots() => _server.GetAllSnapshots();
 #pragma warning restore CS0618
+
+        /// <summary>
+        /// Allocation-free presentation snapshot read (Phase 1.0 sprint 5): copies
+        /// every unit into the caller-owned buffer and returns how many were
+        /// written, or -1 when the buffer cannot hold the whole roster. The
+        /// presentation layer sizes its buffer from
+        /// <see cref="SimulationConstants.MaxUnitsPerMatch"/>, which is what the
+        /// server's spawn cap enforces, so -1 is unreachable from a live match.
+        /// </summary>
+        public int CopySnapshots(Span<ServerUnitSnapshot> destination) =>
+            _server.CopySnapshots(destination);
 
         public bool TryGetUnit(EntityId entity, out ServerUnitSnapshot snapshot) =>
             _server.TryGetUnit(entity, out snapshot);

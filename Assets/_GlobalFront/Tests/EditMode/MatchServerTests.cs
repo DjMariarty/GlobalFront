@@ -482,6 +482,165 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void TryEnqueueAttack_TargetOwnedByTheOrderingPlayer_ReturnsFriendlyTarget()
+        {
+            var server = new MatchServer();
+            var player = new PlayerId(1);
+            var shooter = server.SpawnUnit(
+                player, StandardStats, new WorldPointMm(0, 0), 500);
+            var ownUnit = server.SpawnUnit(
+                player, StandardStats, new WorldPointMm(3000, 0), 500);
+            var hostile = server.SpawnUnit(
+                new PlayerId(2), StandardStats, new WorldPointMm(6000, 0), 500);
+
+            Assert.That(
+                server.TryEnqueueAttack(
+                    new CommandHeader(player, 1, 1, GameCommandType.Attack),
+                    new[] { shooter },
+                    ownUnit),
+                Is.EqualTo(MatchCommandRejection.FriendlyTarget),
+                "under the skirmish relation a second unit of the same player is not an enemy");
+
+            Assert.That(
+                server.TryEnqueueAttack(
+                    new CommandHeader(player, 2, 2, GameCommandType.Attack),
+                    new[] { shooter },
+                    hostile),
+                Is.EqualTo(MatchCommandRejection.None),
+                "the gate must not refuse a hostile target");
+        }
+
+        /// <summary>
+        /// Witness for Phase 1.0 sprint 5: the cap is the physical bound the
+        /// presentation snapshot buffers are sized from, so it has to hold on every
+        /// spawn path rather than only on the convenience one.
+        /// </summary>
+        [Test]
+        public void SpawnUnit_WhenMatchIsAtCapacity_ThrowsWithoutGrowingTheRoster()
+        {
+            var server = new MatchServer();
+            var player = new PlayerId(1);
+            for (var index = 0; index < SimulationConstants.MaxUnitsPerMatch; index++)
+            {
+                server.SpawnUnit(
+                    player, StandardStats, new WorldPointMm(index * 10, 0), 500);
+            }
+
+            Assert.That(
+                server.UnitCount, Is.EqualTo(SimulationConstants.MaxUnitsPerMatch));
+
+            Assert.Throws<InvalidOperationException>(() =>
+                server.SpawnUnit(
+                    player, StandardStats, new WorldPointMm(500_000, 0), 500));
+
+            Assert.That(
+                server.UnitCount,
+                Is.EqualTo(SimulationConstants.MaxUnitsPerMatch),
+                "the spawn cap did not hold: the roster grew past MaxUnitsPerMatch");
+        }
+
+        /// <summary>
+        /// The capacity check has to run before the first spawn, not inside the
+        /// per-unit path: a template that throws halfway would leave a roster
+        /// behind and <c>InitializeMatch</c> can never be called again on a
+        /// non-empty server.
+        /// </summary>
+        [Test]
+        public void InitializeMatch_TemplateAboveCapacity_ThrowsBeforeAnyUnitExists()
+        {
+            var server = new MatchServer();
+            var oversized = new UnitSpawnSpec[SimulationConstants.MaxUnitsPerMatch + 1];
+            for (var index = 0; index < oversized.Length; index++)
+            {
+                oversized[index] = new UnitSpawnSpec(
+                    new PlayerId(1), new WorldPointMm(index * 10, 0), 500, false);
+            }
+
+            Assert.Throws<InvalidOperationException>(
+                () => server.InitializeMatch(new MatchConfig(StandardStats, oversized)));
+            Assert.That(
+                server.UnitCount,
+                Is.Zero,
+                "the oversized template half-built the roster before throwing");
+
+            var legal = new[]
+            {
+                new UnitSpawnSpec(new PlayerId(1), new WorldPointMm(0, 0), 500, false),
+                new UnitSpawnSpec(new PlayerId(2), new WorldPointMm(6000, 0), 500, false)
+            };
+            Assert.That(
+                server.InitializeMatch(new MatchConfig(StandardStats, legal)).Length,
+                Is.EqualTo(2),
+                "a rejected template must leave the server usable, not permanently initialized");
+        }
+
+        /// <summary>
+        /// Once the outcome is terminal <see cref="MatchServer.TickOnce"/> stops
+        /// executing scheduled orders, so their buckets are otherwise held for the
+        /// rest of the match. Behaviour is identical either way — the order never
+        /// runs — so the witness is the pending store itself.
+        /// </summary>
+        [Test]
+        public void TickOnce_WhenOutcomeTurnsTerminal_DropsPendingScheduledCommands()
+        {
+            var server = new MatchServer();
+
+            // A duel that kills both sides on the first shot, so the match is
+            // terminal long before the order below is due to run.
+            var lethalStats = new CombatStats(100, 100, 12000, 1);
+            server.SpawnUnit(
+                new PlayerId(1), lethalStats, new WorldPointMm(0, 0), 500,
+                autoAcquire: true);
+            server.SpawnUnit(
+                new PlayerId(2), lethalStats, new WorldPointMm(6000, 0), 500,
+                autoAcquire: true);
+
+            // Inside AcceptedFutureTicks (60), so the header is legal, and far
+            // enough out that the battle ends before the order is executed.
+            Assert.That(
+                server.TryEnqueueMove(
+                    new CommandHeader(
+                        new PlayerId(1), 1, 30, GameCommandType.Move),
+                    Entities(1),
+                    new WorldPointMm(1000, 0),
+                    new FormationSpec(1, 2000, CardinalFacing.North)),
+                Is.EqualTo(MatchCommandRejection.None));
+            Assert.That(
+                PendingCommandBuckets(server),
+                Is.EqualTo(1),
+                "the test premise is wrong: the order was not left pending");
+
+            server.ExecuteTicks(10);
+
+            Assert.That(
+                server.Outcome.IsTerminal,
+                Is.True,
+                "the test premise is wrong: the duel never reached a terminal outcome");
+            Assert.That(
+                PendingCommandBuckets(server),
+                Is.Zero,
+                "a terminal match is still holding the buckets of orders it can never execute");
+        }
+
+        private static int PendingCommandBuckets(MatchServer server)
+        {
+            var field = typeof(MatchServer).GetField(
+                "_scheduledCommands", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(
+                field,
+                Is.Not.Null,
+                "MatchServer renamed or removed its pending-command store");
+
+            var buckets = field.GetValue(server) as System.Collections.ICollection;
+            Assert.That(
+                buckets,
+                Is.Not.Null,
+                "the pending-command store is no longer a collection");
+
+            return buckets.Count;
+        }
+
+        [Test]
         public void TickOnce_UnderLoad_IsAllocationFree()
         {
             var server = new MatchServer();
