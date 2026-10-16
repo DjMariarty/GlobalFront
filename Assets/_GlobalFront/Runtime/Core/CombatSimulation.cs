@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
@@ -394,29 +395,38 @@ namespace GlobalFront.Core.Combat
                 left.State.Entity.Value.CompareTo(right.State.Entity.Value);
         }
 
-        private CombatantTickInput[] _canonical = new CombatantTickInput[1024];
+        private CombatantTickInput[] _canonical =
+            new CombatantTickInput[SimulationConstants.MaxUnitsPerMatch];
         private readonly Dictionary<EntityId, CombatantTickInput> _byEntity =
-            new Dictionary<EntityId, CombatantTickInput>(1024);
-        private readonly List<DamageEvent> _events = new List<DamageEvent>(1024);
+            new Dictionary<EntityId, CombatantTickInput>(SimulationConstants.MaxUnitsPerMatch);
+        private readonly List<DamageEvent> _events =
+            new List<DamageEvent>(SimulationConstants.MaxUnitsPerMatch);
         private readonly Dictionary<EntityId, long> _accumulatedDamage =
-            new Dictionary<EntityId, long>(1024);
+            new Dictionary<EntityId, long>(SimulationConstants.MaxUnitsPerMatch);
 
         private readonly DamageEvent[][] _eventBuffers = new DamageEvent[][]
         {
-            new DamageEvent[1024],
-            new DamageEvent[1024],
-            new DamageEvent[1024],
-            new DamageEvent[1024]
+            new DamageEvent[SimulationConstants.MaxUnitsPerMatch],
+            new DamageEvent[SimulationConstants.MaxUnitsPerMatch],
+            new DamageEvent[SimulationConstants.MaxUnitsPerMatch],
+            new DamageEvent[SimulationConstants.MaxUnitsPerMatch]
         };
         private int _bufferIndex;
 
         /// <summary>
-        /// Set for the duration of one <see cref="Resolve(CombatantTickInput[], int,
-        /// ulong, ICombatRelation)"/> call on this instance. The scratch buffers
-        /// below are cleared on entry, so a second concurrent resolve on the same
-        /// instance would erase the first one's roster mid-tick.
+        /// 0 while this instance is idle, 1 for the duration of one
+        /// <see cref="Resolve(CombatantTickInput[], int, ulong, ICombatRelation)"/> call.
+        /// The scratch buffers below are cleared on entry, so a second resolve on the
+        /// same instance would erase the first one's roster mid-tick. The check and the
+        /// claim are one <see cref="Interlocked.CompareExchange(ref int, int, int)"/> and
+        /// the release is one <see cref="Interlocked.Exchange(ref int, int)"/>, so two
+        /// threads racing to enter cannot both pass: exactly one owns the instance and
+        /// every other is refused. Being an <see cref="int"/> rather than a
+        /// <see cref="bool"/> is what makes that exchange atomic, and the release in the
+        /// <c>finally</c> is a full barrier, so a thread that observes the claim also
+        /// observes the roster it protects.
         /// </summary>
-        private bool _isResolving;
+        private int _isResolving;
 
         /// <summary>
         /// Backward-compatibility seam for callers that have no resolver of their
@@ -445,13 +455,18 @@ namespace GlobalFront.Core.Combat
         /// <summary>
         /// Resolves one tick. The returned events alias a four-slot ring owned by
         /// this instance, so the result is only valid until four further resolves
-        /// on the same resolver. Not reentrant: calling back into this instance
-        /// during a resolve throws rather than corrupting the roster mid-tick.
+        /// on the same resolver. Strictly non-reentrant: the claim is taken atomically
+        /// with <see cref="Interlocked.CompareExchange(ref int, int, int)"/>, so calling
+        /// back into this instance during a resolve — from the same thread or from another
+        /// one that shares it — throws instead of corrupting the roster mid-tick. Only one
+        /// caller is ever inside the body, which is mutual exclusion for the claim, not for
+        /// the whole instance: concurrent resolves are refused, never serialized.
         /// </summary>
         /// <exception cref="InvalidOperationException">
-        /// Thrown when this instance is already resolving. The flag is released by a
-        /// <c>finally</c>, so a resolve that throws — including the duplicate-entity
-        /// <see cref="ArgumentException"/> below — leaves the instance usable.
+        /// Thrown when this instance is already resolving, whether the holder is the calling
+        /// thread or one of the others. The claim is released by a <c>finally</c>, so a
+        /// resolve that throws — including the argument checks below and the duplicate-entity
+        /// <see cref="ArgumentException"/> — leaves the instance usable.
         /// </exception>
         public CombatTickResult Resolve(
             CombatantTickInput[] combatants,
@@ -459,14 +474,13 @@ namespace GlobalFront.Core.Combat
             ulong tick,
             ICombatRelation relation = null)
         {
-            if (_isResolving)
+            if (Interlocked.CompareExchange(ref _isResolving, 1, 0) != 0)
             {
                 throw new InvalidOperationException(
                     "CombatTickResolver is not reentrant. Recursive calls to Resolve " +
                     "on the same instance are not supported.");
             }
 
-            _isResolving = true;
             try
             {
                 if (combatants == null)
@@ -573,7 +587,7 @@ namespace GlobalFront.Core.Combat
             }
             finally
             {
-                _isResolving = false;
+                Interlocked.Exchange(ref _isResolving, 0);
             }
         }
 

@@ -1,4 +1,6 @@
 using System;
+using System.Reflection;
+using System.Threading;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
@@ -201,6 +203,156 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(target.CurrentHealth, Is.EqualTo(90));
         }
 
+        /// <summary>
+        /// Witness for Phase 1.0 sprint 5.1: the single-threaded test above proves a guard
+        /// exists, but nothing proves it holds when two threads share one resolver — which is
+        /// the hazard the field comment claimed since sprint 5. Here the owner parks inside
+        /// the guarded region (DetermineOutcome runs after the claim is taken and inside the
+        /// try), and only once it has signalled that it is there does a second thread try the
+        /// same instance. The contender must be refused while the owner holds it, and the
+        /// owner's roster must come back uncorrupted.
+        ///
+        /// What this test does NOT prove: that the claim is atomic rather than a bool
+        /// check-then-set. The window between reading and writing a non-atomic flag sits
+        /// before any relation callback, so a thread parked inside the guard has already set
+        /// it and the contender is refused either way. Reaching that window would need an
+        /// injection seam inside Resolve, so the field-type pin below is what witnesses the
+        /// Interlocked form.
+        ///
+        /// Every wait is bounded and the release gate is set from three places, so no
+        /// interleaving — including a guard that never engages — can wedge a batchmode run.
+        /// </summary>
+        [Test]
+        public void Resolver_IsNotReentrantAcrossConcurrentThreadsOnOneInstance()
+        {
+            var claim = typeof(CombatTickResolver).GetField(
+                "_isResolving", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(
+                claim,
+                Is.Not.Null,
+                "CombatTickResolver renamed or removed its reentrancy claim");
+            Assert.That(
+                claim.FieldType,
+                Is.EqualTo(typeof(int)),
+                "the reentrancy claim is no longer an int, so it cannot be taken with " +
+                "Interlocked.CompareExchange and check-then-set races again");
+
+            var hold = TimeSpan.FromSeconds(10);
+            var join = TimeSpan.FromSeconds(30);
+
+            // Owner roster: exactly one shot, so a clean resolve reports one event.
+            var stats = new CombatStats(100, 10, 5000, 3);
+            var attacker = CreateState(1, 1, stats);
+            var target = CreateState(2, 2, stats);
+            attacker.TryAssignTarget(target.Entity);
+            var ownerRoster = CreatePair(attacker, target, 1000);
+
+            // Contender roster: disjoint entities and out of range, so it never fires. A
+            // different roster keeps a bypassed guard visible as a corrupted owner result
+            // instead of two threads resolving identical data and hiding it.
+            var contenderRoster = CreatePair(CreateState(3, 1, stats), CreateState(4, 2, stats), 5001);
+
+            var resolver = new CombatTickResolver();
+            var insideGuard = new ManualResetEventSlim(false);
+            var releaseGuard = new ManualResetEventSlim(false);
+            var errors = new Exception[2];
+            var ownerEventCount = -1;
+
+            var owner = new Thread(() =>
+            {
+                try
+                {
+                    ownerEventCount = resolver.Resolve(
+                        ownerRoster,
+                        ownerRoster.Length,
+                        10,
+                        new ParkingRelation(insideGuard, releaseGuard, hold)).EventCount;
+                }
+                catch (Exception error)
+                {
+                    // Swallowed into a slot: an exception escaping a worker thread becomes
+                    // Unity's "Unhandled log message: [Exception]" and buries the real assert.
+                    errors[0] = error;
+                }
+                finally
+                {
+                    releaseGuard.Set();
+                }
+            })
+            { IsBackground = true };
+
+            owner.Start();
+            try
+            {
+                Assert.That(
+                    insideGuard.Wait(hold),
+                    Is.True,
+                    "the test premise is wrong: the owner never reached the guarded region");
+
+                var contender = new Thread(() =>
+                {
+                    try
+                    {
+                        resolver.Resolve(contenderRoster, contenderRoster.Length, 10);
+                    }
+                    catch (Exception error)
+                    {
+                        errors[1] = error;
+                    }
+                    finally
+                    {
+                        // Whether it was refused at the guard or (without one) ran to the
+                        // end, the parked owner has to be let go.
+                        releaseGuard.Set();
+                    }
+                })
+                { IsBackground = true };
+
+                contender.Start();
+
+                Assert.That(
+                    contender.Join(join),
+                    Is.True,
+                    "the contending resolve wedged instead of being refused");
+                Assert.That(
+                    owner.Join(join),
+                    Is.True,
+                    "the owner never finished after the guard was released");
+
+                Assert.That(
+                    errors[0],
+                    Is.Null,
+                    "the owner's resolve threw once it was released, so a second thread " +
+                    "entered the same instance and corrupted its scratch");
+                Assert.That(
+                    ownerEventCount,
+                    Is.EqualTo(1),
+                    "the owner came back with a corrupted roster, so two threads resolved " +
+                    "the same instance at once");
+                Assert.That(
+                    errors[1],
+                    Is.InstanceOf<InvalidOperationException>(),
+                    "a concurrent resolve on a held instance was accepted, so the guard does " +
+                    "not hold across threads");
+                Assert.That(
+                    errors[1].Message,
+                    Does.Contain("not reentrant"),
+                    "the cross-thread refusal must carry the same reason as the reentrant one");
+
+                // The refusal must not have consumed the claim: the instance is still usable.
+                Assert.That(
+                    resolver.Resolve(ownerRoster, ownerRoster.Length, 20).EventCount,
+                    Is.EqualTo(1),
+                    "a refused contender left the instance latched");
+            }
+            finally
+            {
+                // If a premise assert threw before the contender ever started, the owner is
+                // still parked — release it so the suite can never hang on a failed test.
+                releaseGuard.Set();
+            }
+        }
+
         [Test]
         public void Resolver_IsInvariantToInputOrder()
         {
@@ -307,6 +459,40 @@ namespace GlobalFront.Tests.EditMode
                 CombatantTickInput[] canonical,
                 int count) =>
                 BattleOutcome.InProgress;
+        }
+
+        /// <summary>
+        /// Parks the calling thread inside the resolver's guarded region. DetermineOutcome is
+        /// called once the claim is held and inside the try, so a thread blocked here is
+        /// provably the one holding the instance. The wait is bounded, so even a guard that
+        /// never releases can only fail an assert, never hang the suite.
+        /// </summary>
+        private sealed class ParkingRelation : ICombatRelation
+        {
+            private readonly ManualResetEventSlim _inside;
+            private readonly ManualResetEventSlim _release;
+            private readonly TimeSpan _hold;
+
+            public ParkingRelation(
+                ManualResetEventSlim inside,
+                ManualResetEventSlim release,
+                TimeSpan hold)
+            {
+                _inside = inside;
+                _release = release;
+                _hold = hold;
+            }
+
+            public bool AreEnemies(PlayerId left, PlayerId right) => left != right;
+
+            public BattleOutcome DetermineOutcome(
+                CombatantTickInput[] canonical,
+                int count)
+            {
+                _inside.Set();
+                _release.Wait(_hold);
+                return BattleOutcome.InProgress;
+            }
         }
     }
 }

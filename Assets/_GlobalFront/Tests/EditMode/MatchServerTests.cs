@@ -640,6 +640,177 @@ namespace GlobalFront.Tests.EditMode
             return buckets.Count;
         }
 
+        /// <summary>
+        /// Fills a server to exactly <see cref="SimulationConstants.MaxUnitsPerMatch"/> so
+        /// the next spawn is the one that must be refused. Every spawn re-sorts the ordered
+        /// roster, so this is the expensive part of the three capacity witnesses and is kept
+        /// in one place rather than inlined three times.
+        /// </summary>
+        private static void FillToCapacity(MatchServer server)
+        {
+            var player = new PlayerId(1);
+            for (var index = 0; index < SimulationConstants.MaxUnitsPerMatch; index++)
+            {
+                server.SpawnUnit(
+                    player, StandardStats, new WorldPointMm(index * 10, 0), 500);
+            }
+
+            Assert.That(
+                server.UnitCount,
+                Is.EqualTo(SimulationConstants.MaxUnitsPerMatch),
+                "the test premise is wrong: the roster never reached capacity");
+        }
+
+        /// <summary>
+        /// Reads the private identifier counter. At capacity the behavioural witness used
+        /// elsewhere in this file — "the next successful spawn gets id 1" — is unavailable,
+        /// because the next spawn is refused, so the counter itself has to be observed.
+        /// Never called inside an allocation assert: reflection boxes.
+        /// </summary>
+        private static ulong NextEntityValue(MatchServer server)
+        {
+            var field = typeof(MatchServer).GetField(
+                "_nextEntityValue", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(
+                field,
+                Is.Not.Null,
+                "MatchServer renamed or removed its entity-id counter");
+
+            var value = field.GetValue(server);
+            Assert.That(
+                value,
+                Is.InstanceOf<ulong>(),
+                "the entity-id counter is no longer a ulong");
+
+            return (ulong)value;
+        }
+
+        /// <summary>
+        /// Witness for Phase 1.0 sprint 5.1 (S5-1): the capacity gate used to be the first
+        /// statement of SpawnUnitCore, which both spawn entrances reach only after
+        /// <c>_nextEntityValue++</c>. A full roster therefore burned an identifier on every
+        /// refused spawn, breaking the invariant sprint 2 established for the four
+        /// <c>ValidateUnitSpec</c> rejections. 1024 sequential spawns leave the counter at
+        /// 1025; a refused 1025th must not move it.
+        /// </summary>
+        [Test]
+        public void SpawnUnit_WhenMatchAtCapacity_DoesNotConsumeEntityId()
+        {
+            var server = new MatchServer();
+            FillToCapacity(server);
+
+            Assert.That(
+                NextEntityValue(server),
+                Is.EqualTo(1025UL),
+                "the test premise is wrong: a full roster does not leave the counter at 1025");
+
+            Assert.Throws<InvalidOperationException>(() =>
+                server.SpawnUnit(
+                    new PlayerId(1), StandardStats, new WorldPointMm(500_000, 0), 500));
+
+            Assert.That(
+                NextEntityValue(server),
+                Is.EqualTo(1025UL),
+                "a spawn refused at capacity consumed an entity id");
+        }
+
+        /// <summary>
+        /// Witness for Phase 1.0 sprint 5.1 (S5-1) on the caller-supplied path: the
+        /// high-water mark is a <em>max</em>, so a refused spawn carrying a far-future id
+        /// dragged the counter up to that id + 1 even though the unit was never added. The
+        /// id below is valid and unused, and its spec is legal, so only the capacity gate
+        /// can refuse it.
+        /// </summary>
+        [Test]
+        public void SpawnUnitWithEntity_WhenMatchAtCapacity_DoesNotAdvanceNextEntityId()
+        {
+            var server = new MatchServer();
+            FillToCapacity(server);
+
+            Assert.That(
+                NextEntityValue(server),
+                Is.EqualTo(1025UL),
+                "the test premise is wrong: a full roster does not leave the counter at 1025");
+
+            Assert.Throws<InvalidOperationException>(() =>
+                server.SpawnUnitWithEntity(
+                    new EntityId(99999),
+                    new PlayerId(1),
+                    StandardStats,
+                    new WorldPointMm(0, 0),
+                    500));
+
+            Assert.That(
+                NextEntityValue(server),
+                Is.EqualTo(1025UL),
+                "a SpawnUnitWithEntity refused at capacity advanced the entity-id high-water mark");
+            Assert.That(
+                server.UnitCount,
+                Is.EqualTo(SimulationConstants.MaxUnitsPerMatch),
+                "the refused spawn grew the roster past capacity");
+        }
+
+        /// <summary>
+        /// Witness for Phase 1.0 sprint 5.1: the flush has to happen on the tick that turns
+        /// the match terminal, not on the tick after it. The existing terminal test calls ten
+        /// ticks, so it cannot tell "ResolveCombat flushed" from "the next TickOnce flushed
+        /// on entry" — and a host that stops driving ticks when a match ends never runs that
+        /// entry guard at all. This test stops on the exact boundary tick, before any later
+        /// TickOnce can clear the bucket for it.
+        /// </summary>
+        [Test]
+        public void ResolveCombat_WhenOutcomeTerminal_ImmediatelyClearsScheduledCommands()
+        {
+            var server = new MatchServer();
+
+            // Same lethal duel as the ten-tick test: both sides die to the first shot,
+            // so the match is terminal long before the order below (due at tick 30) runs.
+            var lethalStats = new CombatStats(100, 100, 12000, 1);
+            server.SpawnUnit(
+                new PlayerId(1), lethalStats, new WorldPointMm(0, 0), 500,
+                autoAcquire: true);
+            server.SpawnUnit(
+                new PlayerId(2), lethalStats, new WorldPointMm(6000, 0), 500,
+                autoAcquire: true);
+
+            Assert.That(
+                server.TryEnqueueMove(
+                    new CommandHeader(
+                        new PlayerId(1), 1, 30, GameCommandType.Move),
+                    Entities(1),
+                    new WorldPointMm(1000, 0),
+                    new FormationSpec(1, 2000, CardinalFacing.North)),
+                Is.EqualTo(MatchCommandRejection.None));
+            Assert.That(
+                PendingCommandBuckets(server),
+                Is.EqualTo(1),
+                "the test premise is wrong: the order was not left pending");
+
+            var flipped = false;
+            for (var attempt = 0; attempt < 120 && !flipped; attempt++)
+            {
+                // Entering TickOnce non-terminally is what makes this a witness: the
+                // defensive clear at the top of TickOnce can only run on a LATER call.
+                Assert.That(
+                    server.Outcome.IsTerminal,
+                    Is.False,
+                    "the test premise is wrong: the boundary tick was entered already terminal");
+
+                server.TickOnce();
+                flipped = server.Outcome.IsTerminal;
+            }
+
+            Assert.That(
+                flipped,
+                Is.True,
+                "the test premise is wrong: the duel never reached a terminal outcome");
+            Assert.That(
+                PendingCommandBuckets(server),
+                Is.Zero,
+                "the tick that ended the match is still holding an order it can never execute; " +
+                "the flush belongs inside ResolveCombat, not in the next TickOnce");
+        }
+
         [Test]
         public void TickOnce_UnderLoad_IsAllocationFree()
         {

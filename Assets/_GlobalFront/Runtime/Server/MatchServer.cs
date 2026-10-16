@@ -143,14 +143,15 @@ namespace GlobalFront.Server
         private ulong _nextEntityValue = 1;
 
         private readonly Dictionary<EntityId, WorldPointMm> _startPositionsCache =
-            new Dictionary<EntityId, WorldPointMm>(1024);
+            new Dictionary<EntityId, WorldPointMm>(SimulationConstants.MaxUnitsPerMatch);
 
-        private CombatantTickInput[] _combatantInputsCache = new CombatantTickInput[1024];
+        private CombatantTickInput[] _combatantInputsCache =
+            new CombatantTickInput[SimulationConstants.MaxUnitsPerMatch];
 
         /// <summary>
         /// Combat scratch owned by this match, never by the process: two servers
         /// ticking on different threads must not interleave into one roster
-        /// (Phase 1.0, P1-1). The ~180 KB of capacity-1024 buffers is the accepted
+        /// (Phase 1.0, P1-1). The ~180 KB of capacity-bound buffers is the accepted
         /// cost of that isolation; the tick itself stays allocation-free.
         /// </summary>
         private readonly CombatTickResolver _combatResolver = new CombatTickResolver();
@@ -308,6 +309,11 @@ namespace GlobalFront.Server
         /// do not care about archetypes leave the <see cref="UnitKinds.Unknown"/>
         /// default and their clients keep the no-stat-resolved fallback.
         /// </param>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the match already holds <see cref="SimulationConstants.MaxUnitsPerMatch"/>
+        /// units. The capacity check runs before the entity id is consumed, so a spawn
+        /// refused for being over capacity leaves the identifier counter untouched.
+        /// </exception>
         public EntityId SpawnUnit(
             PlayerId owner,
             CombatStats stats,
@@ -317,6 +323,7 @@ namespace GlobalFront.Server
             byte unitKind = UnitKinds.Unknown)
         {
             ValidateUnitSpec(owner, stats, position, speedMmPerTick);
+            ValidateCapacity();
 
             var entity = new EntityId(_nextEntityValue++);
             return SpawnUnitCore(
@@ -339,6 +346,11 @@ namespace GlobalFront.Server
         /// the entity-id high-water mark moves, so a rejected spawn leaves the server
         /// exactly as it was.
         /// </exception>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the match already holds <see cref="SimulationConstants.MaxUnitsPerMatch"/>
+        /// units. The capacity check runs before the high-water mark moves, so a spawn
+        /// refused for being over capacity leaves the identifier counter untouched.
+        /// </exception>
         public EntityId SpawnUnitWithEntity(
             EntityId entity,
             PlayerId owner,
@@ -360,6 +372,7 @@ namespace GlobalFront.Server
             }
 
             ValidateUnitSpec(owner, stats, position, speedMmPerTick);
+            ValidateCapacity();
 
             if (_nextEntityValue <= entity.Value)
             {
@@ -368,6 +381,27 @@ namespace GlobalFront.Server
 
             return SpawnUnitCore(
                 entity, owner, stats, position, speedMmPerTick, autoAcquire, unitKind);
+        }
+
+        /// <summary>
+        /// The capacity gate every spawn path shares. Kept separate from
+        /// <see cref="ValidateUnitSpec"/> because it is the only check that has to read
+        /// the live roster, and callers need it to run before they touch
+        /// <c>_nextEntityValue</c>: a spawn refused for being over capacity must leave the
+        /// identifier counter exactly as it was.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">
+        /// Thrown when the match already holds <see cref="SimulationConstants.MaxUnitsPerMatch"/>
+        /// units.
+        /// </exception>
+        private void ValidateCapacity()
+        {
+            if (_units.Count >= SimulationConstants.MaxUnitsPerMatch)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot spawn unit: match has reached capacity of " +
+                    $"{SimulationConstants.MaxUnitsPerMatch} units.");
+            }
         }
 
         private EntityId SpawnUnitCore(
@@ -379,14 +413,11 @@ namespace GlobalFront.Server
             bool autoAcquire,
             byte unitKind)
         {
-            // The one chokepoint every spawn path shares, so the cap cannot be
-            // reached around by a caller that assigns its own entity ids.
-            if (_units.Count >= SimulationConstants.MaxUnitsPerMatch)
-            {
-                throw new InvalidOperationException(
-                    $"Cannot spawn unit: match has reached capacity of " +
-                    $"{SimulationConstants.MaxUnitsPerMatch} units.");
-            }
+            // Defence in depth: both public entrances already run this gate before they
+            // consume an identifier, so the only way to reach a throw here is a future
+            // path that forgot to. The chokepoint stays anyway because InitializeMatch
+            // funnels through it without passing through either public method.
+            ValidateCapacity();
 
             var record = new UnitRecord
             {
@@ -1057,6 +1088,11 @@ namespace GlobalFront.Server
             if (result.Outcome.IsTerminal)
             {
                 Outcome = result.Outcome;
+
+                // Flushed here rather than left for the next TickOnce: a host that stops
+                // driving ticks the moment a match ends never runs that guard, and orders
+                // scheduled for a future tick can no longer execute.
+                _scheduledCommands.Clear();
             }
         }
 

@@ -636,11 +636,19 @@ namespace GlobalFront.Client.Presentation
                     "the tactical vertical slice is already initialized; call Shutdown first");
             }
 
-            if (unitCount < MinUnitCount || unitCount > ClientReplicationWorld.DefaultCapacity)
+            // The replication world is provisioned for 4096, but the server refuses a
+            // roster above SimulationConstants.MaxUnitsPerMatch, so the slice must not
+            // advertise a ceiling it cannot start: an over-capacity request has to fail
+            // here as ArgumentOutOfRangeException rather than escape InitializeMatch as an
+            // InvalidOperationException through SessionManager's Try-shaped API.
+            var maxCapacity = Math.Min(
+                ClientReplicationWorld.DefaultCapacity,
+                SimulationConstants.MaxUnitsPerMatch);
+            if (unitCount < MinUnitCount || unitCount > maxCapacity)
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(unitCount),
-                    $"a tactical vertical slice needs between {MinUnitCount} and {ClientReplicationWorld.DefaultCapacity} units.");
+                    $"a tactical vertical slice needs between {MinUnitCount} and {maxCapacity} units.");
             }
 
             _unitCount = unitCount;
