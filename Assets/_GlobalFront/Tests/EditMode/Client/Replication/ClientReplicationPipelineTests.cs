@@ -7,6 +7,7 @@ using GlobalFront.Core.Movement;
 using GlobalFront.Core.Snapshot;
 using GlobalFront.Server;
 using GlobalFront.Server.Replication;
+using GlobalFront.Tests.EditMode.Integration.Replication;
 using NUnit.Framework;
 
 namespace GlobalFront.Tests.EditMode.Client.Replication
@@ -407,6 +408,110 @@ namespace GlobalFront.Tests.EditMode.Client.Replication
                 Assert.That(decoded.HasGap, Is.False);
                 nowMs += 100;
             }
+        }
+
+        [Test]
+        public void Pipeline_OutOfOrderKeyframeSlices_AssembleInPartIndexOrder()
+        {
+            var uplink = new FakeReplicationUplink();
+            var receiver = new ClientReplicationReceiver(64);
+            var bridge = new ClientTransportReplicationBridge(uplink, receiver);
+
+            var part0 = EncodeSlice(100, 1, 0, 2, 2, AddRecord(1, posX: 10));
+            var part1 = EncodeSlice(100, 1, 1, 2, 2, AddRecord(2, posX: 20));
+
+            // UDP delivers part 1 before part 0.
+            bridge.HandleSnapshotPayload(0, part1, part1.Length, nowMs: 0);
+            Assert.That(bridge.AssembledKeyframeCount, Is.Zero,
+                "one part must not install a baseline");
+            Assert.That(receiver.State, Is.EqualTo(ReplicationReceiverState.Unbased));
+
+            bridge.HandleSnapshotPayload(0, part0, part0.Length, nowMs: 1);
+
+            // AssembledKeyframeCount only moves on ClientReplicationOutcome.BaselineInstalled.
+            Assert.That(bridge.AssembledKeyframeCount, Is.EqualTo(1));
+            Assert.That(bridge.MalformedPayloadCount, Is.Zero);
+            Assert.That(receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+            Assert.That(receiver.World.LiveCount, Is.EqualTo(2));
+
+            var states = new ClientUnitState[2];
+            Assert.That(receiver.World.CopyLiveStates(states), Is.EqualTo(2));
+            Assert.That(states[0].Entity.Value, Is.EqualTo(1UL),
+                "slot 0 must hold the PartIndex 0 unit, not the first arrival");
+            Assert.That(states[1].Entity.Value, Is.EqualTo(2UL),
+                "slot 1 must hold the PartIndex 1 unit");
+        }
+
+        [Test]
+        public void Pipeline_IncompleteKeyframeAssembly_AgesOutAndAllowsRebaseline()
+        {
+            var uplink = new FakeReplicationUplink();
+            var receiver = new ClientReplicationReceiver(64);
+            var bridge = new ClientTransportReplicationBridge(uplink, receiver);
+
+            var part0 = EncodeSlice(100, 1, 0, 2, 2, AddRecord(1));
+            var part1 = EncodeSlice(100, 1, 1, 2, 2, AddRecord(2));
+
+            // Part 1 is lost on the wire.
+            bridge.HandleSnapshotPayload(0, part0, part0.Length, nowMs: 0);
+
+            bridge.Pump(ClientTransportReplicationBridge.AssemblyTimeoutMs - 1);
+            Assert.That(bridge.AssemblyTimeoutCount, Is.Zero,
+                "an assembly inside its window must not be aged out");
+
+            bridge.Pump(ClientTransportReplicationBridge.AssemblyTimeoutMs);
+            Assert.That(bridge.AssemblyTimeoutCount, Is.EqualTo(1),
+                "the incomplete assembly must be discarded at the timeout");
+
+            // The surviving part cannot revive the discarded assembly.
+            bridge.HandleSnapshotPayload(0, part1, part1.Length,
+                nowMs: ClientTransportReplicationBridge.AssemblyTimeoutMs);
+            Assert.That(bridge.AssembledKeyframeCount, Is.Zero,
+                "the surviving part must not revive the discarded assembly");
+            Assert.That(receiver.State, Is.EqualTo(ReplicationReceiverState.Unbased));
+            Assert.That(receiver.World.LiveCount, Is.Zero);
+
+            // The re-baseline answer (a fresh generation) assembles from scratch.
+            var freshPart0 = EncodeSlice(200, 2, 0, 2, 2, AddRecord(1));
+            var freshPart1 = EncodeSlice(200, 2, 1, 2, 2, AddRecord(2));
+            bridge.HandleSnapshotPayload(0, freshPart1, freshPart1.Length, nowMs: 1501);
+            bridge.HandleSnapshotPayload(0, freshPart0, freshPart0.Length, nowMs: 1502);
+
+            Assert.That(bridge.AssembledKeyframeCount, Is.EqualTo(1));
+            Assert.That(receiver.State, Is.EqualTo(ReplicationReceiverState.Streaming));
+            Assert.That(receiver.CurrentKeyframeSeq, Is.EqualTo((ushort)2));
+            Assert.That(receiver.World.LiveCount, Is.EqualTo(2));
+        }
+
+        private static DeltaAddRecord AddRecord(ulong id, int posX = 0)
+        {
+            return new DeltaAddRecord(
+                new EntityId(id),
+                new PlayerId(1),
+                new WorldPointMm(posX, 0),
+                100,
+                false,
+                new WorldPointMm(0, 0),
+                new EntityId(0),
+                false);
+        }
+
+        private static byte[] EncodeSlice(
+            ulong tick,
+            ushort keyframeSeq,
+            ushort partIndex,
+            ushort partCount,
+            uint totalUnitCount,
+            params DeltaAddRecord[] units)
+        {
+            var packet = new byte[KeyframeSliceCodec.GetSliceSize(units.Length)];
+            var header = new KeyframeSliceHeader(
+                tick, keyframeSeq, partIndex, partCount, totalUnitCount, (ushort)units.Length);
+            Assert.That(
+                KeyframeSliceCodec.TryEncodeSlice(header, units, packet, out var written),
+                Is.EqualTo(KeyframeSliceCodecResult.Ok));
+            Assert.That(written, Is.EqualTo(packet.Length));
+            return packet;
         }
 
         /// <summary>One mutation per tick: movement, damage, orders, spawn and death.</summary>

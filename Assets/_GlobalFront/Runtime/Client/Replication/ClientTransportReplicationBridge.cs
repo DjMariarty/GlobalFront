@@ -181,6 +181,16 @@ namespace GlobalFront.Client.Replication
     /// </summary>
     public sealed class ClientTransportReplicationBridge
     {
+        /// <summary>
+        /// How long one keyframe generation may stay incomplete before its
+        /// partial assembly is discarded. A lost slice would otherwise pin the
+        /// assembly state forever; aging it out lets the next keyframe (the
+        /// FSM's re-baseline answer) start from a clean slate. The server
+        /// paces a full 1024-unit keyframe in ~650 ms at 20 Hz, so the window
+        /// leaves margin for jitter without ever cutting a healthy transfer.
+        /// </summary>
+        public const long AssemblyTimeoutMs = 1500;
+
         private IReplicationUplink _uplink;
         private readonly ClientReplicationReceiver _receiver;
         private readonly ClientTransportReplicationBridgeConfig _config;
@@ -188,13 +198,22 @@ namespace GlobalFront.Client.Replication
         private readonly DeltaUpdateRecord[] _updateSink;
         private readonly DeltaRemoveRecord[] _removeSink;
         private readonly DeltaAddRecord[] _sliceScratch;
+
+        /// <summary>Staging in arrival order; parts are shuffled into place at completion.</summary>
+        private readonly DeltaAddRecord[] _assemblyUnits;
+
+        /// <summary>Final buffer: records in strict ascending PartIndex order.</summary>
         private readonly DeltaAddRecord[] _keyframeUnits;
+
+        private readonly int[] _partOffsets;
+        private readonly int[] _partLengths;
         private readonly bool[] _receivedParts;
         private readonly byte[] _ackBuffer = new byte[SnapshotAckCodec.SizeBytes];
         private readonly byte[] _requestBuffer = new byte[ReplicationRequestCodec.SizeBytes];
 
         private long _lastPumpMs;
         private bool _assemblyActive;
+        private long _assemblyStartedMs;
         private ushort _assemblySeq;
         private ulong _assemblyTick;
         private int _assemblyPartCount;
@@ -213,6 +232,7 @@ namespace GlobalFront.Client.Replication
         private int _multipartDeltaCount;
         private int _sentAckCount;
         private int _sentRequestCount;
+        private int _assemblyTimeoutCount;
 
         public ClientTransportReplicationBridge(IReplicationUplink uplink, ClientReplicationReceiver receiver)
             : this(uplink, receiver, ClientTransportReplicationBridgeConfig.Default)
@@ -232,7 +252,10 @@ namespace GlobalFront.Client.Replication
             _removeSink = new DeltaRemoveRecord[config.RemoveSink];
             _sliceScratch = new DeltaAddRecord[Math.Max(1,
                 KeyframeSliceCodec.MaxRecordsForSliceBudget(config.MaxSlicePayloadBytes))];
+            _assemblyUnits = new DeltaAddRecord[config.MaxKeyframeUnits];
             _keyframeUnits = new DeltaAddRecord[config.MaxKeyframeUnits];
+            _partOffsets = new int[config.MaxParts];
+            _partLengths = new int[config.MaxParts];
             _receivedParts = new bool[config.MaxParts];
 
             BindUplink(uplink);
@@ -275,6 +298,9 @@ namespace GlobalFront.Client.Replication
         public int SentAckCount => _sentAckCount;
         public int SentRequestCount => _sentRequestCount;
 
+        /// <summary>Incomplete assemblies discarded after <see cref="AssemblyTimeoutMs"/>.</summary>
+        public int AssemblyTimeoutCount => _assemblyTimeoutCount;
+
         /// <summary>
         /// Drives the receiver's repair schedule and drains its feedback:
         /// call once per pump with the transport clock value.
@@ -282,6 +308,7 @@ namespace GlobalFront.Client.Replication
         public void Pump(long nowMs)
         {
             _lastPumpMs = nowMs;
+            AgeAssembly(nowMs);
             _receiver.Update(nowMs);
 
             while (_receiver.TryTakeAck(nowMs, out var ack))
@@ -400,6 +427,10 @@ namespace GlobalFront.Client.Replication
                 return;
             }
 
+            // A late slice must not revive an assembly whose window already
+            // closed: age it out first, so this packet starts a new one.
+            AgeAssembly(nowMs);
+
             if (_assemblyActive && header.KeyframeSeq != _assemblySeq)
             {
                 if (IsNewerSeq(header.KeyframeSeq, _assemblySeq))
@@ -428,12 +459,13 @@ namespace GlobalFront.Client.Replication
                 _assemblyPartCount = header.PartCount;
                 _assemblyReceivedCount = 0;
                 _assemblyUnitCount = 0;
+                _assemblyStartedMs = nowMs;
                 Array.Clear(_receivedParts, 0, _receivedParts.Length);
             }
 
             if (header.Tick != _assemblyTick ||
                 header.PartIndex >= _assemblyPartCount ||
-                _assemblyUnitCount + recordsRead > _keyframeUnits.Length)
+                _assemblyUnitCount + recordsRead > _assemblyUnits.Length)
             {
                 _malformedPayloadCount++;
                 ResetAssembly();
@@ -446,11 +478,14 @@ namespace GlobalFront.Client.Replication
                 return;
             }
 
+            var stagedAt = _assemblyUnitCount;
             for (var index = 0; index < recordsRead; index++)
             {
-                _keyframeUnits[_assemblyUnitCount++] = _sliceScratch[index];
+                _assemblyUnits[_assemblyUnitCount++] = _sliceScratch[index];
             }
 
+            _partOffsets[header.PartIndex] = stagedAt;
+            _partLengths[header.PartIndex] = recordsRead;
             _receivedParts[header.PartIndex] = true;
             _assemblyReceivedCount++;
             _assembledSliceCount++;
@@ -460,7 +495,22 @@ namespace GlobalFront.Client.Replication
                 return;
             }
 
-            if (_assemblyUnitCount != (int)header.TotalUnitCount)
+            // UDP arrival order is arbitrary: replay the staged runs by
+            // ascending PartIndex so the receiver sees the keyframe in the
+            // sender's canonical order regardless of packet reordering.
+            var orderedCount = 0;
+            for (var part = 0; part < _assemblyPartCount; part++)
+            {
+                var partLength = _partLengths[part];
+                if (partLength > 0)
+                {
+                    Array.Copy(_assemblyUnits, _partOffsets[part], _keyframeUnits, orderedCount, partLength);
+                }
+
+                orderedCount += partLength;
+            }
+
+            if (orderedCount != (int)header.TotalUnitCount)
             {
                 // The parts disagree with the declared total: the assembly is
                 // corrupt and must never reach the receiver.
@@ -482,7 +532,7 @@ namespace GlobalFront.Client.Replication
                 nowMs,
                 _assemblySeq,
                 _assemblyTick,
-                _keyframeUnits.AsSpan(0, _assemblyUnitCount));
+                _keyframeUnits.AsSpan(0, orderedCount));
             if (outcome == ClientReplicationOutcome.BaselineInstalled)
             {
                 _assembledKeyframeSeq = _assemblySeq;
@@ -495,11 +545,29 @@ namespace GlobalFront.Client.Replication
         private void ResetAssembly()
         {
             _assemblyActive = false;
+            _assemblyStartedMs = 0;
             _assemblySeq = 0;
             _assemblyTick = 0;
             _assemblyPartCount = 0;
             _assemblyReceivedCount = 0;
             _assemblyUnitCount = 0;
+        }
+
+        /// <summary>
+        /// Drops an assembly that has been incomplete for
+        /// <see cref="AssemblyTimeoutMs"/>: the missing slice is not going to
+        /// arrive, and keeping the partial state would pin the buffers and the
+        /// generation until some future keyframe resets them.
+        /// </summary>
+        private void AgeAssembly(long nowMs)
+        {
+            if (!_assemblyActive || nowMs - _assemblyStartedMs < AssemblyTimeoutMs)
+            {
+                return;
+            }
+
+            _assemblyTimeoutCount++;
+            ResetAssembly();
         }
 
         /// <summary>
