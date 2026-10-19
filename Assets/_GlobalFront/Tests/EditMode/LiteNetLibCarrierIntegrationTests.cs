@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading;
 using GlobalFront.Client;
 using GlobalFront.Core.Commands;
@@ -11,6 +12,8 @@ using GlobalFront.Server.Snapshot;
 using GlobalFront.Server.Transport;
 using LiteNetLib;
 using NUnit.Framework;
+using UnityEngine.TestTools.Constraints;
+using Is = NUnit.Framework.Is;
 
 namespace GlobalFront.Tests.EditMode
 {
@@ -504,11 +507,396 @@ namespace GlobalFront.Tests.EditMode
             serverCarrier.Dispose();
         }
 
+        [Test]
+        public void GcAllocationRecorder_ObservesKnownAllocation_Control()
+        {
+            // The editor's Mono runtime reports 0 from
+            // GC.GetAllocatedBytesForCurrentThread() (established project
+            // fact), so zero-GC evidence uses Unity's GC.Alloc recorder.
+            // Prove the recorder is live before trusting an empty sample set.
+            byte[] ballast = null;
+            Assert.That(
+                () => { ballast = new byte[4096]; },
+                UnityEngine.TestTools.Constraints.Is.AllocatingGCMemory(),
+                "the GC.Alloc recorder must observe a known allocation");
+            Assert.That(ballast, Is.Not.Null);
+        }
+
+        [Test]
+        public void SendFragmentedSnapshots_SteadyState_ZeroHeapAllocations()
+        {
+            // D-4/P1-1: the server simulation thread sends fragmented C2
+            // snapshots every tick. Any per-fragment byte[] allocation is a
+            // GC.Alloc sample on this thread and fails the recorder window.
+            var clock = new SystemTransportClock();
+            var serverCarrier = LiteNetLibCarrier.CreateServer(clock);
+            serverCarrier.StartServer(0);
+            var port = serverCarrier.LocalPort;
+            Assert.That(port, Is.GreaterThan(0));
+
+            // Freeze MTU discovery, keepalive pings and the idle timeout:
+            // pings recycle small LiteNetLib control packets whose buffers
+            // are resized on reuse, and the test intentionally stops polling
+            // the raw client while it measures. Both are test-harness
+            // concerns, not the project send path.
+            var serverManager = GetManagerForTests(serverCarrier);
+            serverManager.PingInterval = 3600000;
+            serverManager.MtuDiscovery = false;
+            serverManager.DisconnectTimeout = 3600000;
+
+            var listener = new FloodClientListener();
+            var client = new NetManager(listener)
+            {
+                IPv6Enabled = false,
+                PingInterval = 3600000,
+                MtuDiscovery = false,
+                DisconnectTimeout = 3600000
+            };
+            client.Start();
+            try
+            {
+                client.Connect("127.0.0.1", port, "GlobalFront-Phase-2.5");
+                var connectionId = WaitForCarrierConnection(serverCarrier, client, 10000);
+                Assert.That(connectionId, Is.GreaterThan(0),
+                    $"carrier connection must be established; " +
+                    $"clientState={client.FirstPeer?.ConnectionState} " +
+                    $"serverWorkerError={serverCarrier.LastWorkerError}");
+
+                // 3000 bytes is above any single Sequenced packet, so every
+                // message takes three fragments at both the initial and the
+                // discovered MTU.
+                var payload = new byte[3000];
+                for (var index = 0; index < payload.Length; index++)
+                {
+                    payload[index] = (byte)index;
+                }
+
+                // Burst warm-up: fill LiteNetLib's packet pool with buffers of
+                // the measured size (small handshake buffers get resized on
+                // reuse) and finish MTU discovery. Pool growth is LiteNetLib
+                // internals, not the project send path, so it must happen here.
+                var warmupSent = 0;
+                for (var index = 0; index < 256; index++)
+                {
+                    if (serverCarrier.Send(
+                            connectionId, TransportChannel.Snapshot, payload, 0, payload.Length))
+                    {
+                        warmupSent++;
+                    }
+                }
+
+                Assert.That(warmupSent, Is.EqualTo(256),
+                    "every warm-up fragmented snapshot must be accepted");
+
+                Assert.That(WaitForQuiescence(client, listener, 200, 15000), Is.True,
+                    "warm-up snapshot burst must drain before measuring");
+
+                // LiteNetLib may resize a pooled buffer once while its pool
+                // settles; that is library-internal, not the project send
+                // path. Establish steady state with two consecutive clean
+                // 100-snapshot windows before the evidence window.
+                var observed = new int[6];
+                var zeroStreak = 0;
+                for (var attempt = 0; attempt < observed.Length && zeroStreak < 2; attempt++)
+                {
+                    observed[attempt] = CountCurrentThreadGcAllocations(
+                        () =>
+                        {
+                            for (var index = 0; index < 100; index++)
+                            {
+                                serverCarrier.Send(
+                                    connectionId,
+                                    TransportChannel.Snapshot,
+                                    payload,
+                                    0,
+                                    payload.Length);
+                                Thread.Sleep(2);
+                            }
+                        });
+                    zeroStreak = observed[attempt] == 0 ? zeroStreak + 1 : 0;
+                }
+
+                var sent = 0;
+                var measured = CountCurrentThreadGcAllocations(
+                    () =>
+                    {
+                        for (var index = 0; index < 100; index++)
+                        {
+                            if (serverCarrier.Send(
+                                    connectionId,
+                                    TransportChannel.Snapshot,
+                                    payload,
+                                    0,
+                                    payload.Length))
+                            {
+                                sent++;
+                            }
+
+                            Thread.Sleep(2);
+                        }
+                    });
+
+                Assert.That(measured, Is.EqualTo(0),
+                    "100 fragmented snapshots must make 0 GC.Alloc samples " +
+                    $"(settle windows [{string.Join(",", observed)}])");
+                Assert.That(zeroStreak, Is.GreaterThanOrEqualTo(2),
+                    "LiteNetLib's packet pool must reach steady state first; " +
+                    $"observed [{string.Join(",", observed)}]");
+                Assert.That(sent, Is.EqualTo(100),
+                    "every measured fragmented snapshot must be accepted; " +
+                    $"disconnect={serverCarrier.LastDisconnectReason} " +
+                    $"sendError={serverCarrier.LastSendError} " +
+                    $"peers={serverCarrier.PeerMappingCount}");
+            }
+            finally
+            {
+                client.Stop();
+                serverCarrier.Dispose();
+            }
+        }
+
+        [Test]
+        public void SnapshotCompletion_StaleScan_ReusesPerPeerScratch_NoListAllocation()
+        {
+            // D-4/P1-1: the latest-wins stale scan used to allocate a local
+            // List<ushort> on every delivered snapshot. HandleSnapshotReceive
+            // is invoked directly on this thread so the allocation window is
+            // deterministic (the real receive path runs on the worker).
+            var carrier = LiteNetLibCarrier.CreateServer(new SystemTransportClock());
+            var handle = BindSnapshotHandler(carrier);
+            const int connectionId = 4242;
+            const int payloadLength = 64;
+
+            // Warm-up: per-peer state, sequence map, assembler and event
+            // queue must be past their first-use allocations.
+            for (var index = 1; index <= 8; index++)
+            {
+                var id = (ushort)index;
+                var sequence = (ushort)index;
+                var first = BuildSnapshotDatagram(id, sequence, 0, 2, payloadLength);
+                var last = BuildSnapshotDatagram(id, sequence, 1, 2, payloadLength);
+                handle(connectionId, first, 0, first.Length);
+                handle(connectionId, last, 0, last.Length);
+                DrainEvents(carrier);
+            }
+
+            const ushort measuredId = 100;
+            const ushort measuredSequence = 100;
+            var seed = BuildSnapshotDatagram(measuredId, measuredSequence, 0, 2, payloadLength);
+            var completion = BuildSnapshotDatagram(measuredId, measuredSequence, 1, 2, payloadLength);
+            handle(connectionId, seed, 0, seed.Length);
+            DrainEvents(carrier);
+
+            // The completion's only unavoidable allocations: the second
+            // fragment slice and the assembled message.
+            var baseline = CountCurrentThreadGcAllocations(
+                () =>
+                {
+                    var sliceProbe = new byte[payloadLength];
+                    var messageProbe = new byte[payloadLength * 2];
+                    System.GC.KeepAlive(sliceProbe);
+                    System.GC.KeepAlive(messageProbe);
+                });
+
+            var measured = CountCurrentThreadGcAllocations(
+                () => handle(connectionId, completion, 0, completion.Length));
+            DrainEvents(carrier);
+
+            Assert.That(baseline, Is.EqualTo(2),
+                "control: the two payload arrays must be visible as two GC.Alloc samples");
+            Assert.That(measured - baseline, Is.EqualTo(0),
+                "the latest-wins stale scan must reuse PeerSnapshotState.StaleIdsScratch");
+            carrier.Dispose();
+        }
+
+        [Test]
+        public void SingleFragmentSnapshotReceive_OwnsExactlyOnePayloadCopy()
+        {
+            // D-4/P1-1: a single-fragment snapshot must hand the event queue
+            // one owned payload array and nothing more. The receive scratch
+            // is only valid until reader.Recycle().
+            var carrier = LiteNetLibCarrier.CreateServer(new SystemTransportClock());
+            var handle = BindSnapshotHandler(carrier);
+            const int connectionId = 777;
+            const int payloadLength = 256;
+
+            // Warm-up: the second delivery is the first one that runs the
+            // fully warmed delivery path (first-use bookkeeping leaves the
+            // measured steady state).
+            var warmup1 = BuildSnapshotDatagram(1, 1, 0, 1, payloadLength);
+            handle(connectionId, warmup1, 0, warmup1.Length);
+            DrainEvents(carrier);
+            var warmup2 = BuildSnapshotDatagram(2, 2, 0, 1, payloadLength);
+            handle(connectionId, warmup2, 0, warmup2.Length);
+            DrainEvents(carrier);
+            var warmup3 = BuildSnapshotDatagram(3, 3, 0, 1, payloadLength);
+            handle(connectionId, warmup3, 0, warmup3.Length);
+            DrainEvents(carrier);
+
+            // Two delivered snapshots must own exactly two payload arrays.
+            var baseline = CountCurrentThreadGcAllocations(
+                () =>
+                {
+                    var probeA = new byte[payloadLength];
+                    var probeB = new byte[payloadLength];
+                    System.GC.KeepAlive(probeA);
+                    System.GC.KeepAlive(probeB);
+                });
+
+            var measuredA = BuildSnapshotDatagram(4, 4, 0, 1, payloadLength);
+            var measuredB = BuildSnapshotDatagram(5, 5, 0, 1, payloadLength);
+            var measured = CountCurrentThreadGcAllocations(
+                () =>
+                {
+                    handle(connectionId, measuredA, 0, measuredA.Length);
+                    handle(connectionId, measuredB, 0, measuredB.Length);
+                });
+            DrainEvents(carrier);
+
+            Assert.That(baseline, Is.EqualTo(2),
+                "control: the owned payloads must be visible as two GC.Alloc samples");
+            Assert.That(measured - baseline, Is.EqualTo(0),
+                "single-fragment receive must allocate exactly one owned payload per message");
+            carrier.Dispose();
+        }
+
+        private static Action<int, byte[], int, int> BindSnapshotHandler(
+            LiteNetLibCarrier carrier)
+        {
+            var method = typeof(LiteNetLibCarrier).GetMethod(
+                "HandleSnapshotReceive",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(method, Is.Not.Null,
+                "HandleSnapshotReceive must remain the snapshot receive entry point");
+            return (Action<int, byte[], int, int>)Delegate.CreateDelegate(
+                typeof(Action<int, byte[], int, int>),
+                carrier,
+                method);
+        }
+
+        private static NetManager GetManagerForTests(LiteNetLibCarrier carrier)
+        {
+            var field = typeof(LiteNetLibCarrier).GetField(
+                "_manager",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(field, Is.Not.Null, "LiteNetLibCarrier must own a NetManager");
+            var manager = (NetManager)field.GetValue(carrier);
+            Assert.That(manager, Is.Not.Null, "StartServer must have created the NetManager");
+            return manager;
+        }
+
+        private static byte[] BuildSnapshotDatagram(
+            ushort messageId,
+            ushort sequence,
+            ushort fragmentIndex,
+            ushort fragmentCount,
+            int payloadLength)
+        {
+            var datagram = new byte[8 + payloadLength];
+            datagram[0] = (byte)(messageId & 0xFF);
+            datagram[1] = (byte)((messageId >> 8) & 0xFF);
+            datagram[2] = (byte)(sequence & 0xFF);
+            datagram[3] = (byte)((sequence >> 8) & 0xFF);
+            datagram[4] = (byte)(fragmentIndex & 0xFF);
+            datagram[5] = (byte)((fragmentIndex >> 8) & 0xFF);
+            datagram[6] = (byte)(fragmentCount & 0xFF);
+            datagram[7] = (byte)((fragmentCount >> 8) & 0xFF);
+            for (var index = 0; index < payloadLength; index++)
+            {
+                datagram[8 + index] = (byte)((fragmentIndex * 31 + index) & 0xFF);
+            }
+
+            return datagram;
+        }
+
+        private static void DrainEvents(LiteNetLibCarrier carrier)
+        {
+            while (carrier.TryDequeueEvent(out _))
+            {
+            }
+        }
+
+        private static int WaitForCarrierConnection(
+            LiteNetLibCarrier carrier,
+            NetManager client,
+            int timeoutMs)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            while (watch.ElapsedMilliseconds < timeoutMs)
+            {
+                client.PollEvents();
+                while (carrier.TryDequeueEvent(out var transportEvent))
+                {
+                    if (transportEvent.Type == TransportEventType.Connected)
+                    {
+                        return transportEvent.ConnectionId;
+                    }
+                }
+
+                Thread.Sleep(2);
+            }
+
+            return 0;
+        }
+
+        private static int CountCurrentThreadGcAllocations(Action action)
+        {
+            // Same recorder contract as UnityEngine.TestTools.Constraints:
+            // disable to flush, filter to this thread, then sample only the
+            // action. The editor's Mono runtime reports 0 from
+            // GC.GetAllocatedBytesForCurrentThread(), so this is the live
+            // allocation meter.
+            var recorder = UnityEngine.Profiling.Recorder.Get("GC.Alloc");
+            recorder.enabled = false;
+            recorder.FilterToCurrentThread();
+            recorder.enabled = true;
+            try
+            {
+                action();
+            }
+            finally
+            {
+                recorder.enabled = false;
+                recorder.CollectFromAllThreads();
+            }
+
+            return recorder.sampleBlockCount;
+        }
+
+        private static bool WaitForQuiescence(
+            NetManager client,
+            FloodClientListener listener,
+            int quietMs,
+            int timeoutMs)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var lastCount = -1;
+            var lastChangeMs = 0L;
+            while (watch.ElapsedMilliseconds < timeoutMs)
+            {
+                client.PollEvents();
+                if (listener.ReceivedDatagrams != lastCount)
+                {
+                    lastCount = listener.ReceivedDatagrams;
+                    lastChangeMs = watch.ElapsedMilliseconds;
+                }
+                else if (lastCount > 0 && watch.ElapsedMilliseconds - lastChangeMs >= quietMs)
+                {
+                    return true;
+                }
+
+                Thread.Sleep(1);
+            }
+
+            return false;
+        }
+
         /// <summary>Minimal raw-LiteNetLib client listener for the flood test.</summary>
         private sealed class FloodClientListener : INetEventListener
         {
             public bool Connected;
             public bool Settled;
+            public int ReceivedDatagrams;
 
             public void OnPeerConnected(NetPeer peer)
             {
@@ -525,6 +913,7 @@ namespace GlobalFront.Tests.EditMode
             public void OnNetworkReceive(
                 NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
             {
+                ReceivedDatagrams++;
                 reader.Recycle();
             }
 

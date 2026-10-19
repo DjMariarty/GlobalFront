@@ -39,6 +39,17 @@ namespace GlobalFront.Server.Transport
         private readonly Dictionary<int, PeerSnapshotState> _snapshotStates =
             new Dictionary<int, PeerSnapshotState>();
 
+        // Fragment send scratch: LiteNetLib's NetPeer.Send copies the caller's
+        // bytes into its own pooled NetPacket synchronously, so one buffer can
+        // be refilled per fragment. The gate serializes senders (the contract
+        // is host-thread-only, but the buffer must stay correct if a caller
+        // violates it) and spans write+Send so concurrent messages cannot
+        // interleave inside the scratch. Sized for the largest fragment this
+        // carrier emits: prefix + FragmentPayloadBytes.
+        private readonly object _sendGate = new object();
+        private readonly byte[] _sendScratch =
+            new byte[PeerSnapshotState.PrefixBytes + TransportProtocol.FragmentPayloadBytes];
+
         /// <summary>
         /// C2 state of one peer. LiteNetLib's Sequenced channel refuses
         /// payloads above a single packet (TooBigPacketException), so C2
@@ -55,6 +66,11 @@ namespace GlobalFront.Server.Transport
             public readonly FragmentAssembler Assembler = new FragmentAssembler();
             public readonly Dictionary<ushort, ushort> SeqByMessageId =
                 new Dictionary<ushort, ushort>();
+
+            // Latest-wins stale scan scratch, reused per delivered snapshot so
+            // the receive path never allocates a List. Only touched while
+            // holding _peerGate on the LiteNetLib worker thread.
+            public readonly List<ushort> StaleIdsScratch = new List<ushort>();
             public bool HasDeliveredSeq;
             public ushort DeliveredSeq;
             public ushort NextMessageId = 1;
@@ -275,43 +291,52 @@ namespace GlobalFront.Server.Transport
                 sequence = state.NextSeq++;
             }
 
-            for (var index = 0; index < fragmentCount; index++)
+            lock (_sendGate)
             {
-                int fragmentOffset;
-                int fragmentLength;
-                if (length == 0)
+                for (var index = 0; index < fragmentCount; index++)
                 {
-                    fragmentOffset = offset;
-                    fragmentLength = 0;
-                }
-                else
-                {
-                    fragmentOffset = offset + index * maxChunk;
-                    fragmentLength = System.Math.Min(maxChunk, length - index * maxChunk);
-                }
+                    int fragmentOffset;
+                    int fragmentLength;
+                    if (length == 0)
+                    {
+                        fragmentOffset = offset;
+                        fragmentLength = 0;
+                    }
+                    else
+                    {
+                        fragmentOffset = offset + index * maxChunk;
+                        fragmentLength = System.Math.Min(maxChunk, length - index * maxChunk);
+                    }
 
-                var packet = new byte[PeerSnapshotState.PrefixBytes + fragmentLength];
-                WriteUInt16(packet, 0, messageId);
-                WriteUInt16(packet, 2, sequence);
-                WriteUInt16(packet, 4, (ushort)index);
-                WriteUInt16(packet, 6, (ushort)fragmentCount);
-                if (fragmentLength > 0)
-                {
-                    System.Array.Copy(data, fragmentOffset, packet, PeerSnapshotState.PrefixBytes, fragmentLength);
-                }
+                    var packet = _sendScratch;
+                    var packetLength = PeerSnapshotState.PrefixBytes + fragmentLength;
+                    WriteUInt16(packet, 0, messageId);
+                    WriteUInt16(packet, 2, sequence);
+                    WriteUInt16(packet, 4, (ushort)index);
+                    WriteUInt16(packet, 6, (ushort)fragmentCount);
+                    if (fragmentLength > 0)
+                    {
+                        System.Array.Copy(
+                            data,
+                            fragmentOffset,
+                            packet,
+                            PeerSnapshotState.PrefixBytes,
+                            fragmentLength);
+                    }
 
-                try
-                {
-                    peer.Send(packet, 0, packet.Length, DeliveryMethod.Sequenced);
-                }
-                catch (System.Exception ex)
-                {
-                    LastSendError = ex.GetType().Name + ": " + ex.Message;
-                    _metrics.DroppedMalformed++;
-                    return false;
-                }
+                    try
+                    {
+                        peer.Send(packet, 0, packetLength, DeliveryMethod.Sequenced);
+                    }
+                    catch (System.Exception ex)
+                    {
+                        LastSendError = ex.GetType().Name + ": " + ex.Message;
+                        _metrics.DroppedMalformed++;
+                        return false;
+                    }
 
-                _metrics.BytesSent += packet.Length;
+                    _metrics.BytesSent += packetLength;
+                }
             }
 
             _metrics.MessagesSent++;
@@ -528,9 +553,6 @@ namespace GlobalFront.Server.Transport
 
         public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
         {
-            var bytes = reader.GetRemainingBytes();
-            reader.Recycle();
-
             RateLimiter limiter;
             int connectionId;
             lock (_peerGate)
@@ -538,11 +560,44 @@ namespace GlobalFront.Server.Transport
                 if (!_peerToConnection.TryGetValue(peer.Id, out connectionId))
                 {
                     _metrics.DroppedBadToken++;
+                    reader.Recycle();
                     return;
                 }
 
                 limiter = _peerLimiters[peer.Id];
             }
+
+            if (deliveryMethod == DeliveryMethod.Sequenced)
+            {
+                // Parse snapshot datagrams in place: the reader's storage is
+                // only valid until Recycle(), and the only owned allocation
+                // this path makes is the message handed to the event queue
+                // (single fragment payload or the fully assembled message).
+                var segment = reader.GetRemainingBytesSegment();
+                var length = segment.Count;
+                try
+                {
+                    if (!limiter.TryConsume(length, _clock.NowMs))
+                    {
+                        _metrics.DroppedRateLimited++;
+                        return;
+                    }
+
+                    _metrics.DatagramsReceived++;
+                    _metrics.BytesReceived += length;
+
+                    HandleSnapshotReceive(connectionId, segment.Array, segment.Offset, length);
+                }
+                finally
+                {
+                    reader.Recycle();
+                }
+
+                return;
+            }
+
+            var bytes = reader.GetRemainingBytes();
+            reader.Recycle();
 
             if (!limiter.TryConsume(bytes.Length, _clock.NowMs))
             {
@@ -552,12 +607,6 @@ namespace GlobalFront.Server.Transport
 
             _metrics.DatagramsReceived++;
             _metrics.BytesReceived += bytes.Length;
-
-            if (deliveryMethod == DeliveryMethod.Sequenced)
-            {
-                HandleSnapshotReceive(connectionId, bytes);
-                return;
-            }
 
             EnqueueEvent(new TransportEvent
             {
@@ -573,9 +622,11 @@ namespace GlobalFront.Server.Transport
         /// Reassembles application-fragmented C2 snapshots with the same
         /// latest-wins/stale policy as the own carrier; only a fully
         /// reassembled logical snapshot is delivered upward (one message,
-        /// however many fragments it took).
+        /// however many fragments it took). <paramref name="data"/> is the
+        /// reader's pooled storage and must not be retained: ownership ends
+        /// at the event queue, which receives an exact-size owned array.
         /// </summary>
-        private void HandleSnapshotReceive(int connectionId, byte[] bytes)
+        private void HandleSnapshotReceive(int connectionId, byte[] data, int offset, int length)
         {
             PeerSnapshotState state;
             lock (_peerGate)
@@ -587,16 +638,16 @@ namespace GlobalFront.Server.Transport
                 }
             }
 
-            if (bytes.Length < PeerSnapshotState.PrefixBytes)
+            if (length < PeerSnapshotState.PrefixBytes)
             {
                 _metrics.DroppedMalformed++;
                 return;
             }
 
-            var messageId = ReadUInt16(bytes, 0);
-            var sequence = ReadUInt16(bytes, 2);
-            var fragmentIndex = ReadUInt16(bytes, 4);
-            var fragmentCount = ReadUInt16(bytes, 6);
+            var messageId = ReadUInt16(data, offset);
+            var sequence = ReadUInt16(data, offset + 2);
+            var fragmentIndex = ReadUInt16(data, offset + 4);
+            var fragmentCount = ReadUInt16(data, offset + 6);
             if (fragmentCount == 0 ||
                 fragmentCount > TransportProtocol.MaxFragmentsPerGroup ||
                 fragmentIndex >= fragmentCount)
@@ -604,6 +655,9 @@ namespace GlobalFront.Server.Transport
                 _metrics.DroppedMalformed++;
                 return;
             }
+
+            var payloadOffset = offset + PeerSnapshotState.PrefixBytes;
+            var payloadLength = length - PeerSnapshotState.PrefixBytes;
 
             byte[] message = null;
             lock (_peerGate)
@@ -620,9 +674,11 @@ namespace GlobalFront.Server.Transport
 
                 if (fragmentCount == 1)
                 {
-                    var payload = new byte[bytes.Length - PeerSnapshotState.PrefixBytes];
-                    System.Array.Copy(bytes, PeerSnapshotState.PrefixBytes, payload, 0, payload.Length);
-                    message = payload;
+                    // TransportEvent.Data is owned by the consumer after
+                    // TryDequeueEvent, so the payload must be an exact-size
+                    // copy. This is the single allocation of the path.
+                    message = new byte[payloadLength];
+                    System.Array.Copy(data, payloadOffset, message, 0, payloadLength);
                 }
                 else
                 {
@@ -631,9 +687,9 @@ namespace GlobalFront.Server.Transport
                         messageId,
                         fragmentIndex,
                         fragmentCount,
-                        bytes,
-                        PeerSnapshotState.PrefixBytes,
-                        bytes.Length - PeerSnapshotState.PrefixBytes,
+                        data,
+                        payloadOffset,
+                        payloadLength,
                         _clock.NowMs);
                     if (message != null)
                     {
@@ -654,8 +710,9 @@ namespace GlobalFront.Server.Transport
                     // Latest-wins memory policy: with this snapshot
                     // delivered, older incomplete groups are stale and are
                     // discarded safely (collect first — no mutation while
-                    // iterating).
-                    var staleIds = new List<ushort>();
+                    // iterating). The scratch list is per peer and reused.
+                    var staleIds = state.StaleIdsScratch;
+                    staleIds.Clear();
                     foreach (var pair in state.SeqByMessageId)
                     {
                         if (SerialArithmetic.Diff(pair.Value, sequence) < 0)
@@ -670,6 +727,8 @@ namespace GlobalFront.Server.Transport
                         state.SeqByMessageId.Remove(staleIds[index]);
                         _metrics.DroppedStaleSnapshot++;
                     }
+
+                    staleIds.Clear();
                 }
             }
 
