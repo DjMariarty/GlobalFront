@@ -85,6 +85,12 @@ namespace GlobalFront.Server.Transport
 
         public int AttachedCount => _binder.BoundCount;
 
+        /// <summary>Per-connection rate limiters currently tracked (diagnostics).</summary>
+        public int RateLimiterCount => _rateLimiters.Count;
+
+        /// <summary>CommandAcks awaiting a successful transport send (diagnostics).</summary>
+        public int PendingAckCount => _pendingAcks.Count;
+
         public void StartServer() => _carrier.StartServer();
 
         /// <summary>
@@ -195,6 +201,20 @@ namespace GlobalFront.Server.Transport
 
         private void HandleConnectionLost(TransportEvent transportEvent)
         {
+            // Per-peer state must be freed even when the socket never bound a
+            // session; otherwise monotonic connection ids leak limiters.
+            _rateLimiters.Remove(transportEvent.ConnectionId);
+
+            // Acks queued for this socket can never be delivered: purge them
+            // instead of retrying forever in DrainPendingAcks.
+            for (var i = _pendingAcks.Count - 1; i >= 0; i--)
+            {
+                if (_pendingAcks[i].ConnectionId == transportEvent.ConnectionId)
+                {
+                    _pendingAcks.RemoveAt(i);
+                }
+            }
+
             if (!_binder.TryGetByConnection(transportEvent.ConnectionId, out var binding))
             {
                 return;
@@ -377,6 +397,17 @@ namespace GlobalFront.Server.Transport
             if (snapshotVersion != SnapshotProtocol.Version)
             {
                 SendConnectDenied(transportEvent.ConnectionId, ConnectDenyReason.SnapshotVersionMismatch);
+                return;
+            }
+
+            // Socket hijack guard: one connection may own exactly one
+            // session. A repeated handshake is denied before any SessionId,
+            // PlayerId or roster slot is consumed. The version check stays
+            // ahead of this guard so an invalid handshake keeps reporting
+            // SnapshotVersionMismatch (Phase 2.5 contract).
+            if (_binder.TryGetByConnection(transportEvent.ConnectionId, out _))
+            {
+                SendConnectDenied(transportEvent.ConnectionId, ConnectDenyReason.SessionResumeRejected);
                 return;
             }
 

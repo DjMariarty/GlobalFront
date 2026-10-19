@@ -358,6 +358,63 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void ConnectRequest_FromAlreadyBoundConnection_IsDeniedAndRosterPreserved()
+        {
+            var rig = TransportTestSupport.CreateRig(new ImpairmentProfile(), capacity: 2);
+
+            var hijacker = TransportTestSupport.CreateClient(rig);
+            Assert.That(
+                TransportTestSupport.PumpUntilEstablished(rig, hijacker), Is.True,
+                "first handshake must complete");
+            Assert.That(hijacker.Player.Value, Is.EqualTo(1));
+
+            var boundToken = hijacker.Token;
+            var denied = ConnectDenyReason.None;
+            hijacker.Denied += reason => denied = reason;
+
+            // Replay a fully valid ConnectRequest through the SAME socket.
+            var handshake = new byte[64];
+            var handshakeLength = MessageCodec.WriteHeader(
+                handshake, 0, TransportMessageType.ConnectRequest, TransportProtocol.HandshakeToken, 0);
+            handshakeLength = MessageCodec.EncodeConnectRequest(
+                handshake,
+                handshakeLength,
+                SnapshotProtocolVersion(),
+                false,
+                System.Guid.Empty);
+
+            var carrier = (OwnDatagramCarrier)hijacker.Carrier;
+            Assert.That(
+                carrier.Send(1, TransportChannel.Control, handshake, 0, handshakeLength),
+                Is.True);
+
+            var elapsed = 0L;
+            while (denied == ConnectDenyReason.None && elapsed < 5000)
+            {
+                rig.Pump(5);
+                hijacker.Pump(rig.Clock.NowMs);
+                elapsed += 5;
+            }
+
+            Assert.That(denied, Is.EqualTo(ConnectDenyReason.SessionResumeRejected),
+                "a repeated handshake on an already bound socket must be denied");
+            Assert.That(hijacker.Token, Is.EqualTo(boundToken),
+                "the hijack attempt must not replace the original identity");
+
+            Assert.That(
+                rig.Host.Sessions.TryGetAssignedCount(rig.Match, out var assignedPlayers),
+                Is.True);
+            Assert.That(assignedPlayers, Is.EqualTo(1),
+                "the rejected handshake must not consume a second PlayerId slot");
+
+            var legitimate = TransportTestSupport.CreateClient(rig);
+            Assert.That(
+                TransportTestSupport.PumpUntilEstablished(rig, legitimate), Is.True,
+                "the second roster slot must remain available to a legitimate player");
+            Assert.That(legitimate.Player.Value, Is.EqualTo(2));
+        }
+
+        [Test]
         public void SnapshotVersionMismatch_IsDenied()
         {
             var rig = TransportTestSupport.CreateRig(new ImpairmentProfile());

@@ -1,6 +1,10 @@
 using System;
+using System.Collections.Generic;
 using GlobalFront.Client;
+using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
+using GlobalFront.Core.Movement;
+using GlobalFront.Server;
 using GlobalFront.Server.Sessions;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
@@ -164,6 +168,105 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void ServerTransportHost_ConnectionLost_FreesRateLimiter()
+        {
+            var rig = TransportTestSupport.CreateRig(new ImpairmentProfile());
+            var client = TransportTestSupport.CreateClient(rig);
+            Assert.That(
+                TransportTestSupport.PumpUntilEstablished(rig, client), Is.True,
+                "handshake must complete");
+
+            Assert.That(rig.ServerTransport.RateLimiterCount, Is.EqualTo(1),
+                "the handshake must have created one per-connection limiter");
+
+            // Server-side transport loss for the client's socket.
+            rig.ServerCarrier.CloseConnection(1, TransportDisconnectReason.TransportLost);
+            rig.Pump(5);
+
+            Assert.That(rig.ServerTransport.RateLimiterCount, Is.EqualTo(0),
+                "a lost connection must not leave its rate limiter behind");
+        }
+
+        [Test]
+        public void ServerTransportHost_ConnectionLost_PurgesPendingAcks()
+        {
+            var carrier = new AckFailureCarrier();
+            var sessions = new SessionManager();
+            var server = new MatchServer();
+            var match = sessions.CreateMatch(2);
+            var host = new ServerTransportHost(carrier, sessions, server)
+            {
+                AutoJoinMatch = match
+            };
+
+            const int connectionId = 7;
+            var handshake = new byte[64];
+            var handshakeLength = MessageCodec.WriteHeader(
+                handshake, 0, TransportMessageType.ConnectRequest, TransportProtocol.HandshakeToken, 0);
+            handshakeLength = MessageCodec.EncodeConnectRequest(
+                handshake,
+                handshakeLength,
+                GlobalFront.Server.Snapshot.SnapshotProtocol.Version,
+                false,
+                Guid.Empty);
+            host.HandleMessage(new TransportEvent
+            {
+                Type = TransportEventType.Message,
+                ConnectionId = connectionId,
+                Data = handshake,
+                Length = handshakeLength
+            });
+
+            Assert.That(
+                host.Binder.TryGetByConnection(connectionId, out var binding), Is.True,
+                "handshake must bind the session before the command is sent");
+
+            // Forged PlayerId => the gate still answers with a CommandAck,
+            // which is exactly the send that fails on the dying socket.
+            var command = new byte[128];
+            var commandLength = CommandWireCodec.EncodeMove(
+                command,
+                new CommandHeader(
+                    new PlayerId(2),
+                    sequence: 1,
+                    requestedTick: 1,
+                    GameCommandType.Move),
+                new[] { new EntityId(1) },
+                new WorldPointMm(1000, 0),
+                new FormationSpec(1, 2000, CardinalFacing.North));
+
+            var message = new byte[
+                MessageCodec.GetHeaderSize(TransportMessageType.Command) + commandLength];
+            var messageLength = MessageCodec.WriteHeader(
+                message, 0, TransportMessageType.Command, binding.Token, 0);
+            Array.Copy(command, 0, message, messageLength, commandLength);
+            messageLength += commandLength;
+
+            carrier.AllowSends = false;
+            host.HandleMessage(new TransportEvent
+            {
+                Type = TransportEventType.Message,
+                ConnectionId = connectionId,
+                Data = message,
+                Length = messageLength
+            });
+
+            Assert.That(host.PendingAckCount, Is.EqualTo(1),
+                "a failed ack send must be queued for the retry pass");
+
+            carrier.Enqueue(new TransportEvent
+            {
+                Type = TransportEventType.Disconnected,
+                ConnectionId = connectionId,
+                Reason = TransportDisconnectReason.TransportLost
+            });
+            host.Pump(0);
+
+            Assert.That(host.PendingAckCount, Is.EqualTo(0),
+                "acks queued for a dead socket must be purged, not retried forever");
+        }
+
+        [Test]
         public void TransportSessionBinder_SnapshotTargets_ReturnsCachedListWithoutAllocations()
         {
             var binder = new TransportSessionBinder();
@@ -188,6 +291,72 @@ namespace GlobalFront.Tests.EditMode
 
             binder.ReleaseAll();
             Assert.That(binder.SnapshotTargets.Count, Is.EqualTo(0));
+        }
+
+        /// <summary>
+        /// Minimal carrier double for failure-path lifecycle tests: lets a
+        /// test force every send to fail and inject a Disconnected event.
+        /// </summary>
+        private sealed class AckFailureCarrier : INetworkCarrier
+        {
+            private readonly Queue<TransportEvent> _events = new Queue<TransportEvent>();
+            private readonly TransportMetrics _metrics = new TransportMetrics();
+            private readonly VirtualTransportClock _clock = new VirtualTransportClock();
+
+            public bool AllowSends = true;
+
+            public TransportMetrics Metrics => _metrics;
+
+            public ITransportClock Clock => _clock;
+
+            public int EventQueueDepth => _events.Count;
+
+            public void StartServer()
+            {
+            }
+
+            public int ConnectToServer(string host, int port) => 1;
+
+            public bool Send(
+                int connectionId,
+                TransportChannel channel,
+                byte[] data,
+                int offset,
+                int length) => AllowSends;
+
+            public void CloseConnection(int connectionId, TransportDisconnectReason reason)
+            {
+            }
+
+            public void AssignSessionToken(int connectionId, ulong token)
+            {
+            }
+
+            public void Shutdown(TransportDisconnectReason reason)
+            {
+            }
+
+            public void Pump(long nowMs)
+            {
+            }
+
+            public bool TryDequeueEvent(out TransportEvent transportEvent)
+            {
+                if (_events.Count > 0)
+                {
+                    transportEvent = _events.Dequeue();
+                    return true;
+                }
+
+                transportEvent = default;
+                return false;
+            }
+
+            public void Enqueue(TransportEvent transportEvent) => _events.Enqueue(transportEvent);
+
+            public void Dispose()
+            {
+            }
         }
     }
 }

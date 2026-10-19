@@ -1,5 +1,6 @@
 #pragma warning disable CS0618
 using System;
+using System.Collections.Generic;
 using GlobalFront.Client;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
@@ -260,6 +261,52 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(
                 _manager.TryGetPlayerState(match, record.Player, out var slotState), Is.True);
             Assert.That(slotState, Is.EqualTo(PlayerConnectionState.Abandoned));
+        }
+
+        [Test]
+        public void OnTickCompleted_WithManyClosedSessions_IteratesOnlyDisconnectedInGrace()
+        {
+            var match = _manager.CreateMatch(2);
+            var disconnected = new List<SessionId>();
+            for (var index = 0; index < 2; index++)
+            {
+                var session = _manager.CreateSession(_manager.CreateConnectionHandle());
+                Assert.That(
+                    _manager.TryJoinMatch(session, match, out _),
+                    Is.EqualTo(JoinResult.Assigned));
+                disconnected.Add(session);
+            }
+
+            // Historical sessions: created and closed long before the sweep.
+            for (var index = 0; index < 50; index++)
+            {
+                var closed = _manager.CreateSession(_manager.CreateConnectionHandle());
+                Assert.That(_manager.CloseSession(closed), Is.True);
+            }
+
+            Assert.That(_manager.NotifyConnectionLost(disconnected[0], 5ul), Is.True);
+            Assert.That(_manager.NotifyConnectionLost(disconnected[1], 5ul), Is.True);
+            Assert.That(_manager.HasDisconnectedSessionsInGrace(), Is.True);
+
+            // Inside the grace window the sweep must examine only the two
+            // disconnected sessions, never the 50 closed records.
+            _manager.OnTickCompleted(5ul + (ulong)GraceTicks);
+            Assert.That(_manager.LastTickScannedSessions, Is.EqualTo(2),
+                "closed/historical sessions must not be re-examined on every tick");
+
+            // Past the grace window both sessions expire and leave the index.
+            var expired = 0;
+            _manager.SessionGraceExpired += _ => expired++;
+            _manager.OnTickCompleted(5ul + (ulong)GraceTicks + 1ul);
+
+            Assert.That(_manager.LastTickScannedSessions, Is.EqualTo(2));
+            Assert.That(expired, Is.EqualTo(2));
+            Assert.That(_manager.HasDisconnectedSessionsInGrace(), Is.False);
+
+            // The next tick must not touch the expired/closed sessions at all.
+            _manager.OnTickCompleted(5ul + (ulong)GraceTicks + 2ul);
+            Assert.That(_manager.LastTickScannedSessions, Is.EqualTo(0),
+                "expired sessions must be removed from the disconnected index");
         }
 
         [Test]

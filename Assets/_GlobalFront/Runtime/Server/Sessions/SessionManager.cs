@@ -73,6 +73,14 @@ namespace GlobalFront.Server.Sessions
         private readonly Dictionary<SessionId, SessionRecordInternal> _sessions =
             new Dictionary<SessionId, SessionRecordInternal>();
 
+        /// <summary>
+        /// Index of sessions currently in <see cref="SessionState.Disconnected"/>.
+        /// Keeps the per-tick grace sweep proportional to the number of
+        /// sessions actually awaiting expiry instead of every session ever
+        /// created (P1-5).
+        /// </summary>
+        private readonly HashSet<SessionId> _disconnectedSessions = new();
+
         private readonly Dictionary<MatchId, MatchRecordInternal> _matches =
             new Dictionary<MatchId, MatchRecordInternal>();
 
@@ -130,6 +138,13 @@ namespace GlobalFront.Server.Sessions
 
         /// <summary>Grace window for disconnected sessions, in server ticks.</summary>
         public int DisconnectGraceTicks => _disconnectGraceTicks;
+
+        /// <summary>
+        /// Number of session identifiers examined by the most recent
+        /// <see cref="OnTickCompleted"/> pass. Diagnostics only: proves the
+        /// grace sweep touches only disconnected sessions.
+        /// </summary>
+        public int LastTickScannedSessions { get; private set; }
 
         /// <summary>
         /// Registers a new match that accepts up to <paramref name="capacity"/>
@@ -400,6 +415,7 @@ namespace GlobalFront.Server.Sessions
 
             record.State = SessionState.Disconnected;
             record.DisconnectedAtTick = atTick;
+            _disconnectedSessions.Add(session);
 
             // Slot liveness only matters once the match runs; while forming,
             // the session state alone carries the connection status and the
@@ -480,6 +496,7 @@ namespace GlobalFront.Server.Sessions
 
             record.State = SessionState.Connected;
             record.Connection = newConnection;
+            _disconnectedSessions.Remove(session);
 
             // Receipt data exists once the match runs on its server; a
             // forming match has no authoritative tick or sequence yet.
@@ -546,6 +563,7 @@ namespace GlobalFront.Server.Sessions
             if (elapsedTicks > (ulong)_disconnectGraceTicks)
             {
                 record.State = SessionState.Closed;
+                _disconnectedSessions.Remove(sessionId);
                 if (record.Match.IsValid &&
                     _matches.TryGetValue(record.Match, out var matchRec) &&
                     matchRec.Slots.TryGetValue(record.Player, out var slotRec))
@@ -568,6 +586,7 @@ namespace GlobalFront.Server.Sessions
             record.State = SessionState.Connected;
             record.Connection = newHandle;
             record.DisconnectedAtTick = 0;
+            _disconnectedSessions.Remove(sessionId);
 
             if (record.Match.IsValid &&
                 _matches.TryGetValue(record.Match, out var activeMatch) &&
@@ -602,6 +621,11 @@ namespace GlobalFront.Server.Sessions
                 record.State == SessionState.Closed)
             {
                 return false;
+            }
+
+            if (record.State == SessionState.Disconnected)
+            {
+                _disconnectedSessions.Remove(session);
             }
 
             if (record.Match.IsValid &&
@@ -671,11 +695,17 @@ namespace GlobalFront.Server.Sessions
         public void OnTickCompleted(ulong tick)
         {
             _expiredSessionBuffer.Clear();
+            LastTickScannedSessions = 0;
 
-            foreach (var pair in _sessions)
+            // Only sessions in Disconnected state can expire: iterating the
+            // dedicated index keeps the per-tick cost proportional to the
+            // grace-window population, not the historical session count.
+            foreach (var sessionId in _disconnectedSessions)
             {
-                var record = pair.Value;
-                if (record.State != SessionState.Disconnected ||
+                LastTickScannedSessions++;
+
+                if (!_sessions.TryGetValue(sessionId, out var record) ||
+                    record.State != SessionState.Disconnected ||
                     tick <= record.DisconnectedAtTick + (ulong)_disconnectGraceTicks)
                 {
                     continue;
@@ -690,12 +720,14 @@ namespace GlobalFront.Server.Sessions
                     slot.State = PlayerConnectionState.Abandoned;
                 }
 
-                _expiredSessionBuffer.Add(record.Id);
+                _expiredSessionBuffer.Add(sessionId);
             }
 
             for (var i = 0; i < _expiredSessionBuffer.Count; i++)
             {
-                SessionGraceExpired?.Invoke(_expiredSessionBuffer[i]);
+                var expired = _expiredSessionBuffer[i];
+                _disconnectedSessions.Remove(expired);
+                SessionGraceExpired?.Invoke(expired);
             }
         }
 
@@ -786,15 +818,17 @@ namespace GlobalFront.Server.Sessions
         /// </summary>
         public bool HasDisconnectedSessionsInGrace(MatchId match = default)
         {
-            foreach (var pair in _sessions)
+            foreach (var sessionId in _disconnectedSessions)
             {
-                var record = pair.Value;
-                if (record.State == SessionState.Disconnected)
+                if (!_sessions.TryGetValue(sessionId, out var record) ||
+                    record.State != SessionState.Disconnected)
                 {
-                    if (!match.IsValid || record.Match == match)
-                    {
-                        return true;
-                    }
+                    continue;
+                }
+
+                if (!match.IsValid || record.Match == match)
+                {
+                    return true;
                 }
             }
 
