@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Reflection;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
 
@@ -643,6 +644,69 @@ namespace GlobalFront.Tests.EditMode
                 "late fragments of an older snapshot must be dropped as stale");
             Assert.That(harness.ServerReceived.Count, Is.EqualTo(deliveredBefore),
                 "stale fragments must not produce deliveries");
+        }
+
+        [Test]
+        public void Snapshot_IncompleteFragmentFlood_TrackedGroupsBounded()
+        {
+            // D-9: unique incomplete messageIds must not grow
+            // SnapshotSeqByMessageId without limit.
+            var harness = Harness.Create(new ImpairmentProfile { Seed = 71 });
+            harness.PumpUntilServerConnection();
+            Assert.That(harness.ServerConnection, Is.GreaterThanOrEqualTo(0));
+
+            var staleBefore = harness.Server.Metrics.DroppedStaleSnapshot;
+            var buffer = new byte[TransportProtocol.MaxDatagramBytes];
+            const int floodCount = 10;
+            for (var index = 1; index <= floodCount; index++)
+            {
+                var size = EnvelopeCodec.Encode(
+                    buffer,
+                    TransportChannel.Snapshot,
+                    0,
+                    sequence: (ushort)index,
+                    ackNumber: 0,
+                    ackBitmap: 0,
+                    messageId: (ushort)index,
+                    fragmentIndex: 0,
+                    fragmentCount: 2,
+                    payload: new byte[] { 0xDE, 0xAD },
+                    payloadOffset: 0,
+                    payloadLength: 2);
+                harness.Pipe.SendDatagram(2, 1, buffer, size);
+                harness.Pump(5);
+            }
+
+            Assert.That(harness.ServerReceived, Is.Empty,
+                "fragment 0 of 2 must never complete a snapshot");
+            var tracked = TrackedSnapshotGroupCount(harness.Server, harness.ServerConnection);
+            Assert.That(tracked, Is.LessThanOrEqualTo(TransportProtocol.MaxFragmentGroups),
+                "unique incomplete messageIds must not grow the tracked-group map past the cap");
+            Assert.That(harness.Server.Metrics.DroppedStaleSnapshot - staleBefore,
+                Is.EqualTo(floodCount - TransportProtocol.MaxFragmentGroups),
+                "each evicted incomplete group must be counted as a stale drop");
+        }
+
+        private static int TrackedSnapshotGroupCount(
+            OwnDatagramCarrier carrier,
+            int connectionId)
+        {
+            var connectionsField = typeof(OwnDatagramCarrier).GetField(
+                "_connections",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(connectionsField, Is.Not.Null,
+                "OwnDatagramCarrier must keep its connection table");
+            var connections = (System.Collections.IDictionary)connectionsField.GetValue(carrier);
+            var connection = connections[connectionId];
+            Assert.That(connection, Is.Not.Null,
+                "the handshake must have created the server connection");
+            var mapField = connection.GetType().GetField(
+                "SnapshotSeqByMessageId",
+                BindingFlags.Instance | BindingFlags.Public);
+            Assert.That(mapField, Is.Not.Null,
+                "ReliableConnection must keep the tracked-group map");
+            var map = (System.Collections.IDictionary)mapField.GetValue(connection);
+            return map.Count;
         }
     }
 }

@@ -128,6 +128,35 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void RealTimeMode_ReentrantResetInsideTickDue_DoesNotRenumberStep()
+        {
+            // D-8: Reset from inside the first TickDue handler must not
+            // renumber the remaining ticks of the step; every index comes
+            // from the base captured under _gate, not from the live _tick.
+            var driver = new TickDriver(maxCatchUpTicks: 4);
+            var dueTicks = new List<ulong>();
+            var resetApplied = false;
+            driver.TickDue += tick =>
+            {
+                dueTicks.Add(tick);
+                if (!resetApplied)
+                {
+                    resetApplied = true;
+                    driver.Reset(1000);
+                }
+            };
+            driver.StartRealTime();
+
+            var scheduled = driver.AdvanceRealTime(0.25);
+
+            Assert.That(scheduled, Is.EqualTo(4));
+            Assert.That(dueTicks, Is.EqualTo(new List<ulong> { 1, 2, 3, 4 }),
+                "the remaining ticks of the step must keep their captured indices");
+            Assert.That(driver.Tick, Is.EqualTo(1000ul),
+                "the reentrant reset must still be visible after the step");
+        }
+
+        [Test]
         public void RealTimeMode_PreservesFractionalTimeBetweenCalls()
         {
             var driver = new TickDriver();

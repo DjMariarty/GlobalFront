@@ -62,7 +62,16 @@ namespace GlobalFront.Server
         }
 
         /// <summary>Index of the last scheduled tick.</summary>
-        public ulong Tick => _tick;
+        public ulong Tick
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _tick;
+                }
+            }
+        }
 
         /// <summary>Current scheduling mode.</summary>
         public TickDriverMode Mode
@@ -183,6 +192,7 @@ namespace GlobalFront.Server
         public int AdvanceRealTime(double elapsedSeconds)
         {
             int scheduled;
+            ulong baseTick;
             lock (_gate)
             {
                 if (_mode != TickDriverMode.RealTime || _isPaused)
@@ -192,11 +202,16 @@ namespace GlobalFront.Server
 
                 scheduled = _clock.Advance(elapsedSeconds);
                 _tick = _clock.Tick;
+
+                // Capture the step's first tick while the schedule is
+                // coherent: a reentrant Reset/advance from a TickDue handler
+                // must not distort the remaining indices of this step.
+                baseTick = _tick - (ulong)scheduled;
             }
 
             for (var index = 1; index <= scheduled; index++)
             {
-                TickDue?.Invoke(_tick - (ulong)scheduled + (ulong)index);
+                TickDue?.Invoke(baseTick + (ulong)index);
             }
 
             return scheduled;

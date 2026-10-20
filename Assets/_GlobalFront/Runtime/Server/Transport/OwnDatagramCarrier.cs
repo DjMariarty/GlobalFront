@@ -669,6 +669,16 @@ namespace GlobalFront.Server.Transport
 
             if (envelope.HasFragment)
             {
+                // Bound the tracked-group map: unique incomplete
+                // messageIds must not grow it without limit. Evict the
+                // oldest (lowest sequence) group before admitting a new
+                // one, and discard its partial assembly with it.
+                if (!connection.SnapshotSeqByMessageId.ContainsKey(envelope.MessageId) &&
+                    connection.SnapshotSeqByMessageId.Count >= TransportProtocol.MaxFragmentGroups)
+                {
+                    EvictOldestSnapshotGroup(connection);
+                }
+
                 connection.SnapshotSeqByMessageId[envelope.MessageId] = sequence;
                 var message = connection.Assembler.AddFragment(
                     envelope.MessageId,
@@ -732,6 +742,36 @@ namespace GlobalFront.Server.Transport
                 connection.SnapshotSeqByMessageId.Remove(messageId);
                 _metrics.DroppedStaleSnapshot++;
             }
+        }
+
+        /// <summary>
+        /// Drops the tracked incomplete snapshot group with the lowest
+        /// sequence (serial arithmetic) so a new messageId can take its
+        /// place.
+        /// </summary>
+        private void EvictOldestSnapshotGroup(ReliableConnection connection)
+        {
+            var found = false;
+            ushort oldestMessageId = 0;
+            ushort oldestSequence = 0;
+            foreach (var pair in connection.SnapshotSeqByMessageId)
+            {
+                if (!found || SerialArithmetic.Diff(pair.Value, oldestSequence) < 0)
+                {
+                    found = true;
+                    oldestMessageId = pair.Key;
+                    oldestSequence = pair.Value;
+                }
+            }
+
+            if (!found)
+            {
+                return;
+            }
+
+            connection.Assembler.DiscardGroup(oldestMessageId);
+            connection.SnapshotSeqByMessageId.Remove(oldestMessageId);
+            _metrics.DroppedStaleSnapshot++;
         }
 
         private void HandleReliableDatagram(

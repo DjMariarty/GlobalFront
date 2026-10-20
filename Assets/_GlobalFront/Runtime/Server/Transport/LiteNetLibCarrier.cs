@@ -682,6 +682,16 @@ namespace GlobalFront.Server.Transport
                 }
                 else
                 {
+                    // Bound the tracked-group map: unique incomplete
+                    // messageIds must not grow it without limit. Evict the
+                    // oldest (lowest sequence) group before admitting a new
+                    // one, and discard its partial assembly with it.
+                    if (!state.SeqByMessageId.ContainsKey(messageId) &&
+                        state.SeqByMessageId.Count >= TransportProtocol.MaxFragmentGroups)
+                    {
+                        EvictOldestFragmentGroup(state);
+                    }
+
                     state.SeqByMessageId[messageId] = sequence;
                     message = state.Assembler.AddFragment(
                         messageId,
@@ -744,6 +754,36 @@ namespace GlobalFront.Server.Transport
                     Length = message.Length
                 });
             }
+        }
+
+        /// <summary>
+        /// Drops the tracked incomplete group with the lowest snapshot
+        /// sequence (serial arithmetic) so a new messageId can take its
+        /// place. Must be called while holding <c>_peerGate</c>.
+        /// </summary>
+        private void EvictOldestFragmentGroup(PeerSnapshotState state)
+        {
+            var found = false;
+            ushort oldestMessageId = 0;
+            ushort oldestSequence = 0;
+            foreach (var pair in state.SeqByMessageId)
+            {
+                if (!found || SerialArithmetic.Diff(pair.Value, oldestSequence) < 0)
+                {
+                    found = true;
+                    oldestMessageId = pair.Key;
+                    oldestSequence = pair.Value;
+                }
+            }
+
+            if (!found)
+            {
+                return;
+            }
+
+            state.Assembler.DiscardGroup(oldestMessageId);
+            state.SeqByMessageId.Remove(oldestMessageId);
+            _metrics.DroppedStaleSnapshot++;
         }
 
         public void OnNetworkError(System.Net.IPEndPoint endPoint, SocketError socketError)

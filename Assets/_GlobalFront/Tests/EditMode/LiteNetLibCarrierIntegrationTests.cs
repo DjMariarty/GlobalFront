@@ -710,6 +710,41 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void SnapshotIncompleteFragmentFlood_TrackedGroupsBounded()
+        {
+            // D-9: unique incomplete messageIds used to grow SeqByMessageId
+            // without limit even though the assembler itself stayed capped.
+            var carrier = LiteNetLibCarrier.CreateServer(new SystemTransportClock());
+            var handle = BindSnapshotHandler(carrier);
+            const int connectionId = 8080;
+            const int floodCount = 10;
+            var staleBefore = carrier.Metrics.DroppedStaleSnapshot;
+
+            for (var index = 1; index <= floodCount; index++)
+            {
+                var incomplete = BuildSnapshotDatagram(
+                    (ushort)index, (ushort)index, 0, 2, 32);
+                handle(connectionId, incomplete, 0, incomplete.Length);
+            }
+
+            var delivered = 0;
+            while (carrier.TryDequeueEvent(out _))
+            {
+                delivered++;
+            }
+
+            Assert.That(delivered, Is.Zero,
+                "fragment 0 of 2 must never complete a snapshot");
+            var tracked = TrackedFragmentGroupCount(carrier, connectionId);
+            Assert.That(tracked, Is.LessThanOrEqualTo(TransportProtocol.MaxFragmentGroups),
+                "unique incomplete messageIds must not grow the tracked-group map past the cap");
+            Assert.That(carrier.Metrics.DroppedStaleSnapshot - staleBefore,
+                Is.EqualTo(floodCount - TransportProtocol.MaxFragmentGroups),
+                "each evicted incomplete group must be counted as a stale drop");
+            carrier.Dispose();
+        }
+
+        [Test]
         public void SingleFragmentSnapshotReceive_OwnsExactlyOnePayloadCopy()
         {
             // D-4/P1-1: a single-fragment snapshot must hand the event queue
@@ -772,6 +807,28 @@ namespace GlobalFront.Tests.EditMode
                 typeof(Action<int, byte[], int, int>),
                 carrier,
                 method);
+        }
+
+        private static int TrackedFragmentGroupCount(
+            LiteNetLibCarrier carrier,
+            int connectionId)
+        {
+            var statesField = typeof(LiteNetLibCarrier).GetField(
+                "_snapshotStates",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(statesField, Is.Not.Null,
+                "LiteNetLibCarrier must keep per-peer snapshot state");
+            var states = (System.Collections.IDictionary)statesField.GetValue(carrier);
+            var state = states[connectionId];
+            Assert.That(state, Is.Not.Null,
+                "receiving a fragment must create the per-peer snapshot state");
+            var mapField = state.GetType().GetField(
+                "SeqByMessageId",
+                BindingFlags.Instance | BindingFlags.Public);
+            Assert.That(mapField, Is.Not.Null,
+                "PeerSnapshotState must keep the tracked-group map");
+            var map = (System.Collections.IDictionary)mapField.GetValue(state);
+            return map.Count;
         }
 
         private static NetManager GetManagerForTests(LiteNetLibCarrier carrier)
