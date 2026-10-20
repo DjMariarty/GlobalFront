@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using GlobalFront.Core.Model;
@@ -47,6 +48,18 @@ namespace GlobalFront.Server.Transport
             PlayerId player,
             int connectionId)
         {
+            if (_tokenByConnection.ContainsKey(connectionId))
+            {
+                throw new InvalidOperationException(
+                    $"Connection {connectionId} already owns a session binding.");
+            }
+
+            if (_tokenBySession.ContainsKey(session))
+            {
+                throw new InvalidOperationException(
+                    $"Session {session} is already bound; release it before rebinding.");
+            }
+
             ulong token;
             do
             {
@@ -108,7 +121,11 @@ namespace GlobalFront.Server.Transport
             if (_byToken.TryGetValue(token, out var binding))
             {
                 _byToken.Remove(token);
-                _tokenByConnection.Remove(binding.ConnectionId);
+                if (_tokenByConnection.TryGetValue(binding.ConnectionId, out var mappedToken) &&
+                    mappedToken == token)
+                {
+                    _tokenByConnection.Remove(binding.ConnectionId);
+                }
             }
 
             _cachedSnapshotTargets.Remove(session);

@@ -329,6 +329,32 @@ namespace GlobalFront.Server.Transport
             }
 
             var currentTick = _currentDrainTick > 0 ? _currentDrainTick : _server.CurrentTick;
+
+            // One socket owns exactly one session. A retransmitted request for
+            // its own session may re-attach, but naming a different session
+            // would orphan the live binding and overwrite the inverse index.
+            if (_binder.TryGetByConnection(transportEvent.ConnectionId, out var bound) &&
+                bound.Session != request.SessionId)
+            {
+                var denied = new ReconnectResponse(
+                    GlobalFront.Core.Reconnect.ReconnectResult.Denied,
+                    default(PlayerId),
+                    default(MatchId),
+                    currentTick,
+                    0);
+                if (ReconnectWireCodec.TryEncodeResponse(denied, _messageBuffer, out var deniedWritten))
+                {
+                    _carrier.Send(
+                        transportEvent.ConnectionId,
+                        TransportChannel.Control,
+                        _messageBuffer,
+                        0,
+                        deniedWritten);
+                }
+
+                return;
+            }
+
             var handle = _sessions.CreateConnectionHandle();
             var result = _sessions.TryRebindSession(
                 request.SessionId, request.Secret, handle, currentTick, out var session);

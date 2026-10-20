@@ -1,12 +1,16 @@
+using System;
 using System.Collections.Generic;
+using System.Reflection;
 using GlobalFront.Client;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
+using GlobalFront.Core.Reconnect;
 using GlobalFront.Server;
 using GlobalFront.Server.Sessions;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
+using ReconnectResult = GlobalFront.Core.Reconnect.ReconnectResult;
 
 namespace GlobalFront.Tests.EditMode
 {
@@ -24,6 +28,7 @@ namespace GlobalFront.Tests.EditMode
         {
             public TransportTestSupport.Rig Rig;
             public ClientTransportEndpoint Client;
+            public ClientTransportEndpoint Second;
             public NetworkCommandChannel Channel;
             public readonly List<CommandAckPayload> Acks = new List<CommandAckPayload>();
             public uint NextSequence = 1;
@@ -39,6 +44,7 @@ namespace GlobalFront.Tests.EditMode
                 // (roster must exactly cover the template slots).
                 flow.Client = TransportTestSupport.CreateClient(flow.Rig);
                 var second = TransportTestSupport.CreateClient(flow.Rig);
+                flow.Second = second;
                 Assert.That(
                     TransportTestSupport.PumpUntilEstablished(flow.Rig, flow.Client), Is.True,
                     "handshake must complete");
@@ -412,6 +418,153 @@ namespace GlobalFront.Tests.EditMode
                 TransportTestSupport.PumpUntilEstablished(rig, legitimate), Is.True,
                 "the second roster slot must remain available to a legitimate player");
             Assert.That(legitimate.Player.Value, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void DoubleBindOnSameConnection_IsDenied()
+        {
+            var flow = Flow.Establish();
+            var binder = flow.Rig.ServerTransport.Binder;
+            var sessionA = flow.Client.Session;
+            var sessionB = flow.Second.Session;
+
+            Assert.That(binder.TryGetTokenBySession(sessionA, out var tokenA), Is.True);
+            Assert.That(binder.TryGetByToken(tokenA, out var bindingA), Is.True);
+            var connectionA = bindingA.ConnectionId;
+
+            Assert.That(flow.Rig.Host.Sessions.TryGetSession(sessionB, out var recordB), Is.True);
+            var secretB = recordB.Secret;
+            Assert.That(binder.TryGetTokenBySession(sessionB, out var tokenB), Is.True);
+            Assert.That(binder.TryGetByToken(tokenB, out var bindingB), Is.True);
+            Assert.That(bindingB.ConnectionId, Is.Not.EqualTo(connectionA));
+
+            // B loses its socket in a normal network blip; its secret stays valid.
+            flow.Rig.ServerCarrier.CloseConnection(
+                bindingB.ConnectionId, TransportDisconnectReason.TransportLost);
+            var elapsed = 0L;
+            while (elapsed < 1000 &&
+                !(flow.Rig.Host.Sessions.TryGetSession(sessionB, out var detached) &&
+                    detached.State == SessionState.Disconnected))
+            {
+                flow.Rig.Pump(5);
+                elapsed += 5;
+            }
+
+            Assert.That(flow.Rig.Host.Sessions.TryGetSession(sessionB, out var detachedB), Is.True);
+            Assert.That(detachedB.State, Is.EqualTo(SessionState.Disconnected));
+            Assert.That(binder.BoundCount, Is.EqualTo(1));
+
+            // Socket A now asks to re-attach B as well.
+            var request = new ReconnectRequest(sessionB, secretB.ToByteArray(), 0);
+            var buffer = new byte[ReconnectWireCodec.RequestSizeBytes];
+            Assert.That(ReconnectWireCodec.TryEncodeRequest(request, buffer, out var written), Is.True);
+            var carrier = (OwnDatagramCarrier)flow.Client.Carrier;
+            Assert.That(carrier.Send(1, TransportChannel.Control, buffer, 0, written), Is.True);
+
+            ReconnectResponse response = default;
+            var received = false;
+            elapsed = 0L;
+            while (!received && elapsed < 5000)
+            {
+                flow.Rig.Pump(5);
+                carrier.Pump(flow.Rig.Clock.NowMs);
+                while (carrier.TryDequeueEvent(out var transportEvent))
+                {
+                    if (transportEvent.Type == TransportEventType.Message &&
+                        transportEvent.Length >= ReconnectWireCodec.ResponseSizeBytes &&
+                        transportEvent.Data[0] == ReconnectWireCodec.ResponseOpcode)
+                    {
+                        Assert.That(
+                            ReconnectWireCodec.TryDecodeResponse(
+                                transportEvent.Data.AsSpan(0, transportEvent.Length),
+                                out response),
+                            Is.True);
+                        received = true;
+                    }
+                }
+
+                elapsed += 5;
+            }
+
+            Assert.That(received, Is.True, "the hijacking socket must receive an explicit denial");
+            Assert.That(response.Result, Is.EqualTo(ReconnectResult.Denied));
+            Assert.That(binder.BoundCount, Is.EqualTo(1),
+                "a denied reconnect must not add a second session to the socket");
+            Assert.That(binder.TryGetByConnection(connectionA, out var survivor), Is.True);
+            Assert.That(survivor.Session, Is.EqualTo(sessionA));
+            Assert.That(survivor.Token, Is.EqualTo(tokenA));
+            Assert.That(flow.Rig.Host.Sessions.TryGetSession(sessionB, out var stillDetached), Is.True);
+            Assert.That(stillDetached.State, Is.EqualTo(SessionState.Disconnected),
+                "the rejected request must not alter the displaced session");
+        }
+
+        [Test]
+        public void ReleaseOfDisplacedSession_PreservesActiveConnectionMapping()
+        {
+            var binder = new TransportSessionBinder();
+            var sessionA = new SessionId(Guid.NewGuid());
+            var sessionB = new SessionId(Guid.NewGuid());
+            const int connection = 41;
+
+            var tokenA = binder.Bind(
+                sessionA, new ConnectionHandle(1), new MatchId(1ul), new PlayerId(1), connection);
+            var tokenB = binder.Bind(
+                sessionB, new ConnectionHandle(2), new MatchId(1ul), new PlayerId(2), connection + 1);
+
+            // Stage the displaced index state the old Bind/Release pair could
+            // produce: the socket maps to B while A's binding still exists.
+            var mapField = typeof(TransportSessionBinder).GetField(
+                "_tokenByConnection", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(mapField, Is.Not.Null);
+            var tokenByConnection = (Dictionary<int, ulong>)mapField.GetValue(binder);
+            tokenByConnection.Remove(connection + 1);
+            tokenByConnection[connection] = tokenB;
+
+            var byTokenField = typeof(TransportSessionBinder).GetField(
+                "_byToken", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(byTokenField, Is.Not.Null);
+            var byToken =
+                (Dictionary<ulong, TransportSessionBinder.Binding>)byTokenField.GetValue(binder);
+            var moved = byToken[tokenB];
+            moved.ConnectionId = connection;
+            byToken[tokenB] = moved;
+
+            Assert.That(binder.Release(sessionA), Is.True);
+
+            Assert.That(binder.TryGetByConnection(connection, out var survivor), Is.True,
+                "Release(A) must not delete a socket mapping owned by B");
+            Assert.That(survivor.Session, Is.EqualTo(sessionB));
+            Assert.That(survivor.Token, Is.EqualTo(tokenB));
+            Assert.That(binder.TryGetByToken(tokenA, out _), Is.False);
+            Assert.That(binder.TryGetTokenBySession(sessionA, out _), Is.False);
+            Assert.That(binder.BoundCount, Is.EqualTo(1));
+            Assert.That(binder.SnapshotTargets.Count, Is.EqualTo(1));
+            Assert.That(binder.SnapshotTargets[0], Is.EqualTo(sessionB));
+        }
+
+        [Test]
+        public void BoundCount_ReturnsToBaseline_OnDisconnect()
+        {
+            var rig = TransportTestSupport.CreateRig(new ImpairmentProfile());
+            var client = TransportTestSupport.CreateClient(rig);
+            Assert.That(TransportTestSupport.PumpUntilEstablished(rig, client), Is.True);
+
+            var binder = rig.ServerTransport.Binder;
+            Assert.That(binder.BoundCount, Is.EqualTo(1));
+            Assert.That(rig.ServerTransport.AttachedCount, Is.EqualTo(1));
+            Assert.That(binder.TryGetTokenBySession(client.Session, out var token), Is.True);
+            Assert.That(binder.TryGetByToken(token, out var binding), Is.True);
+
+            client.GracefulDisconnect();
+            rig.Pump(5);
+            client.Pump(rig.Clock.NowMs);
+
+            Assert.That(binder.BoundCount, Is.EqualTo(0), "bound sessions must not leak");
+            Assert.That(rig.ServerTransport.AttachedCount, Is.EqualTo(0));
+            Assert.That(binder.TryGetTokenBySession(client.Session, out _), Is.False);
+            Assert.That(binder.TryGetByToken(token, out _), Is.False);
+            Assert.That(binder.TryGetByConnection(binding.ConnectionId, out _), Is.False);
+            Assert.That(binder.SnapshotTargets.Count, Is.EqualTo(0));
         }
 
         [Test]
