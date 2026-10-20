@@ -5,10 +5,10 @@
 | Phase | Document | Status | Milestone |
 |---:|---|---|---|
 | 0 | [Product Definition](Phase_00_Product_Definition.md) | master scope approved; detailed TBD | — |
-| 1 | [Simulation Foundation](Phase_01_Foundation.md) | **COMPLETE** | M0 |
-| 2 | [Multiplayer Foundation](Phase_02_Multiplayer.md) | **CURRENT**, 2.3 next | prerequisite M1 |
-| 3 | [RTS Core + Vertical Slice](Phase_03_RTS_Core.md) | planned | M2 |
-| 4 | [Multiplayer Gameplay Integration](Phase_04_Multiplayer_Integration.md) | planned | M1 |
+| 1 | [Simulation Foundation](Phase_01_Foundation.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** | M0 |
+| 2 | [Multiplayer Foundation](Phase_02_Multiplayer.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** (`4cb8ffa`) | prerequisite M1 |
+| 3 | [RTS Core + Vertical Slice](Phase_03_RTS_Core.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** (3.1–3.7) | M2 |
+| 4 | [Multiplayer Gameplay Integration](Phase_04_Multiplayer_Integration.md) | **CURRENT / NEXT** | M1 |
 | 5 | [Full Five Factions](Phase_05_Five_Factions.md) | planned | M3 |
 | 6 | [AI](Phase_06_AI.md) | planned | M4 |
 | 7 | [Content + Maps + Presentation](Phase_07_Content_Maps_Presentation.md) | planned | — |

@@ -1,6 +1,6 @@
 # Архитектура GlobalFront
 
-> Живой нормативный документ • current baseline + approved target • обновлено 2026-09-27
+> Живой нормативный документ • current baseline + approved target • обновлено 2026-10-20
 
 ## Architectural Principle
 
@@ -13,8 +13,8 @@ GlobalFront строится вокруг authoritative server и deterministic 
 | Assembly | Current responsibility | Dependencies |
 |---|---|---|
 | `GlobalFront.Core` | детерминированные identifiers (`EntityId`, `PlayerId`, opaque `SessionId`/`MatchId`), commands, coordinates, movement, combat, formation, `MatchConfig`, constants | none; Unity API запрещён |
-| `GlobalFront.Server` | authoritative `MatchServer`, state, validation, tick phases, `TickDriver` (server tick scheduling), snapshots и Snapshot Protocol v1, session/player identity (`SessionManager`, Phase 2.4) | `GlobalFront.Core`; Unity API запрещён |
-| `GlobalFront.Client` | Unity input/presentation, selection (`UnitSelectionController`, `UnitSelectionDriver`, `UnitPickMath`, `UnitCommandIssuing`, `SelectionMarqueePresenter`), minimap & tactical HUD (`MinimapProjection`, `MinimapRadarModel`, `MinimapRadarGraphic`, `MinimapInteractionController`, `TacticalHudPointerBlocker`, `SelectionHudState`, `PermanentHudPresenter`, `SelectionHudPresenter`), vertical slice (`TacticalVerticalSliceRunner`, `LocalReplicationLoopback`, `CorpseReapSnapshotSource`), `RtsCameraController`, `RtsInputManager`, `UnitViewTickBuffer`, `UnitView`, `UnitViewPool`, `UnitViewBinder`, `UnitCatalog`, `UnitOverlayBatcher`, `UnitOverlayGeometry`, `UnitOverlayRenderPass`, `UnitOverlayRendererFeature`, bootstrap, `LocalMatchHost` (ServerHost: владеет `MatchServer`, `TickDriver` и `SessionManager`), command channel adapter, `ClientSession` | Core, Server, Unity/Input System, URP (`Unity.RenderPipelines.Core.Runtime`, `Unity.RenderPipelines.Universal.Runtime`) |
+| `GlobalFront.Server` | authoritative `MatchServer`, state, validation, tick phases, `TickDriver` (server tick scheduling), snapshots и Snapshot Protocol v1, session/player identity (`SessionManager`, Phase 2.4), transport host (`ServerTransportHost`, `TransportSessionBinder`), replication emitter (`ServerReplicationEmitter`) | `GlobalFront.Core`; Unity API запрещён |
+| `GlobalFront.Client` | Unity input/presentation, selection (`UnitSelectionController`, `UnitSelectionDriver`, `UnitPickMath`, `UnitCommandIssuing`, `SelectionMarqueePresenter`), minimap & tactical HUD (`MinimapProjection`, `MinimapRadarModel`, `MinimapRadarGraphic`, `MinimapInteractionController`, `TacticalHudPointerBlocker`, `SelectionHudState`, `PermanentHudPresenter`, `SelectionHudPresenter`), vertical slice (`TacticalVerticalSliceRunner`, `LocalReplicationLoopback`, `CorpseReapSnapshotSource`), `RtsCameraController`, `RtsInputManager`, `UnitViewTickBuffer`, `UnitView`, `UnitViewPool`, `UnitViewBinder`, `UnitCatalog`, `UnitOverlayBatcher`, `UnitOverlayGeometry`, `UnitOverlayRenderPass`, `UnitOverlayRendererFeature`, bootstrap, `LocalMatchHost` (ServerHost: владеет `MatchServer`, `TickDriver` и `SessionManager`), command channel adapter, `ClientSession`, replication receiver (`ClientReplicationReceiver`, `ClientReplicationWorld`, `ReplicationReceiverFSM`), reconnect coordinator (`ClientReconnectCoordinator`) | Core, Server, Unity/Input System, URP (`Unity.RenderPipelines.Core.Runtime`, `Unity.RenderPipelines.Universal.Runtime`) |
 
 ```text
 GlobalFront.Core  ←  GlobalFront.Server
@@ -32,18 +32,17 @@ Client → Server является текущей временной связь�
 - server-owned state и entity assignment через `MatchConfig`;
 - команды Move, Attack и Stop валидируются authoritative server;
 - presentation получает `ServerUnitSnapshot` после server tick;
-- Snapshot Protocol v1: little-endian, 16-byte header, 39 bytes/entity, entity-id order.
+- Snapshot Protocol v1: little-endian, 16-byte header, 39 bytes/entity, entity-id order;
+- Snapshot Protocol v2: 40-байтовый `DeltaAddRecord` с полем `UnitKind` (OD-29).
 
 ## Command Channel — Phase 2.2 Complete
 
 `ICommandChannel` отделяет `PrototypeCommandQueue` от конкретного authoritative backend. `LocalCommandChannel` адаптирует текущий `LocalMatchHost`. Phase 2.2 подтверждена commit `313e9ef` и входит в baseline.
 
-Это abstraction boundary, а не реализованный network transport.
-
 ## Current Tick Flow
 
 ```text
-TickDriver (GlobalFront.Server, 20 Hz, bounded catch-up)
+TickDriver (GlobalFront.Server, 20 Hz, bounded catch-up, thread-safe step capture)
        ↓ TickDue (per tick)
 LocalMatchHost  (ServerHost: владеет MatchServer и TickDriver)
        │ TickStarting(N): PrototypeCommandQueue → ICommandChannel → LocalCommandChannel
@@ -51,15 +50,15 @@ LocalMatchHost  (ServerHost: владеет MatchServer и TickDriver)
        │ TickCompleted(N): ServerUnitSnapshot → presentation
 ```
 
-**Phase 2.3 Server Tick Driver — complete, commit `ea0435d`** (ADR-007). Server tick lifecycle больше не зависит от Unity client lifecycle: `TickDriver` в `GlobalFront.Server` расписывает тики (manual mode для тестов, real-time 20 Hz с bounded catch-up через `FixedStepClock`); `LocalMatchHost` выполняет роль ServerHost; `PrototypeRtsController` pump’ит driver и потребляет snapshots; `FixedSimulationRunner` удалён. Local и future dedicated server используют общий simulation core (`MatchServer` + `TickDriver`). Транспорт, session/identity, reconnect/resync — out of scope (Phase 2.4–2.7).
+**Phase 2.3 Server Tick Driver — complete, commit `ea0435d`** (ADR-007). Server tick lifecycle больше не зависит от Unity client lifecycle: `TickDriver` в `GlobalFront.Server` расписывает тики (manual mode для тестов, real-time 20 Hz с bounded catch-up через `FixedStepClock`); в спринте 2.4 step capture защищен потокобезопасным захватом `baseTick = _tick - (ulong)scheduled` под `_gate` и блокировкой `Tick => _tick`; `LocalMatchHost` выполняет роль ServerHost; `PrototypeRtsController` pump’ит driver и потребляет snapshots. Local и future dedicated server используют общий simulation core (`MatchServer` + `TickDriver`).
 
 ## Session / Player Identity — Phase 2.4 Complete (`73d1276`)
 
-Server-authoritative identity layer (ADR-008): opaque `SessionId`/`MatchId` в Core, `SessionManager` в `GlobalFront.Server` — единственный источник `PlayerId` (монотонное назначение по порядку join, без повторного использования). Command ingress проходит session gate перед неизменным `MatchServer`; `CommandHeader`, canonical command order и Snapshot Protocol v1 не изменяются. Match lifecycle в 2.4 завершается на `Finished`; `MatchPhase.Closed` (teardown/registry disposal) — reserved future state для dedicated/server lifecycle. Transport attribution реализован в Phase 2.5 (ADR-009); реализация reconnect, конкретная grace duration — Phase 2.7 / TBD.
+Server-authoritative identity layer (ADR-008): opaque `SessionId`/`MatchId` в Core, `SessionManager` в `GlobalFront.Server` — единственный источник `PlayerId` (монотонное назначение по порядку join, без повторного использования). Command ingress проходит session gate перед неизменным `MatchServer`. В спринте 2.1 добавлен O(k) grace sweep и защита от hijack; в спринте 2.5 `TransportSessionBinder` усилен эксклюзивной привязкой сокета к сессии и токен-идентичностью при освобождении (`Release`).
 
-## Network Transport — Phase 2.5 Complete (`feat: implement network transport (Phase 2.5)`)
+## Network Transport — Phase 2.5 Complete (ADR-009, OD-1 = LiteNetLib 1.3.5)
 
-Транспортный слой по ADR-009 (OD-1 = LiteNetLib 1.3.5): контракт `INetworkCarrier` с двумя носителями — детерминированный `OwnDatagramCarrier` поверх `VirtualNetworkPipe` и `LiteNetLibCarrier` (real UDP). C0 Control и C1 Command — reliable ordered (единое seq-пространство на направление), C2 Snapshot — unreliable sequenced latest-wins по `SnapshotTick`; Snapshot Protocol v1 переносится как opaque payload. Атрибуция: токен → `ConnectionHandle` → `SessionId` → session gate ADR-008; `NetworkCommandChannel` реализует `ICommandChannel` (local pre-flight отдельно от асинхронного авторитетного `CommandAckPayload`). Транспорт не владеет simulation: `MatchServer`/`TickDriver`/`SessionManager`/`CommandHeader`/Snapshot Protocol v1 не изменены. Финальный независимый review = APPROVE (P0=0/P1=0/P2=0). Delta snapshots / cadence / Fog of War replication — Phase 2.6; reconnect/resync — Phase 2.7.
+Транспортный слой по ADR-009 (OD-1 = LiteNetLib 1.3.5): контракт `INetworkCarrier` с двумя носителями — детерминированный `OwnDatagramCarrier` поверх `VirtualNetworkPipe` и `LiteNetLibCarrier` (real UDP). C0 Control и C1 Command — reliable ordered (единое seq-пространство на направление), C2 Snapshot — unreliable sequenced latest-wins по `SnapshotTick`. Атрибуция: токен → `ConnectionHandle` → `SessionId` → session gate ADR-008; `NetworkCommandChannel` реализует `ICommandChannel` (local pre-flight отдельно от асинхронного авторитетного `CommandAckPayload`). Bounded reassembly maps (`MaxFragmentGroups = 4`), Zero-GC send scratch буфер и receive pooling в `LiteNetLibCarrier`. Session-aware reconnect guard (`ServerTransportHost.cs:333-356`) защищает от подмены сессий.
 
 ## Approved Target Architecture
 
@@ -114,13 +113,14 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 ## Verification Baseline
 
 - Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
-- 1086/1086 EditMode passed (100%), 0 failed, 0 skipped, 8.76 s
-- 13/13 PlayMode passed (100%), 0 failed, 0 skipped, 17.08 s
-- last committed milestone: `3414ba6` (Phase 3.7 Vertical Slice Integration, 400-Unit Benchmark, Multi-Frame PlayMode Suite & Architecture Invariants Gate, ADR-012/OD-23..OD-29; `TacticalVerticalSliceRunner` + `LocalReplicationLoopback` + `CorpseReapSnapshotSource` end-to-end 400-unit slice, 30-case `TacticalVerticalSliceBenchmarkTests`, 7-case multi-frame `TacticalVerticalSlicePlayModeTests`, 12-case `ArchitectureInvariantsTests`, plus the `ComputeStateChecksum` / `ComputeDirtyMask` MoveTarget protocol fix; triple independent adversarial audit (Space Bunny + GLM 5.3 Flash + Pixel Canary) and remediation verification [APPROVED: ZERO DEFECTS]; 1086/1086 EditMode + 13/13 PlayMode)
-- OD-28 measured profile at `3414ba6`: **0.623 ms/frame** average over 120 presentation frames with the authoritative simulation tick included, and **0 B GC.Alloc** across 60 steady-state presentation frames and 60 replication loopback ticks — far below the 8.0 ms EditMode guard and the 16.67 ms 60 FPS ceiling
-- Фазы 1.0–2.8 заморожены как сертифицированный бейзлайн (`a37f53d`, Grand Audit APPROVED: ZERO DEFECTS)
-- Фазы 3.1–3.7 сертифицированы независимым adversarial-аудитом ([APPROVED: ZERO DEFECTS]) — **Phase 3 [100% COMPLETED]**
-- next: Phase 4 Multiplayer Gameplay Integration (joins the Phase 2 network foundation to the accepted Phase 3 RTS gameplay)
+- **1162/1162 EditMode passed (100%)**, 0 failed, 0 skipped (gate: `Artifacts/TestResults/sprint25-editmode-final.xml`, 2026-10-20)
+- **16/16 PlayMode passed (100%)**, 0 failed, 0 skipped (gate: `Artifacts/TestResults/sprint25-playmode-final.xml`, 2026-10-20)
+- **1178 автоматизированных тестов суммарно** (0 compiler warnings, 0 compiler errors на commit `4cb8ffa`)
+- last committed milestone: `4cb8ffa` (Phase 2.0 remediation sprint 2.5 — exclusive session-socket binding and cross-session reconnect hijack guard; N-01 / D-10 / A-01 eradicated)
+- Grand Re-Audit Phase 2.0: 🏆 **`[APPROVED: ZERO DEFECTS]`** — единогласная сертификация 3 независимых аудиторов (Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash; отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`)
+- Phase 3 (3.1–3.7) сертифицирована независимым adversarial-аудитом **[APPROVED: ZERO DEFECTS]** (отчёты: `3414ba6`, `cb01ea2`) — **Phase 3 [100% COMPLETED]**
+- OD-28 measured profile на 400 юнитах: **0.623 ms/frame** average over 120 presentation frames with the authoritative simulation tick included, and **0 B GC.Alloc** across 60 steady-state presentation frames and 60 replication loopback ticks — far below the 8.0 ms EditMode guard and the 16.67 ms 60 FPS ceiling
+- next: **Phase 4: Multiplayer Gameplay Integration** (joins the certified Phase 2 network foundation to the accepted Phase 3 RTS gameplay)
 
 ## Связанные документы
 
@@ -128,3 +128,5 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 - [Project Status](PROJECT_STATUS.md)
 - [Decisions](DECISIONS.md)
 - [Phase 02](Phases/Phase_02_Multiplayer.md)
+- [Phase 03](Phases/Phase_03_RTS_Core.md)
+- [Phase 04](Phases/Phase_04_Multiplayer_Integration.md)

@@ -430,6 +430,56 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - Создание клиентского справочника `UnitCatalog` (статы, меши, радиусы, MaxHealth по `UnitKind`).
 - **Реализовано:** commit `be03002` (protocol v2, 40-байтовый `DeltaAddRecord`, паритет `KeyframeSliceCodec` v2 и FNV-1a `StateChecksum`, O(1) Zero-GC `UnitCatalog`), сертифицировано аудитом — **[APPROVE: ZERO DEFECTS]**; P3 F-1 (`targetDelta > long.MaxValue - id` в `DeltaSnapshotWireCodec.ReadUpdates`) и P3 F-2 (валидация `IsResolved` / `DisplayName != null` в конструкторе `UnitCatalog`) закрыты в `27a10f6`. В Phase 3.7 (`3414ba6`) `UnitCatalog` обслуживает 400 юнитов всех трёх архетипов (Scout, Tank, BaseStructure) в `UnitViewBinder` и HUD; покрыто `TacticalVerticalSliceBenchmarkTests` (`Initialize_FourHundredUnits_RepresentsAllThreeCatalogArchetypes`).
 
+## ADR-013: Phase 2.0 Hardening, Transport-Session Exclusivity & Concurrency Integrity
+*Status:* ACCEPTED (Consensus: Tri-Auditor Board — Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash; commit `4cb8ffa`, **[APPROVED: ZERO DEFECTS]**)  
+*Date:* 2026-10-20  
+*Target:* Unity 6000.6.2f1 / Core / Server.Transport / LiteNetLib 1.3.5  
+
+### Context & Problem Statement
+В ходе независимого аудита стека Phase 2.0 (комит `e6d91ea`) тремя моделями была обнаружена критическая уязвимость переподключения N-01 / D-10 / A-01: при обработке `ReconnectRequest` на уже привязанном сокете сервер `ServerTransportHost` выполнял повторный rebind без проверки соответствия сокета и сессии. Это позволяло злоумышленнику или сбойному клиенту переписать `_tokenByConnection` для чужой сессии, оставив прежнюю сессию осиротевшей («зомби»), раздувая `BoundCount` и приводя к перманентному отказу в обслуживании (`ServerFull`). Кроме того, `TickDriver` имел race-condition при захвате шага тика, а фрагментные карты `LiteNetLibCarrier` и `OwnDatagramCarrier` были уязвимы к DoS по числу групп.
+
+### Owner Decisions (OD-30 — OD-34):
+
+#### [OD-30] Session-Aware Reconnect Guard
+- В `ServerTransportHost.HandleReconnectRequest` перед созданием хэндла и выполнением rebind внедрён гейт:
+  ```csharp
+  if (_binder.TryGetByConnection(transportEvent.ConnectionId, out var bound) &&
+      bound.Session != request.SessionId)
+  {
+      // ReconnectResponse(ReconnectResult.Denied)
+      return;
+  }
+  ```
+- Гейт строго **session-aware**: запросы с того же сокета для *той же* сессии разрешены (что необходимо для легитимного переприсоединения при direct `NotifyConnectionLost`), а запросы для *другой* сессии немедленно отклоняются без аллокаций памяти (`ReconnectResult.Denied`).
+
+#### [OD-31] Exclusive Socket-Session Binding
+- В `TransportSessionBinder.Bind` введено инвариантное взаимно-однозначное соответствие (1:1) между сокетом и сессией:
+  ```csharp
+  if (_tokenByConnection.ContainsKey(connectionId) || _tokenBySession.ContainsKey(session))
+      throw new InvalidOperationException("Exclusive binding violated");
+  ```
+- Метод защищён исчерпывающей валидацией на вызывающих путях (`ServerTransportHost.cs:434` на connect, `:333-356` на reconnect).
+
+#### [OD-32] Release Token Identity Protection
+- В `TransportSessionBinder.Release` снятие привязки сокета к токену разрешено только в случае совпадения токенов:
+  ```csharp
+  if (_tokenByConnection.TryGetValue(conn, out var mappedToken) && mappedToken == token)
+      _tokenByConnection.Remove(conn);
+  ```
+- Это исключает возможность ситуации, когда де-ассоциация осиротевшей или замещённой сессии сбрасывала бы активную привязку сокета новой сессии.
+
+#### [OD-33] Thread-Safe Tick Step Capture
+- В `TickDriver` захват шага симуляции `baseTick = _tick - (ulong)scheduled` перенесён строго под критическую секцию `_gate`, а свойство `Tick => _tick` защищено локом, устраняя race condition между потоком планировщика и хост-тиком.
+
+#### [OD-34] Bounded Fragment Reassembly Maps
+- В `LiteNetLibCarrier` (`SeqByMessageId`) и `OwnDatagramCarrier` (`SnapshotSeqByMessageId`) введен жесткий лимит активных групп фрагментов: `MaxFragmentGroups = 4` с вытеснением старейших групп по номеру последовательности (oldest-by-sequence eviction), полностью устраняя вектор DoS-атаки через неполные фрагменты.
+
+### Verification & Certification
+- Все решения проверены исполняемыми bite-тестами (сравнение с уязвимым кодом, 19 failures на revert против 0 на исправленном коде).
+- Бейзлайн вырос до **1162 EditMode** + **16 PlayMode** = **1178 тестов passed (100% green)**.
+- Сертификат: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`.
+- Результат: **[APPROVED: ZERO DEFECTS]**. Фундамент Phase 1.0–2.8 и Phase 3.0 полностью заморожен и готов к Phase 4.
+
 ## Open Decision Queue
 
 - Replay-формат и desync diagnostics.

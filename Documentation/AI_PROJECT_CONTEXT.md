@@ -500,46 +500,33 @@ Useful historical checkpoints:
 313e9ef  Phase 2.2
 ea0435d  Phase 2.3
 73d1276  Phase 2.4
-296664c  runtime regression fix
-dadc593  Phase 2.5 transport
+a37f53d  Grand Audit Phase 1.0–2.8 certification [APPROVED: ZERO DEFECTS]
+3414ba6  Phase 3.7 Tactical Vertical Slice & 400-unit benchmark [APPROVED: ZERO DEFECTS]
+349a074  Phase 1.0 Hardening Sprint 5.1
+5c94e07  Phase 2.0 Hardening Sprint 2.1
+ceae9a8  Phase 2.0 Hardening Sprint 2.2
+750218c  Phase 2.0 Hardening Sprint 2.3
+e6d91ea  Phase 2.0 Hardening Sprint 2.4
+4cb8ffa  Phase 2.0 Hardening Sprint 2.5 (Grand Re-Audit certified [APPROVED: ZERO DEFECTS], 1162 EditMode + 16 PlayMode green)
 ```
 
 These hashes are historical evidence available to the handoff. The coordinator must still run Git commands to determine the actual HEAD and working-tree state before acting.
 
 ---
 
-## 14. Known Existing Handoff Document
+## 14. Current Phase Status & Baseline
 
-`AI_HANDOFF.md` already exists in the project/document history.
-
-Its purpose is to provide a concise operational snapshot and it explicitly states that Git and code are the factual source of truth.
-
-However, the existing handoff material predates the current Phase 2.5/2.6 state and should not be used as the sole description of current work.
-
-The coordinator must reconcile it with the actual repository and update/supplement the relevant documentation rather than blindly following stale next-task instructions.
+- **Phase 1 (Simulation Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (hardening sprints 1.1–1.5.1)
+- **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (steps 2.1–2.8, hardening 2.1–2.5, certified at `4cb8ffa` by 3 independent auditors)
+- **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (steps 3.1–3.7, 400-unit slice, OD-28 benchmark)
+- **Current Baseline:** 1162 EditMode + 16 PlayMode = 1178 automated tests (100% green, 0 compiler warnings, 0 compiler errors)
+- **Next Phase:** Phase 4 (Multiplayer Gameplay Integration)
 
 ---
 
 ## 15. Immediate Coordinator Action
 
-The incoming coordinator's first action is **not implementation**.
-
-It must produce a Coordinator State Report containing:
-
-```text
-1. actual HEAD commit
-2. active branch
-3. git status / uncommitted changes
-4. current documentation state
-5. completed phases verified from Git
-6. current Phase 2.6 state
-7. existing ADR status
-8. documentation/repository mismatches
-9. open Owner Decisions
-10. blocking findings
-11. exact next R&D task
-```
-
-After that report, the coordinator should prepare the next Phase 2.6 R&D Revision 3 task for the implementation/research agent.
-
-**No Phase 2.6 production implementation should start until the coordinator confirms that the required R&D gate and independent review have passed.**
+Phases 1, 2, and 3 are 100% complete and certified. The incoming coordinator's immediate action is to initialize and coordinate **Phase 4: Multiplayer Gameplay Integration**:
+1. Verify working tree and baseline against commit `4cb8ffa` (1162 EditMode, 16 PlayMode).
+2. Prepare Phase 4 R&D and integration plan (connecting Phase 2 network transport and snapshot replication to Phase 3 400-unit presentation stack).
+3. Ensure strict enforcement of Proof-of-Defect, zero-trust review gates, and Zero-GC contracts.

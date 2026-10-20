@@ -1,6 +1,6 @@
 # GlobalFront Master Game Plan
 
-> Статус: утверждён владельцем • Product 1.0 scope и Phase Plan • 2026-08-15
+> Статус: утверждён владельцем • Product 1.0 scope и Phase Plan • 2026-08-15 (актуализирован 2026-10-20)
 
 ## Vision
 
@@ -37,9 +37,9 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 | Phase | Название | Статус |
 |---:|---|---|
 | 0 | Product Definition | scope утверждён на master-plan уровне; подробности GDD имеют TBD |
-| 1 | Simulation Foundation | **COMPLETE** |
-| 2 | Multiplayer Foundation | **COMPLETE**; 2.1–2.8 complete, Grand Audit [APPROVED: ZERO DEFECTS] |
-| 3 | RTS Core + Vertical Slice | **COMPLETE**; 3.1–3.7 all complete and [APPROVED: ZERO DEFECTS]; baseline 1086/1086 EditMode + 13/13 PlayMode |
+| 1 | Simulation Foundation | **COMPLETE [APPROVED: ZERO DEFECTS]** (Core, hardening 1.1–1.5.1) |
+| 2 | Multiplayer Foundation | **COMPLETE [APPROVED: ZERO DEFECTS]** (2.1–2.8 + hardening 2.1–2.5, Grand Re-Audit certified на `4cb8ffa`) |
+| 3 | RTS Core + Vertical Slice | **COMPLETE [APPROVED: ZERO DEFECTS]** (3.1–3.7; OD-28 400-unit benchmark; baseline 1162 EditMode + 16 PlayMode) |
 | 4 | Multiplayer Gameplay Integration | **NEXT** |
 | 5 | Full Five Factions | planned |
 | 6 | AI | planned |
@@ -57,7 +57,7 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 | ID | Milestone | Условие |
 |---|---|---|
 | M0 | Technical Foundation | **COMPLETE**, Phase 1 |
-| M1 | Multiplayer Prototype | после Phase 4 |
+| M1 | Multiplayer Prototype | после Phase 4 (**NEXT**) |
 | M2 | Playable RTS Core | **COMPLETE**, Phase 3 |
 | M3 | Five Factions | Phase 5 |
 | M4 | RTS AI | Phase 6 |
