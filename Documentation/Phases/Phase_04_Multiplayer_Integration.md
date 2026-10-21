@@ -9,8 +9,8 @@
 ## Dependencies
 
 - Phase 01 complete (детерминированная авторитетная симуляция);
-- Phase 02 complete и сертифицирована `[APPROVED: ZERO DEFECTS]` на `4cb8ffa` (`INetworkCarrier`, delta snapshots, session attribution, reconnect/resync);
-- Phase 03 complete и сертифицирована `[APPROVED: ZERO DEFECTS]` (RTS controls, camera, SoA tick buffer, instanced overlays, minimap, tactical HUD, 400-unit slice, M2 achieved);
+- Phase 02 complete (P0/P1 = 0 сертифицирован на `4cb8ffa`, все открытые замечания закрыты в Hardening 3.7.1: `INetworkCarrier`, delta snapshots, session attribution, reconnect/resync);
+- Phase 03 complete и сертифицирована `[APPROVED: ZERO DEFECTS]` (RTS controls, camera, SoA tick buffer, instanced overlays, minimap, tactical HUD, 400-unit slice, M2 achieved; Hardening 3.7.1 подготовил seam-инъекцию F-11 и URP handoff F-7);
 - утверждённые authoritative validation rules.
 
 ## Scope

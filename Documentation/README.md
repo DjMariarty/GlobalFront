@@ -17,9 +17,9 @@
 |---|---|---|---|
 | [MASTER_GAME_PLAN.md](MASTER_GAME_PLAN.md) | Product Scope, roadmap и milestones | живой, нормативный | готов на уровне утверждённого плана |
 | [GDD.md](GDD.md) | gameplay intent и продуктовые границы | живой, нормативный | утверждённый scope; детали roster/balance остаются TBD |
-| [CURRENT_STATE.md](CURRENT_STATE.md) | быстрый handoff состояния | живой, оперативный | актуален для закрытых Phase 1, Phase 2 (Grand Re-Audit certified `[APPROVED: ZERO DEFECTS]` на `4cb8ffa`) и Phase 3 (Шаги 3.1–3.7); 1162/1162 EditMode, 16/16 PlayMode; Phase 4 — [NEXT] |
-| [ROADMAP.md](ROADMAP.md) | Phase 0–12 и порядок поставки | живой, нормативный | готов; Phase 1, 2, 3 certified, Phase 4 next |
-| [PROJECT_STATUS.md](PROJECT_STATUS.md) | реализовано, не реализовано, риски | живой, фактический | готов для текущего baseline (1162/1162 EditMode, 16/16 PlayMode на `4cb8ffa`) |
+| [CURRENT_STATE.md](CURRENT_STATE.md) | быстрый handoff состояния | живой, оперативный | актуален для закрытых Phase 1, Phase 2 (P0/P1 = 0 certified на `4cb8ffa`, все P2/P3 закрыты) и Phase 3 (Шаги 3.1–3.7 + Hardening Phase 3.7.1); 1179/1179 EditMode, 16/16 PlayMode (1195 тестов 100% green); Phase 4 — [NEXT] |
+| [ROADMAP.md](ROADMAP.md) | Phase 0–12 и порядок поставки | живой, нормативный | готов; Phase 1, 2, 3 certified, Hardening 3.7.1 complete, Phase 4 next |
+| [PROJECT_STATUS.md](PROJECT_STATUS.md) | реализовано, не реализовано, риски | живой, фактический | готов для текущего baseline (1179/1179 EditMode, 16/16 PlayMode на `80226f5`) |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | текущие и целевые технические границы | живой, нормативный | готов; будущие детали через ADR |
 | [DECISIONS.md](DECISIONS.md) | решения владельца и ADR | живой, нормативный/исторический | готов; пополняется |
 | [CHANGELOG.md](CHANGELOG.md) | подтверждённые изменения и вехи | живой, исторический | готов; пополняется |

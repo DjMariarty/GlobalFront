@@ -6,8 +6,8 @@
 |---:|---|---|---|
 | 0 | [Product Definition](Phase_00_Product_Definition.md) | master scope approved; detailed TBD | — |
 | 1 | [Simulation Foundation](Phase_01_Foundation.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** | M0 |
-| 2 | [Multiplayer Foundation](Phase_02_Multiplayer.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** (`4cb8ffa`) | prerequisite M1 |
-| 3 | [RTS Core + Vertical Slice](Phase_03_RTS_Core.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** (3.1–3.7) | M2 |
+| 2 | [Multiplayer Foundation](Phase_02_Multiplayer.md) | **COMPLETE [P0/P1 = 0 CERTIFIED; все P2/P3 закрыты]** (`4cb8ffa` + Hardening 3.7.1) | prerequisite M1 |
+| 3 | [RTS Core + Vertical Slice](Phase_03_RTS_Core.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** (3.1–3.7 + Hardening 3.7.1) | M2 |
 | 4 | [Multiplayer Gameplay Integration](Phase_04_Multiplayer_Integration.md) | **CURRENT / NEXT** | M1 |
 | 5 | [Full Five Factions](Phase_05_Five_Factions.md) | planned | M3 |
 | 6 | [AI](Phase_06_AI.md) | planned | M4 |

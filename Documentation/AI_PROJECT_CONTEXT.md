@@ -507,7 +507,12 @@ a37f53d  Grand Audit Phase 1.0–2.8 certification [APPROVED: ZERO DEFECTS]
 ceae9a8  Phase 2.0 Hardening Sprint 2.2
 750218c  Phase 2.0 Hardening Sprint 2.3
 e6d91ea  Phase 2.0 Hardening Sprint 2.4
-4cb8ffa  Phase 2.0 Hardening Sprint 2.5 (Grand Re-Audit certified [APPROVED: ZERO DEFECTS], 1162 EditMode + 16 PlayMode green)
+4cb8ffa  Phase 2.0 Hardening Sprint 2.5 (Grand Re-Audit certified P0/P1 = 0, 1162 EditMode + 16 PlayMode green)
+934840d  Hardening 3.7.1 Block 1 (F-2/N-04, F-4, F-5, F-13)
+a08beaf  Hardening 3.7.1 Block 2 (F-3/N-03, F-14, F-15, F-9)
+a944623  Hardening 3.7.1 Block 3 (F-1, N-02)
+3a112ad  Hardening 3.7.1 Block 4 (F-11, F-7, F-8)
+80226f5  Hardening 3.7.1 Block 5 (F-6, F-10)
 ```
 
 These hashes are historical evidence available to the handoff. The coordinator must still run Git commands to determine the actual HEAD and working-tree state before acting.
@@ -517,9 +522,9 @@ These hashes are historical evidence available to the handoff. The coordinator m
 ## 14. Current Phase Status & Baseline
 
 - **Phase 1 (Simulation Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (hardening sprints 1.1–1.5.1)
-- **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (steps 2.1–2.8, hardening 2.1–2.5, certified at `4cb8ffa` by 3 independent auditors)
-- **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (steps 3.1–3.7, 400-unit slice, OD-28 benchmark)
-- **Current Baseline:** 1162 EditMode + 16 PlayMode = 1178 automated tests (100% green, 0 compiler warnings, 0 compiler errors)
+- **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / P0/P1 = 0 CERTIFIED; все P2/P3 закрыты] (steps 2.1–2.8, hardening 2.1–2.5, certified at `4cb8ffa`, все 15 замечаний Grand Audit закрыты в Hardening 3.7.1)
+- **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (steps 3.1–3.7, 400-unit slice, OD-28 benchmark + Hardening Phase 3.7.1)
+- **Current Baseline:** 1179 EditMode + 16 PlayMode = 1195 automated tests (100% green, 0 compiler warnings, 0 compiler errors на HEAD `80226f5`)
 - **Next Phase:** Phase 4 (Multiplayer Gameplay Integration)
 
 ---
@@ -527,6 +532,6 @@ These hashes are historical evidence available to the handoff. The coordinator m
 ## 15. Immediate Coordinator Action
 
 Phases 1, 2, and 3 are 100% complete and certified. The incoming coordinator's immediate action is to initialize and coordinate **Phase 4: Multiplayer Gameplay Integration**:
-1. Verify working tree and baseline against commit `4cb8ffa` (1162 EditMode, 16 PlayMode).
+1. Verify working tree and baseline against commit `80226f5` (1179 EditMode, 16 PlayMode).
 2. Prepare Phase 4 R&D and integration plan (connecting Phase 2 network transport and snapshot replication to Phase 3 400-unit presentation stack).
 3. Ensure strict enforcement of Proof-of-Defect, zero-trust review gates, and Zero-GC contracts.

@@ -28,7 +28,13 @@
    - Сквозная обвязка 400 юнитов всех трёх архетипов;
    - Протокольные фиксы маскирования `MoveTarget` в `ComputeStateChecksum` и `ComputeDirtyMask`;
    - 30 кейсов бенчмарка `TacticalVerticalSliceBenchmarkTests`, 7 мультикадровых `[UnityTest]`, 12 гейтов `ArchitectureInvariantsTests`;
-   - **Профильный замер OD-28:** **0.623 ms/frame** среднее за 120 презентационных кадров (далеко ниже 8.0 ms гарда и 16.67 ms потолка 60 FPS) и **0 B GC.Alloc** за 60 steady-state кадров.
+   - **Профильный замер OD-28:** **0.623 ms/frame** среднее CPU-время симуляции и презентационного кадра за 120 кадров в headless EditMode (гард 8.0 ms, потолок 60 FPS 16.67 ms; не включает GPU draw-call, F-8) и **0 B GC.Alloc** за 60 steady-state кадров.
+9. **Hardening Phase 3.7.1 — COMPLETE** (`934840d`..`80226f5`): закрыты замечания аудита F-1..F-15 и N-02..N-04:
+   - инъекция transport/uplink швов в `TacticalVerticalSliceRunner` (F-11);
+   - регистрация `UnitOverlayRendererFeature` в URP ассетах и передача отрисовки RenderGraph с защитой от double-draw (F-7);
+   - паритет `StateChecksum` (F-14) и порядка сущностей (F-15);
+   - Zero-GC пулинг в `FragmentAssembler` (N-02);
+   - бейзлайн увеличен до **1179 EditMode + 16 PlayMode тестов** (100% green).
 
 ## Milestones
 
