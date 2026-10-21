@@ -5,9 +5,9 @@
 ## Current Position
 
 - Phase 1 — **[DONE/PASSED: ZERO DEFECTS]** (hardening-спринты 1.1–1.5.1 закрыли concurrency, reentrancy, friendly fire и snapshot allocs)
-- Phase 2 (2.1–2.8 + Hardening 2.1–2.5) — **[DONE/PASSED: ZERO DEFECTS]** (Grand Re-Audit [APPROVED: ZERO DEFECTS] единогласно сертифицирован 3 независимыми аудиторами: Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash на commit `4cb8ffa`, отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`)
-- Phase 3 (3.1–3.7) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (RTS Camera, Controls, Visuals, 400-Unit Vertical Slice, OD-28 benchmark: 0.623 ms/frame, 0 B GC.Alloc)
-- **Текущий бейзлайн:** **1162/1162 EditMode** + **16/16 PlayMode** = **1178 тестов** (100% green, 0 compiler warnings, 0 compiler errors на `4cb8ffa`)
+- Phase 2 (2.1–2.8 + Hardening 2.1–2.5) — **[DONE/PASSED: P0/P1 = 0 CERTIFIED; все P2/P3 закрыты]** (Grand Re-Audit на `4cb8ffa`: строгий состязательный ре-аудит Claude, сертифицирован **P0/P1 = 0**, отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`; оставшиеся P2/P3 закрыты в Hardening Phase 3.7.1)
+- Phase 3 (3.1–3.7) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (RTS Camera, Controls, Visuals, 400-Unit Vertical Slice, OD-28 benchmark: 0.623 ms/frame — CPU-пайплайн симуляции и презентации, headless, 0 B GC.Alloc)
+- **Текущий бейзлайн:** **1179/1179 EditMode** + **16/16 PlayMode** = **1195 тестов** (100% green, 0 compiler warnings, 0 compiler errors на `3a112ad`)
 - **Следующая фаза:** **Phase 4: Multiplayer Gameplay Integration** `[READY / NEXT]`
 
 ## Phase Roadmap
@@ -16,7 +16,7 @@
 |---:|---|---|---|
 | 0 | Product Definition: vision, GDD, 1.0 scope и границы post-1.0 | — | master scope approved; detailed TBD remain |
 | 1 | Simulation Foundation (Core, deterministic simulation, hardening 1.1–1.5.1) | M0 Technical Foundation | **[DONE/PASSED: ZERO DEFECTS]** |
-| 2 | Multiplayer Foundation (2.1–2.8, transport, replication, reconnect, hardening 2.1–2.5) | prerequisite для M1 | **[DONE/PASSED: ZERO DEFECTS]** (`4cb8ffa`) |
+| 2 | Multiplayer Foundation (2.1–2.8, transport, replication, reconnect, hardening 2.1–2.5 + 3.7.1) | prerequisite для M1 | **[DONE/PASSED: P0/P1 = 0; P2/P3 закрыты]** (`4cb8ffa`..`3a112ad`) |
 | 3 | RTS Core + Vertical Slice пяти фракций (RTS Camera, Controls, Visuals, 400-unit slice) | M2 Playable RTS Core | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** |
 | 4 | Multiplayer Gameplay Integration | M1 Multiplayer Prototype | **[NEXT]** |
 | 5 | Full Five Factions | M3 Five Factions | planned |
@@ -40,7 +40,7 @@
 | 2.6 | Snapshot Networking | **[DONE/PASSED]** — ADR-010 (дельта-сжатие, history ring, keyframe slicing) |
 | 2.7 | Reconnect / Resync | **[DONE/PASSED]** — ADR-011 (OD-18..OD-22, тактическая пауза, resync) |
 | 2.8 | Network Prototype Playtest (2v2) | **[DONE/PASSED]** — 2v2 topology, abandonment unpause, HUD overlay |
-| — | Hardening Sprints 2.1–2.5 | **[DONE/PASSED: ZERO DEFECTS]** — `4cb8ffa`: socket hijack guard, Zero-GC send scratch, canonical PartIndex, thread-safe tick driver, bounded fragment maps, exclusive session-socket binding (N-01 eradicated). Сертификация 3/3 независимых аудиторов. |
+| — | Hardening Sprints 2.1–2.5 | **[DONE/PASSED: P0/P1 = 0]** — `4cb8ffa`: socket hijack guard, Zero-GC send scratch, canonical PartIndex, thread-safe tick driver, bounded fragment maps, exclusive session-socket binding (N-01 eradicated). Сертификация ограничена P0/P1 = 0; P2/P3 закрыты в Hardening Phase 3.7.1. |
 
 ## Phase 3 Sequence
 
@@ -54,8 +54,9 @@
 | 3.5 | Selection, Screen-Space Drag-Box & Command Issuing (OD-24) | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `cfa24c2` |
 | 3.6 | Minimap & Tactical HUD (OD-24, OD-27, OD-28) | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `2a754db` (1043/1043 EditMode, 6/6 PlayMode) |
 | 3.7 | Vertical Slice Integration & 400-Unit Benchmark (OD-23..OD-29) | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `3414ba6`, `cb01ea2` (1086/1086 EditMode, 13/13 PlayMode; OD-28: 0.623 ms/frame avg over 120 frames, 0 B GC) |
+| — | Hardening Phase 3.7.1 (Grand Audit: F-1..F-11, F-13..F-15, N-02..N-04; ID F-12 отсутствует) | **[DONE/PASSED]** — blocks 1–4 `934840d`..`3a112ad` + Block 5 docs; **1179/1179 EditMode + 16/16 PlayMode** |
 
-Phase 3 закрывает M2 Playable RTS Core и **завершена полностью**: 3.1–3.6 — презентационный стек целиком, 3.7 — его интеграция и профильный замер OD-28 (**400 активных юнитов: 0.623 ms/frame среднее за 120 презентационных кадров с включённым авторитетным тиком симуляции, 0 B GC.Alloc** — далеко ниже 8.0 ms EditMode-гарда и потолка 16.67 ms для 60 FPS), плюс 12 инвариантов архитектуры в `ArchitectureInvariantsTests`. Следующая фаза — **Phase 4 (Multiplayer Gameplay Integration)**, которая соединяет сетевой фундамент Phase 2 с принятым RTS-геймплеем Phase 3.
+Hardening Phase 3.7.1 закрывает все замечания Grand Audit (`Artifacts/GrandAudit-Phase3-efbf547-CLAUDE.md`) и сертифицирует Phase 2 + Phase 3 к переходу в Phase 4. Phase 3 закрывает M2 Playable RTS Core и **завершена полностью**: 3.1–3.6 — презентационный стек целиком, 3.7 — его интеграция и профильный замер OD-28 (**400 активных юнитов: 0.623 ms/frame среднее за 120 презентационных кадров с включённым авторитетным тиком симуляции, 0 B GC.Alloc** — далеко ниже 8.0 ms EditMode-гарда и потолка 16.67 ms для 60 FPS), плюс 12 инвариантов архитектуры в `ArchitectureInvariantsTests`. Следующая фаза — **Phase 4 (Multiplayer Gameplay Integration)**, которая соединяет сетевой фундамент Phase 2 с принятым RTS-геймплеем Phase 3.
 
 ## Cross-Phase Rules
 

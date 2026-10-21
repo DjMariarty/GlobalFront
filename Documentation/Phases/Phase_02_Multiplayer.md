@@ -1,6 +1,6 @@
 # Phase 02 — Multiplayer Foundation
 
-> Status: **COMPLETE [APPROVED: ZERO DEFECTS]** • сертифицировано единогласно 3 независимыми аудиторами (Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash) на commit `4cb8ffa` • отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`
+> Status: **COMPLETE [P0/P1 = 0 CERTIFIED; все P2/P3 закрыты]** • сертификация на commit `4cb8ffa`: строгий состязательный ре-аудит Claude, область сертификации ограничена **P0/P1 = 0** (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); открытые на тот момент P2/P3 закрыты в Hardening Phase 3.7.1 (блоки 1–5)
 
 ## Goal
 
@@ -28,7 +28,7 @@
    - Sprint 2.3 (`750218c`): canonical PartIndex keyframe assembly и slice timeout aging.
    - Sprint 2.4 (`e6d91ea`): thread-safe tick driver step capture (`baseTick = _tick - (ulong)scheduled` под `_gate`, лок на `Tick => _tick`) и bounded fragment reassembly maps (`MaxFragmentGroups = 4`).
    - Sprint 2.5 (`4cb8ffa`): exclusive session-socket binding и cross-session reconnect hijack guard (N-01 / D-10 / A-01). Session-aware guard в `ServerTransportHost.cs:333-356` (`bound.Session != request.SessionId -> Denied`), эксклюзивность в `TransportSessionBinder.Bind`, токен-идентичность в `TransportSessionBinder.Release`.
-   - **Grand Re-Audit Certification:** 🏆 **`[APPROVED: ZERO DEFECTS]`** — единогласная сертификация 3 независимых аудиторов (Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash).
+   - **Grand Re-Audit Certification (`4cb8ffa`):** сертификация подтвердила **P0/P1 = 0**. Строгий состязательный ре-аудит выполнен Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели участвовали только в промежуточных этапах ревью.
 
 ## Key Systems
 
@@ -50,7 +50,8 @@
 - 2.6 — complete (ADR-010);
 - 2.7 — complete (ADR-011);
 - 2.8 — complete;
-- Hardening Sprints 2.1–2.5 & Grand Re-Audit Certification — complete (`4cb8ffa`, [APPROVED: ZERO DEFECTS]).
+- Hardening Sprints 2.1–2.5 & Grand Re-Audit Certification — complete (`4cb8ffa`, P0/P1 = 0).
+- Hardening Phase 3.7.1 remediation (F-1..F-11, F-13..F-15, N-02..N-04) — complete (`934840d`..`3a112ad` + Block 5 docs).
 
 ## Acceptance Criteria
 
@@ -68,13 +69,20 @@
 - deterministic regression and compatibility tests (выполнено);
 - real-UDP loopback stress/loss tests (выполнено);
 - bite-тесты всех ремедиаций (выполнено);
-- 1162 EditMode + 16 PlayMode тестов — 100% green.
+- **1179 EditMode + 16 PlayMode тестов — 100% green** (2026-10-21; gates: `Artifacts/TestResults/block5-editmode-final.xml`, `block5-playmode-final.xml`).
+
+## Transport Runtime Status — F-10
+
+- `ServerTransportHost.Pump(long nowMs)` / `Pump(long nowMs, ulong drainTick)` — цикл откачки пакетов выделенного headless-сервера (`ServerTransportHost.cs:100`, `:106`): таймеры носителя, дренаж receive-событий с явным drain-tick, pending acknowledgements.
+- В Phase 2 верифицирован интеграционными тестами `LiteNetLibCarrierIntegrationTests` на реальных сокетах LiteNetLib (`transportHost.Pump(clock.NowMs)` на каждом шаге).
+- В Phase 3 вертикальный срез изолировал презентацию от сети через `LocalReplicationLoopback`; продакшн call-site `ServerTransportHost.Pump` в рантайме Phase 3 отсутствует. «Phase 2 COMPLETE» означает «реализовано и протестировано», а не «подключено к билду».
+- В Phase 4 (Шаг 4.1 Dedicated Server Loop) `ServerTransportHost.Pump` будет напрямую подключён к независимому серверному тикеру реального времени.
 
 ## Risks & Residual Backlog
 
-- **[P2 Informational] (N-02)**: `LiteNetLibCarrier` C2 reassembly аллоцирует `2+N` объектов на фрагментированный снапшот при сборке (пулинг для Phase 8 / scale).
-- **[P2 Informational] (N-03)**: `DefaultRemoveSink = 256` < `DefaultRemoveCapacity = 512` (синхронизация вместимости буферов).
-- **[P2 Informational] (N-04)**: При отбрасывании события `Disconnected` в `LiteNetLibCarrier` rate limiter и binding могут утекать до перезапуска сессии.
+- **[CLOSED] (N-02)**: `LiteNetLibCarrier` C2 reassembly аллоцировал `3+N` объектов на фрагментированный снапшот; закрыто в Block 3 (`a944623`) через `ArrayPool` и group stack pool в `FragmentAssembler`.
+- **[CLOSED] (N-03)**: рассогласование `DefaultRemoveSink`/`DefaultAddSink` с серверными ёмкостями; закрыто в Block 2 (`a08beaf`) — sink parity 512 для add и remove.
+- **[CLOSED] (N-04)**: утечка rate limiter и binding при отброшенном событии `Disconnected`; закрыто в Block 1 (`934840d`) — control-события `Connected`/`Disconnected` не отбрасываются при переполнении очереди, а `Shutdown` очищает rate limiters и pending acks.
 - **[P2 Informational] (OD-16)**: Fog of War `StateChecksum` per-client — для реализации в Phase 4.
 
 ## Out of Scope
@@ -86,4 +94,4 @@
 
 ## Definition of Done
 
-**ВЫПОЛНЕН ПОЛНОСТЬЮ.** Шаги 2.1–2.8 и спринты hardening 2.1–2.5 реализованы, протестированы и сертифицированы независимым аудитом с вердиктом **`[APPROVED: ZERO DEFECTS]`** (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`). Authoritative dedicated-server foundation поддерживает sessions, command/snapshot networking, reconnect/resync и tactical pause.
+**ВЫПОЛНЕН ПОЛНОСТЬЮ.** Шаги 2.1–2.8 и спринты hardening 2.1–2.5 реализованы, протестированы и сертифицированы строгим состязательным ре-аудитом с вердиктом **P0/P1 = 0** (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`). Оставшиеся на момент `4cb8ffa` замечания P2/P3 (N-02, N-03, N-04, F-1..F-11, F-13..F-15) закрыты в Hardening Phase 3.7.1 (блоки 1–5); финальный baseline — **1179 EditMode + 16 PlayMode**, 100% green. Authoritative dedicated-server foundation поддерживает sessions, command/snapshot networking, reconnect/resync и tactical pause; подключение `ServerTransportHost.Pump` к реальному серверному тикеру — Phase 4, Шаг 4.1 (F-10).

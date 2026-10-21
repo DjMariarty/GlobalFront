@@ -1,6 +1,6 @@
 # Архитектура GlobalFront
 
-> Живой нормативный документ • current baseline + approved target • обновлено 2026-10-20
+> Живой нормативный документ • current baseline + approved target • обновлено 2026-10-21
 
 ## Architectural Principle
 
@@ -60,6 +60,8 @@ Server-authoritative identity layer (ADR-008): opaque `SessionId`/`MatchId` в C
 
 Транспортный слой по ADR-009 (OD-1 = LiteNetLib 1.3.5): контракт `INetworkCarrier` с двумя носителями — детерминированный `OwnDatagramCarrier` поверх `VirtualNetworkPipe` и `LiteNetLibCarrier` (real UDP). C0 Control и C1 Command — reliable ordered (единое seq-пространство на направление), C2 Snapshot — unreliable sequenced latest-wins по `SnapshotTick`. Атрибуция: токен → `ConnectionHandle` → `SessionId` → session gate ADR-008; `NetworkCommandChannel` реализует `ICommandChannel` (local pre-flight отдельно от асинхронного авторитетного `CommandAckPayload`). Bounded reassembly maps (`MaxFragmentGroups = 4`), Zero-GC send scratch буфер и receive pooling в `LiteNetLibCarrier`. Session-aware reconnect guard (`ServerTransportHost.cs:333-356`) защищает от подмены сессий.
 
+**Статус `ServerTransportHost.Pump` (F-10).** `ServerTransportHost.Pump(long nowMs)` и `Pump(long nowMs, ulong drainTick)` (`ServerTransportHost.cs:100`, `:106`) — это цикл откачки пакетов выделенного headless-сервера: он двигает таймеры носителя, дренирует очередь receive-событий с явным drain-tick и выполняет pending acknowledgements. В Phase 2 метод верифицирован интеграционными тестами `LiteNetLibCarrierIntegrationTests`, которые на каждом шаге вызывают `transportHost.Pump(clock.NowMs)` на реальных сокетах LiteNetLib. В Phase 3 вертикальный срез изолировал презентацию от сети через `LocalReplicationLoopback` и `ServerTransportHost.Pump` не вызывал, поэтому продакшн call-site в рантайме Phase 3 отсутствует: «Phase 2 COMPLETE» означает «реализовано и протестировано», а не «подключено к билду». В Phase 4 (Шаг 4.1 Dedicated Server Loop) `ServerTransportHost.Pump` будет напрямую подключён к независимому серверному тикеру реального времени.
+
 ## Approved Target Architecture
 
 Product 1.0 требует:
@@ -113,11 +115,11 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 ## Verification Baseline
 
 - Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
-- **1162/1162 EditMode passed (100%)**, 0 failed, 0 skipped (gate: `Artifacts/TestResults/sprint25-editmode-final.xml`, 2026-10-20)
-- **16/16 PlayMode passed (100%)**, 0 failed, 0 skipped (gate: `Artifacts/TestResults/sprint25-playmode-final.xml`, 2026-10-20)
-- **1178 автоматизированных тестов суммарно** (0 compiler warnings, 0 compiler errors на commit `4cb8ffa`)
-- last committed milestone: `4cb8ffa` (Phase 2.0 remediation sprint 2.5 — exclusive session-socket binding and cross-session reconnect hijack guard; N-01 / D-10 / A-01 eradicated)
-- Grand Re-Audit Phase 2.0: 🏆 **`[APPROVED: ZERO DEFECTS]`** — единогласная сертификация 3 независимых аудиторов (Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash; отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`)
+- **1179/1179 EditMode passed (100%)**, 0 failed, 0 skipped (gate: `Artifacts/TestResults/block5-editmode-final.xml`, 2026-10-21)
+- **16/16 PlayMode passed (100%)**, 0 failed, 0 skipped (gate: `Artifacts/TestResults/block5-playmode-final.xml`, 2026-10-21)
+- **1195 автоматизированных тестов суммарно** (0 compiler warnings, 0 compiler errors на HEAD `3a112ad`)
+- last committed milestone: `3a112ad` (Hardening Phase 3.7.1 Block 4 — F-11 / F-7 / F-8)
+- Phase 2.0 Grand Re-Audit (`4cb8ffa`): сертификация подтвердила **P0/P1 = 0**. Строгий состязательный ре-аудит выполнен Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Все эти замечания (F-1..F-11, F-13..F-15; N-02..N-04) закрыты в Hardening Phase 3.7.1 блоками 1–5 (`934840d`..`3a112ad` + документация); каждое code-level замечание подтверждено bite-прогоном
 - Phase 3 (3.1–3.7) сертифицирована независимым adversarial-аудитом **[APPROVED: ZERO DEFECTS]** (отчёты: `3414ba6`, `cb01ea2`) — **Phase 3 [100% COMPLETED]**
 - OD-28 measured profile на 400 юнитах: **0.623 ms/frame** average over 120 presentation frames with the authoritative simulation tick included, and **0 B GC.Alloc** across 60 steady-state presentation frames and 60 replication loopback ticks — far below the 8.0 ms EditMode guard and the 16.67 ms 60 FPS ceiling
 - next: **Phase 4: Multiplayer Gameplay Integration** (joins the certified Phase 2 network foundation to the accepted Phase 3 RTS gameplay)

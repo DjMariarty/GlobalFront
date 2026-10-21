@@ -13,6 +13,7 @@
 - Зафиксированы пять основных фракций 1.0 и перенос подфракций в post-1.0.
 - Current baseline отделён от approved target architecture.
 - ADR-009 Network Transport Architecture (Phase 2.5) — Accepted (OD-1 = LiteNetLib как preferred initial carrier за контрактом `INetworkCarrier`); R&D-документы в `Documentation/Research/`.
+- Hardening Phase 3.7.1, Block 5: исправлена атрибуция аудита Phase 2.0 (F-6) — сертификат на `4cb8ffa` является строгим состязательным ре-аудитом Claude с областью P0/P1 = 0, а не «сертификацией трёх независимых аудиторов»; задокументирован статус headless-цикла `ServerTransportHost.Pump` (F-10); статус проекта синхронизирован на **1179 EditMode + 16 PlayMode**.
 
 ### Technical Milestones
 
@@ -47,19 +48,30 @@
   - Спринт 2.3 (`750218c`): canonical PartIndex keyframe assembly and slice timeout aging.
   - Спринт 2.4 (`e6d91ea`): thread-safe tick driver step capture (`baseTick = _tick - (ulong)scheduled` под `_gate`, лок на `Tick => _tick`) и bounded fragment reassembly maps (`SeqByMessageId` и `SnapshotSeqByMessageId` ограничены до `MaxFragmentGroups = 4` с eviction по старому sequence).
   - Спринт 2.5 (`4cb8ffa`): exclusive session-socket binding and cross-session reconnect hijack guard (N-01 / D-10 / A-01). Session-aware guard в `ServerTransportHost.cs:333-356` (`bound.Session != request.SessionId -> Denied`), эксклюзивность в `TransportSessionBinder.Bind`, токен-идентичность в `TransportSessionBinder.Release`. 3 новых регрессионных теста в `TransportFlowAndSecurityTests.cs`.
-- Grand Re-Audit Certification of Phase 2.0 (`4cb8ffa`): 🏆 **`[APPROVED: ZERO DEFECTS]`** — единогласное одобрение 3 независимых аудиторов (Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash). Отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`.
+- Grand Re-Audit Certification of Phase 2.0 (`4cb8ffa`): сертификация подтвердила **P0/P1 = 0**. Строгий состязательный ре-аудит выполнен Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели участвовали только в промежуточных этапах ревью.
+- Hardening Phase 3.7.1 — Grand Audit remediation — COMPLETE (`934840d`..`3a112ad` + Block 5 docs):
+  - Block 1 (`934840d`): F-2 (N-04: control-события `Connected`/`Disconnected` не отбрасываются при переполнении очереди; `Shutdown` очищает rate limiters и pending acks), F-4 (телеметрия cross-session denial), F-5 (изоляция исключений на цепочке `Pump → HandleEvent → HandleMessage`), F-13 (порядок eviction при отклонении фрагмента).
+  - Block 2 (`a08beaf`): F-3 (N-03 sink parity 512 для add и remove), F-14 (`Owner` и `AutoAcquireEnemies` включены в `StateChecksum`), F-15 (согласование серверного и клиентского порядка сущностей), F-9 (pacing-комментарии приведены к константам).
+  - Block 3 (`a944623`): F-1 (zero-alloc обновление `ClientSession` и живой GC-гейт), N-02 (`ArrayPool` и group stack pool в `FragmentAssembler`), мёртвые allocation-метры заменены.
+  - Block 4 (`3a112ad`): F-11 (инъекция transport/uplink seam в раннер), F-7 (регистрация URP RenderGraph overlay feature и handoff), F-8 (дисклеймер для OD-28 0.623 ms/frame как CPU-замера презентации).
+  - Block 5: F-6 (атрибуция аудита), F-10 (статус `ServerTransportHost.Pump`) — документация синхронизирована.
+  - Верификация: 17 новых EditMode-тестов (1162 → 1179), bite-прогоны по каждому наблюдаемому дефекту.
 
 ### Verified
 
 - Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`.
-- **1162/1162 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-10-20 (gate: `Artifacts/TestResults/sprint25-editmode-final.xml`).
-- **16/16 PlayMode passed (100%)**, 0 failed, 0 skipped, 2026-10-20 (gate: `Artifacts/TestResults/sprint25-playmode-final.xml`).
-- **1178 автоматизированных тестов суммарно** (0 compiler warnings, 0 compiler errors).
+- **1179/1179 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-10-21 (gate: `Artifacts/TestResults/block5-editmode-final.xml`).
+- **16/16 PlayMode passed (100%)**, 0 failed, 0 skipped, 2026-10-21 (gate: `Artifacts/TestResults/block5-playmode-final.xml`).
+- **1195 автоматизированных тестов суммарно** (0 compiler warnings, 0 compiler errors).
 
 ## Confirmed Foundation History
 
 | Commit | Milestone |
 |---|---|
+| `3a112ad` | Hardening Phase 3.7.1 Block 4: transport/uplink seam, URP overlay feature, OD-28 disclaimer |
+| `a944623` | Hardening Phase 3.7.1 Block 3: zero-alloc ClientSession update, ArrayPool reassembly |
+| `a08beaf` | Hardening Phase 3.7.1 Block 2: sink parity, checksum fields, order agreement, pacing comments |
+| `934840d` | Hardening Phase 3.7.1 Block 1: disconnect leak guard, denial telemetry, exception isolation, fragment eviction |
 | `4cb8ffa` | Phase 2.0 Remediation Sprint 2.5: exclusive session-socket binding & reconnect hijack guard |
 | `e6d91ea` | Phase 2.0 Remediation Sprint 2.4: thread-safe tick driver & bounded fragment reassembly maps |
 | `750218c` | Phase 2.0 Remediation Sprint 2.3: canonical PartIndex keyframe assembly |

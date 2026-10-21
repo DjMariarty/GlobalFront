@@ -5,8 +5,8 @@ GlobalFront — современная реализация фундамента
 Техническая цель — перенести эту формулу на современную архитектуру: authoritative server, deterministic simulation, улучшенные pathfinding, multiplayer, производительность, стабильность, UX, reconnect/resync, replay и диагностика desync.
 
 > **Стек:** Unity `6000.6.2f1` • URP `17.6.0` • uGUI `2.6.0` • C# 9.0 (Zero-GC hot path)  
-> **Статус проекта:** Фазы 1, 2 и 3 полностью завершены и сертифицированы `[APPROVED: ZERO DEFECTS]`  
-> **Текущий бейзлайн:** **1162/1162 EditMode** + **16/16 PlayMode** = **1178 тестов passed** (100% green, 0 warnings, 0 errors на `4cb8ffa`)  
+> **Статус проекта:** Фазы 1, 2 и 3 полностью завершены; Phase 2 сертифицирована по **P0/P1 = 0**, все P2/P3 Grand Audit закрыты в Hardening Phase 3.7.1  
+> **Текущий бейзлайн:** **1179/1179 EditMode** + **16/16 PlayMode** = **1195 тестов passed** (100% green, 0 warnings, 0 errors на `3a112ad`)  
 > **Следующая фаза:** **Phase 4: Multiplayer Gameplay Integration** `[READY / NEXT]`
 
 ---
@@ -36,14 +36,15 @@ GlobalFront — современная реализация фундамента
    - Целочисленные миллиметры `WorldPointMm`, детерминированные команды (Move, Attack, Stop), formation math.
    - Спринты hardening 1.1–1.5.1 закрыли все race conditions, friendly-fire, reentrancy и snapshot-аллокации.
 
-2. **Phase 2: Multiplayer Foundation — [100% COMPLETED / AUDITED: ZERO DEFECTS]**
+2. **Phase 2: Multiplayer Foundation — [100% COMPLETED / P0/P1 = 0 CERTIFIED; все P2/P3 закрыты]**
    - Authoritative dedicated server stack (`GlobalFront.Server`), `MatchServer`, `TickDriver` (ADR-007).
    - Session & Player Identity (`SessionManager`, ADR-008), 32-байтный криптографический секрет, O(k) grace sweep.
    - Сетевой транспорт (ADR-009, OD-1 = LiteNetLib 1.3.5 за `INetworkCarrier` + собственный `OwnDatagramCarrier`).
    - Дельта-компрессия снапшотов (ADR-010, `DeltaSnapshotWireCodec`, History Ring 120 тиков, keyframe pacing/slicing).
    - Reconnect & Resync (ADR-011, OD-18..OD-22, тактическая пауза, 5-секундный countdown, full state catch-up).
    - Спринты hardening 2.1–2.5 устранили все уязвимости hijack и переполнений (commit `4cb8ffa`).
-   - **Grand Re-Audit Phase 2.0:** единогласно сертифицирован тремя независимыми аудиторами (Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash) с вердиктом **`[APPROVED: ZERO DEFECTS]`** (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`).
+   - **Grand Re-Audit Phase 2.0 (`4cb8ffa`):** сертификация подтвердила **P0/P1 = 0**. Строгий состязательный ре-аудит выполнен Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели участвовали только в промежуточных этапах ревью.
+   - **Hardening Phase 3.7.1 (Grand Audit remediation):** блоки 1–4 (`934840d`..`3a112ad`) закрыли F-1..F-11, F-13..F-15 и N-02..N-04 в коде, блок 5 — документальные F-6 и F-10; 17 новых EditMode-тестов, bite-прогоны по каждому наблюдаемому дефекту.
 
 3. **Phase 3: Visual Presentation & RTS Controls — [100% COMPLETED / AUDITED: ZERO DEFECTS]**
    - RTS-камера и ввод (Шаг 3.1, `RtsCameraController`, `RtsInputManager`).
@@ -78,7 +79,7 @@ GlobalFront — современная реализация фундамента
 GlobalFront/
 ├── Assets/_GlobalFront/
 │   ├── Runtime/              # Core, Server, Client, Presentation, UI
-│   ├── Tests/                # EditMode (1162) и PlayMode (16) тесты
+│   ├── Tests/                # EditMode (1179) и PlayMode (16) тесты
 │   ├── GameContent/
 │   └── ThirdParty/           # LiteNetLib 1.3.5
 ├── Documentation/            # Architecture, Roadmap, Phases, Decisions (ADR)

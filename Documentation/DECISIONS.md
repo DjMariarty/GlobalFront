@@ -431,12 +431,12 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - **Реализовано:** commit `be03002` (protocol v2, 40-байтовый `DeltaAddRecord`, паритет `KeyframeSliceCodec` v2 и FNV-1a `StateChecksum`, O(1) Zero-GC `UnitCatalog`), сертифицировано аудитом — **[APPROVE: ZERO DEFECTS]**; P3 F-1 (`targetDelta > long.MaxValue - id` в `DeltaSnapshotWireCodec.ReadUpdates`) и P3 F-2 (валидация `IsResolved` / `DisplayName != null` в конструкторе `UnitCatalog`) закрыты в `27a10f6`. В Phase 3.7 (`3414ba6`) `UnitCatalog` обслуживает 400 юнитов всех трёх архетипов (Scout, Tank, BaseStructure) в `UnitViewBinder` и HUD; покрыто `TacticalVerticalSliceBenchmarkTests` (`Initialize_FourHundredUnits_RepresentsAllThreeCatalogArchetypes`).
 
 ## ADR-013: Phase 2.0 Hardening, Transport-Session Exclusivity & Concurrency Integrity
-*Status:* ACCEPTED (Consensus: Tri-Auditor Board — Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash; commit `4cb8ffa`, **[APPROVED: ZERO DEFECTS]**)  
+*Status:* ACCEPTED (Owner Decision; strict adversarial re-audit by Claude at `4cb8ffa`; **P0/P1 = 0**)  
 *Date:* 2026-10-20  
 *Target:* Unity 6000.6.2f1 / Core / Server.Transport / LiteNetLib 1.3.5  
 
 ### Context & Problem Statement
-В ходе независимого аудита стека Phase 2.0 (комит `e6d91ea`) тремя моделями была обнаружена критическая уязвимость переподключения N-01 / D-10 / A-01: при обработке `ReconnectRequest` на уже привязанном сокете сервер `ServerTransportHost` выполнял повторный rebind без проверки соответствия сокета и сессии. Это позволяло злоумышленнику или сбойному клиенту переписать `_tokenByConnection` для чужой сессии, оставив прежнюю сессию осиротевшей («зомби»), раздувая `BoundCount` и приводя к перманентному отказу в обслуживании (`ServerFull`). Кроме того, `TickDriver` имел race-condition при захвате шага тика, а фрагментные карты `LiteNetLibCarrier` и `OwnDatagramCarrier` были уязвимы к DoS по числу групп.
+В ходе независимого аудита стека Phase 2.0 (комит `e6d91ea`) была обнаружена критическая уязвимость переподключения N-01 / D-10 / A-01: при обработке `ReconnectRequest` на уже привязанном сокете сервер `ServerTransportHost` выполнял повторный rebind без проверки соответствия сокета и сессии. Это позволяло злоумышленнику или сбойному клиенту переписать `_tokenByConnection` для чужой сессии, оставив прежнюю сессию осиротевшей («зомби»), раздувая `BoundCount` и приводя к перманентному отказу в обслуживании (`ServerFull`). Кроме того, `TickDriver` имел race-condition при захвате шага тика, а фрагментные карты `LiteNetLibCarrier` и `OwnDatagramCarrier` были уязвимы к DoS по числу групп.
 
 ### Owner Decisions (OD-30 — OD-34):
 
@@ -476,9 +476,10 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 
 ### Verification & Certification
 - Все решения проверены исполняемыми bite-тестами (сравнение с уязвимым кодом, 19 failures на revert против 0 на исправленном коде).
-- Бейзлайн вырос до **1162 EditMode** + **16 PlayMode** = **1178 тестов passed (100% green)**.
-- Сертификат: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`.
-- Результат: **[APPROVED: ZERO DEFECTS]**. Фундамент Phase 1.0–2.8 и Phase 3.0 полностью заморожен и готов к Phase 4.
+- Бейзлайн на момент сертификации вырос до **1162 EditMode** + **16 PlayMode** = **1178 тестов passed (100% green)**.
+- Сертификат: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md` — строгий состязательный ре-аудит Claude; область сертификации ограничена **P0/P1 = 0**, P2-бэклог (N-02, N-03, N-04) и P3-пакет на тот момент оставались открытыми.
+- **Post-certification remediation:** все оставшиеся замечания Grand Audit (F-1..F-11, F-13..F-15; N-02..N-04) закрыты в Hardening Phase 3.7.1 блоками 1–5 (`934840d`..`3a112ad` + документация); каждое code-level замечание подтверждено bite-прогоном, baseline **1179 EditMode + 16 PlayMode**.
+- Результат: **P0/P1 = 0** сертифицированы; после закрытия P2/P3 фундамент Phase 1.0–2.8 и Phase 3.0 заморожен и готов к Phase 4.
 
 ## Open Decision Queue
 
