@@ -277,6 +277,138 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void Reassembly_SteadyState_AllocatesOnlyTheCompletedMessage()
+        {
+            var assembler = new FragmentAssembler();
+            const int fragmentCount = 4;
+            var data = new byte[fragmentCount * TransportProtocol.FragmentPayloadBytes];
+            for (var index = 0; index < data.Length; index++)
+            {
+                data[index] = (byte)((index * 31) & 0xFF);
+            }
+
+            // Warm-up: the pooled Group, jagged/length arrays and the slice
+            // bucket must all be populated before the measured window.
+            for (var warm = 0; warm < fragmentCount; warm++)
+            {
+                Assert.That(
+                    FeedCompleteMessage(assembler, (ushort)(100 + warm), data, fragmentCount, 0),
+                    Is.EqualTo(data));
+            }
+
+            Assert.That(assembler.GroupCount, Is.EqualTo(0));
+            Assert.That(assembler.AllocatedBytes, Is.EqualTo(0));
+
+            var control = CountCurrentThreadGcAllocations(
+                () =>
+                {
+                    var probe = new byte[16];
+                    System.GC.KeepAlive(probe);
+                });
+            Assert.That(control, Is.EqualTo(1),
+                "the GC.Alloc recorder must observe a known allocation");
+
+            byte[] complete = null;
+            var measured = CountCurrentThreadGcAllocations(
+                () => complete = FeedCompleteMessage(assembler, 200, data, fragmentCount, 1000));
+
+            Assert.That(complete, Is.EqualTo(data));
+            Assert.That(measured, Is.EqualTo(1),
+                "a steady-state fragmented completion must allocate exactly the assembled " +
+                "message; the Group, jagged/length arrays and every slice must be pooled");
+        }
+
+        [Test]
+        public void Reassembly_ReusedPoolBuffers_DoNotLeakBytesBetweenGroups()
+        {
+            var assembler = new FragmentAssembler();
+            var longData = new byte[3 * TransportProtocol.FragmentPayloadBytes];
+            var shortData = new byte[2 * TransportProtocol.FragmentPayloadBytes + 500];
+            for (var index = 0; index < longData.Length; index++)
+            {
+                longData[index] = (byte)((index * 31) & 0xFF);
+            }
+
+            for (var index = 0; index < shortData.Length; index++)
+            {
+                shortData[index] = (byte)((index * 17 + 0x5A) & 0xFF);
+            }
+
+            for (var round = 0; round < 32; round++)
+            {
+                var first = FeedCompleteMessage(assembler, 1, longData, 3, round * 10);
+                var second = FeedCompleteMessage(assembler, 2, shortData, 3, round * 10 + 5);
+
+                Assert.That(first, Is.EqualTo(longData),
+                    $"round {round}: the reused slices must not corrupt the long message");
+                Assert.That(second, Is.EqualTo(shortData),
+                    $"round {round}: the shorter last slice must keep its logical length");
+                Assert.That(assembler.AllocatedBytes, Is.EqualTo(0),
+                    $"round {round}: a completed group must release its accounting");
+            }
+        }
+
+        [Test]
+        public void Reassembly_ReleasePaths_ReturnMemoryAccountingToZero()
+        {
+            var assembler = new FragmentAssembler();
+            var fragment = new byte[16];
+
+            Assert.That(assembler.AddFragment(1, 0, 2, fragment, 0, fragment.Length, 0), Is.Null);
+            Assert.That(assembler.AllocatedBytes, Is.EqualTo(fragment.Length));
+            Assert.That(assembler.DiscardGroup(1), Is.True);
+            Assert.That(assembler.AllocatedBytes, Is.EqualTo(0));
+
+            Assert.That(assembler.AddFragment(2, 0, 2, fragment, 0, fragment.Length, 0), Is.Null);
+            assembler.Expire(TransportProtocol.FragmentLifetimeMs + 1);
+            Assert.That(assembler.GroupCount, Is.EqualTo(0));
+            Assert.That(assembler.AllocatedBytes, Is.EqualTo(0));
+
+            Assert.That(assembler.AddFragment(3, 0, 2, fragment, 0, fragment.Length, 0), Is.Null);
+            Assert.That(assembler.AddFragment(4, 1, 2, fragment, 0, fragment.Length, 0), Is.Null);
+            assembler.Reset();
+            Assert.That(assembler.GroupCount, Is.EqualTo(0));
+            Assert.That(assembler.AllocatedBytes, Is.EqualTo(0));
+        }
+
+        private static byte[] FeedCompleteMessage(
+            FragmentAssembler assembler,
+            ushort messageId,
+            byte[] data,
+            ushort fragmentCount,
+            long nowMs)
+        {
+            byte[] complete = null;
+            for (var index = 0; index < fragmentCount; index++)
+            {
+                MessageFragmenter.GetFragmentPayload(data.Length, index, out var offset, out var length);
+                complete = assembler.AddFragment(
+                    messageId, (ushort)index, fragmentCount, data, offset, length, nowMs + index);
+            }
+
+            return complete;
+        }
+
+        private static int CountCurrentThreadGcAllocations(Action action)
+        {
+            var recorder = UnityEngine.Profiling.Recorder.Get("GC.Alloc");
+            recorder.enabled = false;
+            recorder.FilterToCurrentThread();
+            recorder.enabled = true;
+            try
+            {
+                action();
+            }
+            finally
+            {
+                recorder.enabled = false;
+                recorder.CollectFromAllThreads();
+            }
+
+            return recorder.sampleBlockCount;
+        }
+
+        [Test]
         public void Carrier_LargeReliableMessage_SurvivesLossAndReassembles()
         {
             var profile = new ImpairmentProfile

@@ -687,14 +687,13 @@ namespace GlobalFront.Tests.EditMode
             handle(connectionId, seed, 0, seed.Length);
             DrainEvents(carrier);
 
-            // The completion's only unavoidable allocations: the second
-            // fragment slice and the assembled message.
+            // N-02: fragment slices are pooled. A completion's only
+            // remaining allocation is the assembled message handed to the
+            // event queue; the slice comes from ArrayPool.
             var baseline = CountCurrentThreadGcAllocations(
                 () =>
                 {
-                    var sliceProbe = new byte[payloadLength];
                     var messageProbe = new byte[payloadLength * 2];
-                    System.GC.KeepAlive(sliceProbe);
                     System.GC.KeepAlive(messageProbe);
                 });
 
@@ -702,8 +701,10 @@ namespace GlobalFront.Tests.EditMode
                 () => handle(connectionId, completion, 0, completion.Length));
             DrainEvents(carrier);
 
-            Assert.That(baseline, Is.EqualTo(2),
-                "control: the two payload arrays must be visible as two GC.Alloc samples");
+            Assert.That(baseline, Is.EqualTo(1),
+                "control: the assembled payload must be visible as one GC.Alloc sample");
+            Assert.That(measured, Is.EqualTo(1),
+                "fragment slices must be pooled; the completion allocates only the assembled message");
             Assert.That(measured - baseline, Is.EqualTo(0),
                 "the latest-wins stale scan must reuse PeerSnapshotState.StaleIdsScratch");
             carrier.Dispose();

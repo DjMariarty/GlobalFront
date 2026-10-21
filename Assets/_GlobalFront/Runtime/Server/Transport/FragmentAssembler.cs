@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Generic;
 
 namespace GlobalFront.Server.Transport
@@ -63,9 +64,11 @@ namespace GlobalFront.Server.Transport
             public long StartedAtMs;
             public long LastActivityMs;
             public byte[][] Fragments;
+            public int[] FragmentLengths;
         }
 
         private readonly List<Group> _groups = new List<Group>();
+        private readonly Stack<Group> _groupPool = new Stack<Group>(TransportProtocol.MaxFragmentGroups);
 
         public int GroupCount => _groups.Count;
 
@@ -141,13 +144,7 @@ namespace GlobalFront.Server.Transport
                     return null;
                 }
 
-                group = new Group
-                {
-                    MessageId = messageId,
-                    FragmentCount = fragmentCount,
-                    StartedAtMs = nowMs,
-                    Fragments = new byte[fragmentCount][]
-                };
+                group = RentGroup(messageId, fragmentCount, nowMs);
                 _groups.Add(group);
             }
 
@@ -158,9 +155,10 @@ namespace GlobalFront.Server.Transport
                 return null;
             }
 
-            var slice = new byte[length];
+            var slice = ArrayPool<byte>.Shared.Rent(length);
             System.Array.Copy(data, offset, slice, 0, length);
             group.Fragments[fragmentIndex] = slice;
+            group.FragmentLengths[fragmentIndex] = length;
             group.ReceivedCount++;
             group.TotalBytes += length;
             group.LastActivityMs = nowMs;
@@ -168,6 +166,7 @@ namespace GlobalFront.Server.Transport
             if (group.TotalBytes > TransportProtocol.MaxMessageBytes)
             {
                 _groups.Remove(group);
+                ReleaseGroup(group);
                 return null;
             }
 
@@ -184,13 +183,16 @@ namespace GlobalFront.Server.Transport
                 var fragment = group.Fragments[index];
                 if (fragment == null)
                 {
+                    ReleaseGroup(group);
                     return null;
                 }
 
-                System.Array.Copy(fragment, 0, message, writeOffset, fragment.Length);
-                writeOffset += fragment.Length;
+                var fragmentLength = group.FragmentLengths[index];
+                System.Array.Copy(fragment, 0, message, writeOffset, fragmentLength);
+                writeOffset += fragmentLength;
             }
 
+            ReleaseGroup(group);
             return message;
         }
 
@@ -201,7 +203,9 @@ namespace GlobalFront.Server.Transport
             {
                 if (nowMs - _groups[index].StartedAtMs > TransportProtocol.FragmentLifetimeMs)
                 {
+                    var expired = _groups[index];
                     _groups.RemoveAt(index);
+                    ReleaseGroup(expired);
                 }
             }
         }
@@ -218,7 +222,9 @@ namespace GlobalFront.Server.Transport
             {
                 if (_groups[index].MessageId == messageId)
                 {
+                    var discarded = _groups[index];
                     _groups.RemoveAt(index);
+                    ReleaseGroup(discarded);
                     removed = true;
                 }
             }
@@ -226,7 +232,15 @@ namespace GlobalFront.Server.Transport
             return removed;
         }
 
-        public void Reset() => _groups.Clear();
+        public void Reset()
+        {
+            for (var index = 0; index < _groups.Count; index++)
+            {
+                ReleaseGroup(_groups[index]);
+            }
+
+            _groups.Clear();
+        }
 
         private Group FindGroup(ushort messageId, ushort fragmentCount)
         {
@@ -258,7 +272,58 @@ namespace GlobalFront.Server.Transport
                 }
             }
 
+            var evicted = _groups[oldest];
             _groups.RemoveAt(oldest);
+            ReleaseGroup(evicted);
+        }
+
+        private Group RentGroup(ushort messageId, ushort fragmentCount, long nowMs)
+        {
+            var group = _groupPool.Count > 0 ? _groupPool.Pop() : new Group();
+            group.MessageId = messageId;
+            group.FragmentCount = fragmentCount;
+            group.ReceivedCount = 0;
+            group.TotalBytes = 0;
+            group.StartedAtMs = nowMs;
+            group.LastActivityMs = nowMs;
+            group.Fragments = ArrayPool<byte[]>.Shared.Rent(fragmentCount);
+            System.Array.Clear(group.Fragments, 0, group.Fragments.Length);
+            group.FragmentLengths = ArrayPool<int>.Shared.Rent(fragmentCount);
+            return group;
+        }
+
+        private void ReleaseGroup(Group group)
+        {
+            var fragments = group.Fragments;
+            if (fragments != null)
+            {
+                for (var index = 0; index < fragments.Length; index++)
+                {
+                    var slice = fragments[index];
+                    if (slice != null)
+                    {
+                        fragments[index] = null;
+                        ArrayPool<byte>.Shared.Return(slice);
+                    }
+                }
+
+                ArrayPool<byte[]>.Shared.Return(fragments);
+                group.Fragments = null;
+            }
+
+            if (group.FragmentLengths != null)
+            {
+                ArrayPool<int>.Shared.Return(group.FragmentLengths);
+                group.FragmentLengths = null;
+            }
+
+            group.MessageId = 0;
+            group.FragmentCount = 0;
+            group.ReceivedCount = 0;
+            group.TotalBytes = 0;
+            group.StartedAtMs = 0;
+            group.LastActivityMs = 0;
+            _groupPool.Push(group);
         }
 
         private void EvictUntilBudget(int incomingBytes)

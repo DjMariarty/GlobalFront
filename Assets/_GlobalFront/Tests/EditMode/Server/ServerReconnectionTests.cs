@@ -10,6 +10,8 @@ using GlobalFront.Server.Replication;
 using GlobalFront.Server.Sessions;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
+using UnityEngine.TestTools.Constraints;
+using Is = NUnit.Framework.Is;
 
 namespace GlobalFront.Tests.EditMode.Server
 {
@@ -183,32 +185,93 @@ namespace GlobalFront.Tests.EditMode.Server
         [Test]
         public void TryRebindSession_ZeroGcAllocations()
         {
+            var matchId = _sessionManager.CreateMatch(1);
             var handle = _sessionManager.CreateConnectionHandle();
             var sessionId = _sessionManager.CreateSession(handle, out var secret);
-            _sessionManager.NotifyConnectionLost(sessionId, 10);
+
+            // The session must be fully bound: NotifyConnectionLost only
+            // accepts a Connected session and TryRebindSession only a
+            // Disconnected one, so the old Created-state fixture measured
+            // the InvalidState early-out instead of the rebind hot path.
+            Assert.That(
+                _sessionManager.TryJoinMatch(sessionId, matchId, out var player),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                _sessionManager.TryStartMatch(
+                    matchId, TransportTestSupport.BuildMatchConfig(player), _matchServer, out _),
+                Is.True,
+                "the session must be running in a started match");
+
+            Assert.That(_sessionManager.NotifyConnectionLost(sessionId, 10), Is.True,
+                "a connected session must enter the disconnected grace state");
             var newHandle = _sessionManager.CreateConnectionHandle();
 
-            // Pre-warm to ensure JIT is compiled
-            _sessionManager.TryRebindSession(sessionId, in secret, newHandle, 12, out _);
+            // Pre-warm outside the measured window: JIT, the cached view and
+            // the disconnected-index add/remove pair.
+            Assert.That(
+                _sessionManager.TryRebindSession(
+                    sessionId, in secret, newHandle, 12, out var warmSession),
+                Is.EqualTo(RebindResult.Accepted),
+                "the warm-up rebind must reach the hot path; InvalidState means the fixture is wrong");
+            Assert.That(warmSession, Is.Not.Null);
+            Assert.That(_sessionManager.NotifyConnectionLost(sessionId, 10), Is.True);
 
-            // Set to disconnected again for the hot path benchmark
+            Assert.That(
+                () =>
+                {
+                    for (var i = 0; i < 100; i++)
+                    {
+                        _sessionManager.NotifyConnectionLost(sessionId, 10);
+                        _sessionManager.TryRebindSession(sessionId, in secret, newHandle, 12, out _);
+                    }
+                },
+                UnityEngine.TestTools.Constraints.Is.Not.AllocatingGCMemory(),
+                "TryRebindSession must reuse the session's cached ClientSession instance");
+        }
+
+        [Test]
+        public void GcAllocationRecorder_ObservesKnownAllocation_Control()
+        {
+            // The recorder must be proven live before it can prove absence.
+            byte[] ballast = null;
+            Assert.That(
+                () => { ballast = new byte[1024]; },
+                UnityEngine.TestTools.Constraints.Is.AllocatingGCMemory(),
+                "the GC.Alloc recorder must observe a known allocation");
+            Assert.That(ballast, Is.Not.Null);
+        }
+
+        [Test]
+        public void TryRebindSession_ReusesTheCachedClientSession_AndKeepsTheViewCurrent()
+        {
+            var matchId = _sessionManager.CreateMatch(1);
+            var handle = _sessionManager.CreateConnectionHandle();
+            var sessionId = _sessionManager.CreateSession(handle, out var secret);
+            Assert.That(
+                _sessionManager.TryJoinMatch(sessionId, matchId, out var player),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                _sessionManager.TryStartMatch(
+                    matchId, TransportTestSupport.BuildMatchConfig(player), _matchServer, out _),
+                Is.True);
+
             _sessionManager.NotifyConnectionLost(sessionId, 10);
+            var newHandle = _sessionManager.CreateConnectionHandle();
+            Assert.That(
+                _sessionManager.TryRebindSession(sessionId, in secret, newHandle, 12, out var rebound),
+                Is.EqualTo(RebindResult.Accepted));
 
-            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            Assert.That(_sessionManager.TryGetClientSession(sessionId, out var firstView), Is.True);
+            Assert.That(firstView, Is.SameAs(rebound),
+                "the rebind must return the session's cached instance, not a new object");
 
-            for (var i = 0; i < 100; i++)
-            {
-                // Re-mark disconnected
-                _sessionManager.NotifyConnectionLost(sessionId, 10);
-                _sessionManager.TryRebindSession(sessionId, in secret, newHandle, 12, out _);
-            }
-
-            long allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
-            long totalAllocated = allocatedAfter - allocatedBefore;
-
-            // Session rebind hot path creates ClientSession object; check that per-rebind allocation is minimal (< 64 bytes)
-            Assert.That(totalAllocated / 100, Is.LessThanOrEqualTo(64),
-                $"TryRebindSession exceeded memory target: {totalAllocated} bytes for 100 iterations.");
+            Assert.That(_sessionManager.NotifyConnectionLost(sessionId, 20), Is.True);
+            Assert.That(_sessionManager.TryGetClientSession(sessionId, out var secondView), Is.True);
+            Assert.That(secondView, Is.SameAs(rebound),
+                "the cached view must keep its identity across state changes");
+            Assert.That(secondView.State, Is.EqualTo(SessionState.Disconnected),
+                "the cached view must be refreshed from the authoritative record");
+            Assert.That(secondView.DetachedTick, Is.EqualTo(20ul));
         }
 
         // ------------------------------------------------------------------

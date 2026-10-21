@@ -10,12 +10,12 @@ namespace GlobalFront.Server.Sessions
     public sealed class ClientSession
     {
         public SessionId Id { get; }
-        public SessionState State { get; }
-        public MatchId Match { get; }
-        public PlayerId Player { get; }
-        public ConnectionHandle Connection { get; }
+        public SessionState State { get; private set; }
+        public MatchId Match { get; private set; }
+        public PlayerId Player { get; private set; }
+        public ConnectionHandle Connection { get; private set; }
         public SessionSecret32 Secret { get; }
-        public ulong DisconnectedAtTick { get; }
+        public ulong DisconnectedAtTick { get; private set; }
 
         public ulong DetachedTick => DisconnectedAtTick;
         public bool IsAttached => State == SessionState.Connected || State == SessionState.Created;
@@ -36,6 +36,25 @@ namespace GlobalFront.Server.Sessions
             Player = player;
             Connection = connection;
             Secret = secret;
+            DisconnectedAtTick = disconnectedAtTick;
+        }
+
+        /// <summary>
+        /// Refreshes the attachment fields in place. <see cref="SessionManager"/>
+        /// reuses one instance per session so the reconnect hot path allocates
+        /// no new <see cref="ClientSession"/>.
+        /// </summary>
+        internal void Update(
+            SessionState state,
+            MatchId match,
+            PlayerId player,
+            ConnectionHandle connection,
+            ulong disconnectedAtTick)
+        {
+            State = state;
+            Match = match;
+            Player = player;
+            Connection = connection;
             DisconnectedAtTick = disconnectedAtTick;
         }
     }

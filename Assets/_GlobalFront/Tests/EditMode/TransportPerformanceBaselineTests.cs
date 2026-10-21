@@ -84,7 +84,6 @@ namespace GlobalFront.Tests.EditMode
             }
 
             var entity = rig.Host.GetAllSnapshots()[0].Entity;
-            var allocBefore = System.GC.GetAllocatedBytesForCurrentThread();
             var watch = System.Diagnostics.Stopwatch.StartNew();
 
             for (var sequence = 1u; sequence <= CommandCount; sequence++)
@@ -133,7 +132,6 @@ namespace GlobalFront.Tests.EditMode
             }
 
             watch.Stop();
-            var allocAfter = System.GC.GetAllocatedBytesForCurrentThread();
 
             // Large fragmented C2 delivery check. Under i.i.d. 5% loss a
             // ~100-fragment unreliable message completes with probability
@@ -167,7 +165,10 @@ namespace GlobalFront.Tests.EditMode
             TestContext.Out.WriteLine($"large C2 snapshot: deliveries={largeDeliveries.Count} size={snapshotPayload.Length} bytes tick={largeTick}");
             TestContext.Out.WriteLine($"virtual time: {rig.Clock.NowMs} ms; wall CPU proxy: {watch.ElapsedMilliseconds} ms");
             TestContext.Out.WriteLine($"throughput: {(CommandCount + SnapshotCount) / System.Math.Max(1, watch.ElapsedMilliseconds / 1000.0):F0} msg/s wall");
-            TestContext.Out.WriteLine($"managed allocations: {(allocAfter - allocBefore) / 1024} KB");
+            // Managed allocations are not reported here: the editor's Mono runtime
+            // returns an absolute 0 from GC.GetAllocatedBytesForCurrentThread().
+            // Zero-GC evidence lives in the dedicated EditMode tests that use
+            // Unity's GC.Alloc recorder (Is.AllocatingGCMemory / Not).
             TestContext.Out.WriteLine($"client bytes sent/received: {clientMetrics.BytesSent}/{clientMetrics.BytesReceived}");
             TestContext.Out.WriteLine($"server bytes sent/received: {serverMetrics.BytesSent}/{serverMetrics.BytesReceived}");
             TestContext.Out.WriteLine($"client retransmissions: {clientMetrics.Retransmissions}");

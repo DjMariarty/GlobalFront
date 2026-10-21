@@ -38,6 +38,7 @@ namespace GlobalFront.Server.Sessions
             public ConnectionHandle Connection;
             public ulong DisconnectedAtTick;
             public SessionSecret32 Secret;
+            public ClientSession CachedClientSession;
         }
 
         private sealed class PlayerSlot
@@ -199,6 +200,14 @@ namespace GlobalFront.Server.Sessions
                 Connection = connection,
                 Secret = secret
             };
+            session.CachedClientSession = new ClientSession(
+                session.Id,
+                session.State,
+                session.Match,
+                session.Player,
+                session.Connection,
+                session.Secret,
+                0ul);
             _sessions.Add(session.Id, session);
             return session.Id;
         }
@@ -599,14 +608,13 @@ namespace GlobalFront.Server.Sessions
                 }
             }
 
-            session = new ClientSession(
-                record.Id,
+            record.CachedClientSession.Update(
                 record.State,
                 record.Match,
                 record.Player,
                 record.Connection,
-                record.Secret,
                 record.DisconnectedAtTick);
+            session = record.CachedClientSession;
 
             return RebindResult.Accepted;
         }
@@ -756,14 +764,15 @@ namespace GlobalFront.Server.Sessions
         {
             if (_sessions.TryGetValue(session, out var record))
             {
-                clientSession = new ClientSession(
-                    record.Id,
+                // The record is authoritative: refresh the reused view before
+                // handing it out so callers never observe a stale state.
+                record.CachedClientSession.Update(
                     record.State,
                     record.Match,
                     record.Player,
                     record.Connection,
-                    record.Secret,
                     record.DisconnectedAtTick);
+                clientSession = record.CachedClientSession;
                 return true;
             }
 
