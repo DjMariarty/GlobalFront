@@ -1,3 +1,4 @@
+using System;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
 
@@ -126,6 +127,86 @@ namespace GlobalFront.Tests.EditMode
             }
 
             Assert.Fail("the oversized group must be discarded");
+        }
+
+        [Test]
+        public void Reassembly_AdversarialOversizedFragment_DoesNotEvictLegitimateGroups()
+        {
+            var assembler = new FragmentAssembler();
+            var fragment = new byte[TransportProtocol.FragmentPayloadBytes];
+
+            // Two legitimate groups stay deliberately incomplete (199 of
+            // 200 fragments), so both hold reassembly memory when the
+            // hostile fragment arrives.
+            for (ushort group = 1; group <= 2; group++)
+            {
+                for (ushort index = 0; index < 199; index++)
+                {
+                    assembler.AddFragment(
+                        group, index, 200, fragment, 0, fragment.Length, 0);
+                }
+            }
+
+            Assert.That(assembler.GroupCount, Is.EqualTo(2));
+            var allocatedBefore = assembler.AllocatedBytes;
+            Assert.That(allocatedBefore, Is.GreaterThan(0));
+
+            // A declaration whose smallest possible complete message is far
+            // above MaxMessageBytes: admitting it would reserve ~2.4 MB and
+            // evict both legitimate groups before rejecting it.
+            var result = assembler.AddFragment(
+                99,
+                0,
+                TransportProtocol.MaxFragmentsPerGroup,
+                fragment,
+                0,
+                fragment.Length,
+                10);
+
+            Assert.That(result, Is.Null, "the oversized declaration must be rejected");
+            Assert.That(assembler.GroupCount, Is.EqualTo(2),
+                "rejection must not evict legitimate in-flight groups");
+            Assert.That(assembler.AllocatedBytes, Is.EqualTo(allocatedBefore),
+                "legitimate reassembly memory must survive the hostile fragment");
+        }
+
+        [Test]
+        public void Reassembly_AcceptsLargestLegalFragmentedMessage()
+        {
+            var assembler = new FragmentAssembler();
+            var data = new byte[TransportProtocol.MaxMessageBytes];
+            for (var index = 0; index < data.Length; index++)
+            {
+                data[index] = (byte)((index * 31) & 0xFF);
+            }
+
+            var fragmentCount = MessageFragmenter.GetFragmentCount(data.Length);
+            Assert.That(
+                (long)fragmentCount * TransportProtocol.FragmentPayloadBytes,
+                Is.GreaterThan(TransportProtocol.MaxMessageBytes),
+                "a legal maximal message still has a worst-case reservation above the cap");
+
+            byte[] complete = null;
+            for (var index = 0; index < fragmentCount; index++)
+            {
+                MessageFragmenter.GetFragmentPayload(data.Length, index, out var offset, out var length);
+                var result = assembler.AddFragment(
+                    1, (ushort)index, (ushort)fragmentCount, data, offset, length, index);
+                if (index < fragmentCount - 1)
+                {
+                    Assert.That(result, Is.Null, $"fragment {index} must not complete the message");
+                }
+                else
+                {
+                    complete = result;
+                }
+            }
+
+            Assert.That(complete, Is.Not.Null,
+                "a message of exactly MaxMessageBytes must remain receivable");
+            Assert.That(complete.Length, Is.EqualTo(data.Length));
+            Assert.That(complete.AsSpan().SequenceEqual(data), Is.True,
+                "the reassembled bytes must match the original message");
         }
 
         [Test]

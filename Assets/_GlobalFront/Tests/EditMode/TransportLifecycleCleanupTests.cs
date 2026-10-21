@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using GlobalFront.Client;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
@@ -264,6 +265,183 @@ namespace GlobalFront.Tests.EditMode
 
             Assert.That(host.PendingAckCount, Is.EqualTo(0),
                 "acks queued for a dead socket must be purged, not retried forever");
+        }
+
+        [Test]
+        public void ServerTransportHost_Shutdown_ClearsRateLimitersAndPendingAcks()
+        {
+            var carrier = new AckFailureCarrier();
+            var sessions = new SessionManager();
+            var host = new ServerTransportHost(carrier, sessions, new MatchServer())
+            {
+                AutoJoinMatch = sessions.CreateMatch(2)
+            };
+
+            const int connectionId = 7;
+            var handshake = new byte[64];
+            var handshakeLength = MessageCodec.WriteHeader(
+                handshake, 0, TransportMessageType.ConnectRequest, TransportProtocol.HandshakeToken, 0);
+            handshakeLength = MessageCodec.EncodeConnectRequest(
+                handshake,
+                handshakeLength,
+                GlobalFront.Server.Snapshot.SnapshotProtocol.Version,
+                false,
+                Guid.Empty);
+            host.HandleMessage(new TransportEvent
+            {
+                Type = TransportEventType.Message,
+                ConnectionId = connectionId,
+                Data = handshake,
+                Length = handshakeLength
+            });
+
+            Assert.That(
+                host.Binder.TryGetByConnection(connectionId, out var binding), Is.True,
+                "handshake must bind the session");
+
+            var command = new byte[128];
+            var commandLength = CommandWireCodec.EncodeMove(
+                command,
+                new CommandHeader(
+                    binding.Player,
+                    sequence: 1,
+                    requestedTick: 1,
+                    GameCommandType.Move),
+                new[] { new EntityId(1) },
+                new WorldPointMm(1000, 0),
+                new FormationSpec(1, 2000, CardinalFacing.North));
+
+            var message = new byte[
+                MessageCodec.GetHeaderSize(TransportMessageType.Command) + commandLength];
+            var messageLength = MessageCodec.WriteHeader(
+                message, 0, TransportMessageType.Command, binding.Token, 0);
+            Array.Copy(command, 0, message, messageLength, commandLength);
+            messageLength += commandLength;
+
+            carrier.AllowSends = false;
+            host.HandleMessage(new TransportEvent
+            {
+                Type = TransportEventType.Message,
+                ConnectionId = connectionId,
+                Data = message,
+                Length = messageLength
+            });
+
+            Assert.That(host.RateLimiterCount, Is.EqualTo(1),
+                "the handshake must have created one per-connection limiter");
+            Assert.That(host.PendingAckCount, Is.EqualTo(1),
+                "a failed ack send must be queued for the retry pass");
+
+            host.Shutdown();
+
+            Assert.That(host.RateLimiterCount, Is.EqualTo(0),
+                "Shutdown must release per-connection limiters");
+            Assert.That(host.PendingAckCount, Is.EqualTo(0),
+                "Shutdown must release queued acks");
+        }
+
+        [Test]
+        public void ServerTransportHost_Pump_IsolatesHandlerExceptions()
+        {
+            var carrier = new AckFailureCarrier();
+            var host = new ServerTransportHost(carrier, new SessionManager(), new MatchServer());
+
+            // Null payloads make the decoder throw; the pump must count the
+            // failure and keep draining the remaining events.
+            carrier.Enqueue(new TransportEvent
+            {
+                Type = TransportEventType.Message,
+                ConnectionId = 1,
+                Data = null,
+                Length = 64
+            });
+            carrier.Enqueue(new TransportEvent
+            {
+                Type = TransportEventType.Connected,
+                ConnectionId = 2
+            });
+
+            var malformedBefore = carrier.Metrics.DroppedMalformed;
+            host.Pump(0);
+
+            Assert.That(carrier.Metrics.DroppedMalformed - malformedBefore, Is.EqualTo(1),
+                "the isolated failure must surface as exactly one malformed drop");
+            Assert.That(carrier.EventQueueDepth, Is.EqualTo(0),
+                "the drain must continue past the throwing event");
+        }
+
+        [Test]
+        public void Carrier_QueueOverflow_PrioritizesDisconnectEvents()
+        {
+            var pipe = new VirtualNetworkPipe(new ImpairmentProfile());
+            var own = OwnDatagramCarrier.CreateServer(
+                pipe, pipe.CreateEndpoint(), new VirtualTransportClock());
+            AssertControlEventSurvivesOverflow(own);
+
+            AssertControlEventSurvivesOverflow(
+                LiteNetLibCarrier.CreateServer(new VirtualTransportClock()));
+        }
+
+        private static void AssertControlEventSurvivesOverflow(INetworkCarrier carrier)
+        {
+            var enqueue = carrier.GetType().GetMethod(
+                "EnqueueEvent", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(enqueue, Is.Not.Null,
+                $"{carrier.GetType().Name} must expose the EnqueueEvent seam");
+
+            var messageArguments = new object[]
+            {
+                new TransportEvent
+                {
+                    Type = TransportEventType.Message,
+                    ConnectionId = 1,
+                    Channel = TransportChannel.Control,
+                    Data = new byte[] { 0x01 },
+                    Length = 1
+                }
+            };
+
+            for (var index = 0; index < TransportProtocol.MaxQueuedReceiveEvents; index++)
+            {
+                enqueue.Invoke(carrier, messageArguments);
+            }
+
+            Assert.That(carrier.EventQueueDepth,
+                Is.EqualTo(TransportProtocol.MaxQueuedReceiveEvents));
+
+            var overflowBefore = carrier.Metrics.DroppedQueueOverflow;
+            enqueue.Invoke(carrier, messageArguments);
+            Assert.That(carrier.Metrics.DroppedQueueOverflow - overflowBefore,
+                Is.EqualTo(1), "a data event beyond the cap must still be dropped");
+            Assert.That(carrier.EventQueueDepth,
+                Is.EqualTo(TransportProtocol.MaxQueuedReceiveEvents));
+
+            enqueue.Invoke(carrier, new object[]
+            {
+                new TransportEvent
+                {
+                    Type = TransportEventType.Disconnected,
+                    ConnectionId = 1,
+                    Reason = TransportDisconnectReason.ServerShutdown
+                }
+            });
+
+            Assert.That(carrier.EventQueueDepth,
+                Is.EqualTo(TransportProtocol.MaxQueuedReceiveEvents + 1),
+                "a control event must bypass the full data queue");
+
+            var dequeued = 0;
+            var last = default(TransportEvent);
+            while (carrier.TryDequeueEvent(out var transportEvent))
+            {
+                last = transportEvent;
+                dequeued++;
+            }
+
+            Assert.That(dequeued, Is.EqualTo(TransportProtocol.MaxQueuedReceiveEvents + 1));
+            Assert.That(last.Type, Is.EqualTo(TransportEventType.Disconnected),
+                "the prioritized disconnect must survive the drain");
+            Assert.That(last.Reason, Is.EqualTo(TransportDisconnectReason.ServerShutdown));
         }
 
         [Test]

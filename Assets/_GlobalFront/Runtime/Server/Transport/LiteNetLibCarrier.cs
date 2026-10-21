@@ -846,6 +846,18 @@ namespace GlobalFront.Server.Transport
             {
                 if (_events.Count >= TransportProtocol.MaxQueuedReceiveEvents)
                 {
+                    // A dropped Disconnected event leaks the host-side
+                    // binding forever, so control events are never shed by
+                    // data-queue pressure (their count is bounded by
+                    // MaxConnections).
+                    if (transportEvent.Type == TransportEventType.Disconnected ||
+                        transportEvent.Type == TransportEventType.Connected)
+                    {
+                        _events.Enqueue(transportEvent);
+                        _metrics.NoteQueueDepth(_events.Count);
+                        return;
+                    }
+
                     _metrics.DroppedQueueOverflow++;
                     return;
                 }

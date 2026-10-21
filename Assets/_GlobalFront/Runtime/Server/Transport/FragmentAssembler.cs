@@ -108,6 +108,22 @@ namespace GlobalFront.Server.Transport
                 return null;
             }
 
+            // Inadmissible declarations are rejected BEFORE any eviction:
+            // otherwise one hostile fragment claiming a huge fragmentCount
+            // evicts every legitimate in-flight group of the peer and is
+            // dropped only afterwards. A declaration is impossible when
+            // even the smallest complete message it can carry exceeds
+            // MaxMessageBytes, or when its worst-case reservation cannot
+            // fit the peer's reassembly budget.
+            var worstCase = (long)fragmentCount * TransportProtocol.FragmentPayloadBytes;
+            var smallestComplete =
+                (long)(fragmentCount - 1) * TransportProtocol.FragmentPayloadBytes + 1;
+            if (smallestComplete > TransportProtocol.MaxMessageBytes ||
+                worstCase > TransportProtocol.ReassemblyBudgetBytes)
+            {
+                return null;
+            }
+
             var group = FindGroup(messageId, fragmentCount);
             if (group == null)
             {
@@ -119,9 +135,6 @@ namespace GlobalFront.Server.Transport
                 // Admission uses the worst-case upper bound; the exact total
                 // is enforced during accumulation (oversized messages are
                 // discarded the moment they exceed MaxMessageBytes).
-                var worstCase = System.Math.Min(
-                    (long)fragmentCount * TransportProtocol.FragmentPayloadBytes,
-                    (long)TransportProtocol.ReassemblyBudgetBytes + 1);
                 EvictUntilBudget((int)worstCase);
                 if (AllocatedBytes + worstCase > TransportProtocol.ReassemblyBudgetBytes)
                 {

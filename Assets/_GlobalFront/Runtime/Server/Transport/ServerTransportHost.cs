@@ -109,7 +109,16 @@ namespace GlobalFront.Server.Transport
             _carrier.Pump(nowMs);
             while (_carrier.TryDequeueEvent(out var transportEvent))
             {
-                HandleEvent(transportEvent);
+                try
+                {
+                    HandleEvent(transportEvent);
+                }
+                catch (Exception)
+                {
+                    // One malformed message must never abort the drain and
+                    // strand the remaining events in the carrier queue.
+                    _carrier.Metrics.DroppedMalformed++;
+                }
             }
             DrainPendingAcks();
         }
@@ -175,6 +184,10 @@ namespace GlobalFront.Server.Transport
 
             _carrier.Shutdown(TransportDisconnectReason.ServerShutdown);
             _binder.ReleaseAll();
+
+            // Abandoned host state must not survive a restart of the host.
+            _rateLimiters.Clear();
+            _pendingAcks.Clear();
         }
 
         // ------------------------------------------------------------------
@@ -336,6 +349,7 @@ namespace GlobalFront.Server.Transport
             if (_binder.TryGetByConnection(transportEvent.ConnectionId, out var bound) &&
                 bound.Session != request.SessionId)
             {
+                _carrier.Metrics.DroppedBadToken++;
                 var denied = new ReconnectResponse(
                     GlobalFront.Core.Reconnect.ReconnectResult.Denied,
                     default(PlayerId),

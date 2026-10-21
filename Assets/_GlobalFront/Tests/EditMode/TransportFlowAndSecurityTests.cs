@@ -455,6 +455,7 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(binder.BoundCount, Is.EqualTo(1));
 
             // Socket A now asks to re-attach B as well.
+            var droppedBadTokenBefore = flow.Rig.ServerCarrier.Metrics.DroppedBadToken;
             var request = new ReconnectRequest(sessionB, secretB.ToByteArray(), 0);
             var buffer = new byte[ReconnectWireCodec.RequestSizeBytes];
             Assert.That(ReconnectWireCodec.TryEncodeRequest(request, buffer, out var written), Is.True);
@@ -488,6 +489,9 @@ namespace GlobalFront.Tests.EditMode
 
             Assert.That(received, Is.True, "the hijacking socket must receive an explicit denial");
             Assert.That(response.Result, Is.EqualTo(ReconnectResult.Denied));
+            Assert.That(flow.Rig.ServerCarrier.Metrics.DroppedBadToken,
+                Is.GreaterThan(droppedBadTokenBefore),
+                "a cross-session hijack denial must be visible to telemetry");
             Assert.That(binder.BoundCount, Is.EqualTo(1),
                 "a denied reconnect must not add a second session to the socket");
             Assert.That(binder.TryGetByConnection(connectionA, out var survivor), Is.True);
