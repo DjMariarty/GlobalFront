@@ -14,17 +14,19 @@
 - **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / P0/P1 = 0 CERTIFIED]. Шаги 2.1–2.8 + спринты hardening 2.1–2.5 (`5c94e07`..`4cb8ffa`). Сертификация Phase 2.0 на `4cb8ffa` подтвердила **P0/P1 = 0**: это строгий состязательный ре-аудит, выполненный Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); сам отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели привлекались только на промежуточных этапах ревью и авторами сертификата не являются. Уязвимость N-01 / D-10 / A-01 полностью ликвидирована на 3 независимых слоях. Все оставшиеся замечания (F-1..F-11, F-13..F-15, N-02..N-04) закрыты в Hardening Phase 3.7.1 — см. блоки ниже.
 - **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Шаги 3.1–3.7 (ADR-012, OD-23..OD-29). Сквозной вертикальный срез на 400 юнитах (`3414ba6` / `cb01ea2`). Замер OD-28: **0.623 ms/frame** — это CPU-пайплайн симуляции и презентации (headless EditMode, 400 юнитов, гард 8.0 ms), а не полный кадр с физическим GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров.
 - **Hardening Phase 3.7.1 (закрытие Grand Audit):** [100% COMPLETED]. Блоки 1–4 (`934840d`..`3a112ad`) закрыли code-level замечания F-1..F-11, F-13..F-15 и N-02..N-04; блок 5 закрыл F-6 и F-10. 17 новых EditMode-тестов (1162 → 1179), bite-прогоны по каждому наблюдаемому дефекту.
-- **Следующий шаг:** переход к **Phase 4 (Multiplayer Gameplay Integration)** — соединение проверенного сетевого фундамента Phase 2 с принятым RTS-геймплеем Phase 3.
+- **Phase 4 (Multiplayer Gameplay Integration):** [ACTIVE / IN PROGRESS]. ADR-014 принят (OD-35..OD-43, `DECISIONS.md`).
+- **Шаг 4.1 (Dedicated Server Core Relocation & Headless Runner):** [IMPLEMENTED / UNCOMMITTED]. `ServerHost` вынесен в `GlobalFront.Server` (engine-free), `LocalMatchHost` остался тонкой клиентской обёрткой с `BindReconnectCoordinator`; добавлена сборка `GlobalFront.ServerHost` с `DedicatedServerRunner` (цикл `Pump` → `AdvanceRealTime`, 120 FPS) и `DedicatedServerBootstrap` (`-port`, `-tickrate`, `-dedicatedServer` / `UNITY_SERVER`); в `FixedStepClock` добавлен кламп бэклога `MaxBacklogSeconds = 0.25` (OD-45). Гейт: EditMode **1199/1199**, PlayMode **16/16**.
+- **Следующий шаг:** верификация diff координатором и коммит Шага 4.1; далее по Rev.2 — 4.5 (wiring), затем 4.2 (client remote connection & handshake).
 
 ## Last Commit
 
-`3a112ad` (`fix(presentation): resolve F-11, F-7, and F-8 (Block 4 hardening)`)
+`bbfd19d` (`docs: synchronize phase descriptions, master plan, and AI context to 1195-test baseline`)
 
 ## Tests
 
-- EditMode: **1179/1179 passed** (100% green, 0 failed, 0 skipped, 2026-10-21; gate: `Artifacts/TestResults/block5-editmode-final.xml`)
-- PlayMode: **16/16 passed** (100% green, 0 failed, 0 skipped, 2026-10-21; gate: `Artifacts/TestResults/block5-playmode-final.xml`)
-- Всего: **1195 автоматизированных тестов** (100% green)
+- EditMode: **1199/1199 passed** (100% green, 0 failed, 0 skipped, 2026-10-21; gate: `Artifacts/TestResults/step41-editmode-final.xml`)
+- PlayMode: **16/16 passed** (100% green, 0 failed, 0 skipped, 2026-10-21; gate: `Artifacts/TestResults/step41-playmode-final.xml`)
+- Всего: **1215 автоматизированных тестов** (100% green; +20 EditMode к базовым 1195)
 - Компиляция: 0 warnings, 0 errors
 - OD-28 (400 юнитов): **0.623 ms/frame** — среднее CPU-время тика симуляции и презентационного кадра за 120 итераций в headless EditMode (`createVisuals: false`), гард 8.0 ms, потолок 60 FPS 16.67 ms; это не замер полного кадра с GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров и 60 loopback-тиков
 - Unity: `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
@@ -71,6 +73,12 @@
   - Phase 3.5 Selection System, Screen-Space Drag-Box & RTS Command Issuing — COMPLETE (`cfa24c2`) — [APPROVED: ZERO DEFECTS]
   - Phase 3.6 Minimap & Tactical HUD — COMPLETE (`2a754db`) — [APPROVED: ZERO DEFECTS]
   - Phase 3.7 Vertical Slice Integration, 400-Unit Benchmark, Multi-Frame PlayMode Suite & Architecture Invariants Gate — COMPLETE (`3414ba6`, `cb01ea2`) — [APPROVED: ZERO DEFECTS]
+- **Phase 4.1 Dedicated Server Core Relocation & Headless Runner — IMPLEMENTED (uncommitted on `bbfd19d`):**
+  - `Assets/_GlobalFront/Runtime/Server/ServerHost.cs` — двигатель-нейтральное ядро хоста (MatchServer + TickDriver + SessionManager + репликация + пауза), без ссылок на `GlobalFront.Client` и `UnityEngine`.
+  - `Assets/_GlobalFront/Runtime/Client/LocalMatchHost.cs` — тонкая обёртка над `ServerHost`; сохранены конструкторы, API и клиентский `BindReconnectCoordinator`.
+  - `Assets/_GlobalFront/Runtime/ServerHost/` — сборка `GlobalFront.ServerHost` с `DedicatedServerRunner` (120 FPS, `Pump` до тиков) и `DedicatedServerBootstrap`.
+  - `FixedStepClock.MaxBacklogSeconds` (0.25 с) — после спайка очередь ограничена, симуляция не отстаёт от wall-clock перманентно; 4 новых EditMode-теста.
+  - Bite-прогоны: backlog (2 падения, 4.8 с вместо 0.25 с), runner pump (2 падения, 0 вместо 1), изоляция Server-сборки (CS0246/CS0234 на `UnityEngine`/`GlobalFront.Client`).
 - **Hardening Phase 3.7.1 — Grand Audit remediation — COMPLETE:**
   - Block 1 (`934840d`): F-2 (N-04: control-события `Connected`/`Disconnected` не отбрасываются при переполнении очереди; `Shutdown` очищает rate limiters и pending acks), F-4 (телеметрия cross-session denial), F-5 (изоляция исключений на цепочке `Pump → HandleEvent → HandleMessage`), F-13 (порядок eviction при отклонении фрагмента).
   - Block 2 (`a08beaf`): F-3 (N-03 sink parity 512 для add и remove), F-14 (`Owner` и `AutoAcquireEnemies` включены в `StateChecksum`), F-15 (согласование серверного и клиентского порядка сущностей), F-9 (pacing-комментарии приведены к константам).
@@ -80,7 +88,7 @@
 
 ## Next Step
 
-**Phase 4 (Multiplayer Gameplay Integration) — [READY / NEXT]**: соединить принятый сетевой фундамент Phase 2 (`ICommandChannel`, snapshot networking, reconnect/resync, `SessionManager`) с принятым RTS-геймплеем и презентационным стеком Phase 3, чтобы vertical slice из 400 юнитов стал сетевым многопользовательским опытом.
+**Phase 4 (Multiplayer Gameplay Integration) — [ACTIVE]**: Шаг 4.1 реализован и ожидает верификации/коммита координатором. Далее по Rev.2: 4.5 (wiring), затем 4.2 (client remote connection & handshake), 4.3 (FoW / per-client filtering).
 
 ## Backlog
 
@@ -89,10 +97,10 @@
 
 ## Important Constraints
 
-- Current runtime: `LocalMatchHost` (ServerHost) работает в клиентском процессе и владеет `MatchServer`, `TickDriver` (engine-independent, в `GlobalFront.Server`) и `SessionManager` (Phase 2.4, ADR-008).
+- Current runtime: `ServerHost` (engine-independent, `GlobalFront.Server`) владеет `MatchServer`, `TickDriver` и `SessionManager`; `LocalMatchHost` — клиентская обёртка, добавляющая `BindReconnectCoordinator`. Dedicated-серверная обвязка живёт в отдельной сборке `GlobalFront.ServerHost` и не протекает в Core/Server.
 - Server tick lifecycle отделён от Unity client lifecycle (ADR-007). Session/player identity реализованы как server-authoritative layer (ADR-008): PlayerId назначается только сервером, command ingress проходит session gate.
 - Сетевой транспорт реализован по ADR-009 (OD-1 = LiteNetLib за контрактом `INetworkCarrier`) и сертифицирован.
-- **Headless transport pump (F-10):** `ServerTransportHost.Pump` реализован и покрыт `LiteNetLibCarrierIntegrationTests`, но в Phase 3 не имеет продакшн call-site — вертикальный срез использует `LocalReplicationLoopback`. Подключение к dedicated server loop — Phase 4, Шаг 4.1.
+- **Headless transport pump (F-10):** `ServerTransportHost.Pump` теперь имеет продакшн call-site в `DedicatedServerRunner.Update` (Phase 4, Шаг 4.1); вертикальный срез по-прежнему использует `LocalReplicationLoopback`.
 - Reconnect/resync реализованы и приняты (Phase 2.7, OD-18…OD-22) с тактической паузой и 5-секундным countdown.
 - Презентационный стек Phase 3 (OD-23..OD-29) доказал Zero-GC steady state и 0.623 ms/frame на 400 активных юнитах.
 - Product 1.0 включает пять основных фракций (NATO, Russia, China, GLA, USA); их gameplay/content будет развёрнут в последующих фазах.

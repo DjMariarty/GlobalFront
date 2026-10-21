@@ -6,6 +6,7 @@
         "UnityEditor.TestRunner",
         "GlobalFront.Core",
         "GlobalFront.Server",
+        "GlobalFront.ServerHost",
         "GlobalFront.Client",
         "Unity.RenderPipelines.Core.Runtime",
         "Unity.RenderPipelines.Universal.Runtime",
