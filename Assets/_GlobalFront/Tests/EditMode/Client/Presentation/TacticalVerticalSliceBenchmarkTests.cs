@@ -11,9 +11,13 @@ using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
 using GlobalFront.Server;
+using GlobalFront.Server.Replication;
+using GlobalFront.Server.Transport;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.TestTools.Constraints;
 using EntityId = GlobalFront.Core.Model.EntityId;
 using GcAssert = UnityEngine.TestTools.Constraints.Is;
@@ -749,6 +753,20 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
 
         // ------------------------------------------------------------------- budget
 
+        /// <summary>
+        /// OD-28's 400-unit profile, measured on the CPU side of the presentation
+        /// loop: one authoritative simulation tick plus one presentation frame
+        /// (tick-buffer interpolation, views, overlays, radar and both HUD canvases)
+        /// per iteration, with no camera and no GPU submit because the slice runs
+        /// headless (<c>createVisuals: false</c>) in EditMode.
+        ///
+        /// The reference number this fixture reported is <b>0.623 ms/frame</b> on the
+        /// test machine, against the 8.0 ms guard asserted below — better than 2×
+        /// headroom to the 16.67 ms 60 FPS ceiling before any rendering cost. It is
+        /// not a full-frame measurement: the draw calls the real game issues are
+        /// outside this window, so the guard describes the simulation and
+        /// presentation budget the slice owns, not the frame rate of a built game.
+        /// </summary>
         [Test]
         public void StepPresentationFrame_OneHundredTwentyFrames_StaysInsideTheSixtyFpsBudget()
         {
@@ -817,6 +835,109 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                 () => runner.Initialize(SmallRoster, createVisuals: false, autoStartRealTime: false),
                 Throws.InstanceOf<InvalidOperationException>(),
                 "initializing twice would leave one runner holding two matches");
+        }
+
+        /// <summary>
+        /// Phase 4's transport seam (F-11): the slice has to run on the interfaces the
+        /// emitter and the bridge already speak, not on the in-process loopback.
+        ///
+        /// The fake pair is a real relay, not a recorder: the downlink hands the
+        /// emitter's payloads to the bridge's uplink, and the uplink hands the
+        /// bridge's feedback back to the emitter's transport. That is the whole
+        /// loop, minus the socket, which is what makes the baseline converge here
+        /// for the same request/keyframe/pacing reasons it converges over the
+        /// loopback. A seam that was merely stored would leave
+        /// <see cref="TacticalVerticalSliceRunner.World"/> empty and fail below.
+        ///
+        /// The session is the seam's own: a network transport learns its connection
+        /// identity from its handshake, so this one raises the attachment on the
+        /// first control record it is asked to send rather than being handed one by
+        /// the runner. Supplying a seam is all-or-nothing; half a loop is an
+        /// exception, not a quietly degraded slice.
+        /// </summary>
+        [Test]
+        public void Initialize_WithCustomTransportAndUplink_UsesInjectedSeamsWithoutCreatingLoopback()
+        {
+            var downlink = new RelayTransport();
+            var uplink = new RelayUplink();
+            var attached = false;
+            downlink.PayloadSink = uplink.Deliver;
+            uplink.FeedbackSink = (kind, payload, length) =>
+            {
+                if (!attached)
+                {
+                    // The handshake a socket would have completed before the first
+                    // request; the emitter only tracks attached sessions.
+                    attached = true;
+                    downlink.AttachOneClient();
+                }
+
+                var type = kind == ReplicationFeedbackKind.Ack
+                    ? TransportMessageType.SnapshotAck
+                    : TransportMessageType.ReplicationRequest;
+                downlink.DeliverFeedback(
+                    new ReplicationFeedbackMessage(RelayedSession, type, payload, 0, length));
+            };
+
+            var runner = BuildRunner();
+            runner.Initialize(
+                SmallRoster,
+                createVisuals: false,
+                autoStartRealTime: false,
+                transport: downlink,
+                uplink: uplink);
+
+            Assert.That(runner.Transport, Is.SameAs(downlink),
+                "the injected downlink has to be the one the emitter sends through");
+            Assert.That(runner.Uplink, Is.SameAs(uplink),
+                "the injected uplink has to be the one the bridge sends feedback through");
+            Assert.That(runner.Loopback, Is.Null,
+                "an injected seam must not also build the in-process loopback behind it");
+            Assert.That(runner.World.LiveCount, Is.EqualTo(SmallRoster),
+                "the injected pair has to carry the baseline keyframe; a seam that is only " +
+                "stored is not a seam the slice runs on");
+            Assert.That(downlink.PayloadCount, Is.GreaterThan(0),
+                "the emitter must have put its slices on the injected downlink");
+            Assert.That(uplink.FeedbackCount, Is.GreaterThan(0),
+                "and the bridge must have put its acks and requests on the injected uplink");
+
+            Assert.That(
+                () => runner.StepPresentationFrame(FrameSeconds, 1.0),
+                Throws.Nothing,
+                "a presentation frame has to run with no loopback behind the injected seam");
+
+            runner.Shutdown();
+            Assert.That(runner.Transport, Is.Null, "shutdown releases the injected downlink");
+            Assert.That(runner.Uplink, Is.Null, "and the injected uplink");
+            Assert.That(runner.Loopback, Is.Null);
+        }
+
+        [Test]
+        public void Initialize_WithOnlyOneInjectedSeam_RefusesHalfAWiredLoop()
+        {
+            var downlink = new RelayTransport();
+            var uplink = new RelayUplink();
+            var runner = BuildRunner();
+
+            Assert.That(
+                () => runner.Initialize(
+                    SmallRoster,
+                    createVisuals: false,
+                    autoStartRealTime: false,
+                    transport: downlink),
+                Throws.ArgumentException,
+                "a transport without an uplink leaves the bridge with nowhere to send feedback");
+            Assert.That(
+                () => runner.Initialize(
+                    SmallRoster,
+                    createVisuals: false,
+                    autoStartRealTime: false,
+                    uplink: uplink),
+                Throws.ArgumentException,
+                "an uplink without a transport leaves the emitter with nowhere to send slices");
+            Assert.That(runner.IsInitialized, Is.False);
+            Assert.That(runner.Transport, Is.Null);
+            Assert.That(runner.Uplink, Is.Null);
         }
 
         [Test]
@@ -1388,6 +1509,168 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                 "the content roots hold those renderers, so they have to go too");
             Assert.That(runner.Binder, Is.Null);
             Assert.That(runner.IsInitialized, Is.False);
+        }
+
+        // ------------------------------------------------ renderer feature installation (F-7)
+
+        /// <summary>
+        /// F-7: a renderer feature that is not in the URP renderer assets is never
+        /// created, so <see cref="UnitOverlayRendererFeature.Active"/> stays null and the
+        /// RenderGraph pass that chunks 250 instances at a time never runs in a build.
+        /// The slice falls back to its direct command buffer, which is why the defect is
+        /// invisible in play and visible only where the ownership rule is written down.
+        ///
+        /// This is the witness the assets themselves can give without a rendered frame:
+        /// both renderers carry exactly one active feature of the right type, and the
+        /// reference the renderer list holds is the sub-asset the file contains.
+        /// </summary>
+        [Test]
+        public void UrpRendererAssets_RegisterExactlyOneActiveUnitOverlayFeature()
+        {
+            AssertRendererAssetCarriesOverlayFeature("Assets/Settings/PC_Renderer.asset");
+            AssertRendererAssetCarriesOverlayFeature("Assets/Settings/Mobile_Renderer.asset");
+        }
+
+        private static void AssertRendererAssetCarriesOverlayFeature(string assetPath)
+        {
+            var renderer = AssetDatabase.LoadAssetAtPath<ScriptableRendererData>(assetPath);
+            Assert.That(renderer, Is.Not.Null,
+                $"{assetPath} is not an importable URP ScriptableRendererData");
+
+            var features = renderer.rendererFeatures;
+            var matches = 0;
+            ScriptableRendererFeature overlay = null;
+            for (var index = 0; index < features.Count; index++)
+            {
+                if (features[index] is UnitOverlayRendererFeature)
+                {
+                    matches++;
+                    overlay = features[index];
+                }
+            }
+
+            Assert.That(matches, Is.EqualTo(1),
+                $"{assetPath} must register exactly one {nameof(UnitOverlayRendererFeature)}, " +
+                $"found {matches}: {DescribeRendererFeatures(features)}");
+            Assert.That(overlay.isActive, Is.True,
+                $"the feature in {assetPath} is disabled, so URP never enqueues its pass");
+            Assert.That(overlay is UnitOverlayRendererFeature, Is.True);
+
+            // The renderer list has to point at the sub-asset the file actually carries:
+            // a reference to a deleted or re-created object loads as a missing feature.
+            var subAssets = AssetDatabase.LoadAllAssetsAtPath(assetPath);
+            var linkedToSubAsset = false;
+            for (var index = 0; index < subAssets.Length; index++)
+            {
+                if (ReferenceEquals(subAssets[index], overlay))
+                {
+                    linkedToSubAsset = true;
+                    break;
+                }
+            }
+
+            Assert.That(linkedToSubAsset, Is.True,
+                $"{assetPath}'s feature list does not point at one of the file's own sub-assets, " +
+                "so the reference only works while the asset is already loaded");
+        }
+
+        private static string DescribeRendererFeatures(List<ScriptableRendererFeature> features)
+        {
+            if (features == null || features.Count == 0)
+            {
+                return "no renderer features";
+            }
+
+            var names = new List<string>();
+            for (var index = 0; index < features.Count; index++)
+            {
+                names.Add(features[index] == null ? "<missing>" : features[index].GetType().Name);
+            }
+
+            return string.Join(", ", names);
+        }
+
+        /// <summary>
+        /// The other half of F-7: registration is only an installation if the running
+        /// slice then hands its batches to the installed feature. The feature is
+        /// created before <see cref="TacticalVerticalSliceRunner.Initialize"/> so the
+        /// runner's own adoption path (the <c>Active?.Attach(_binder)</c> call) is the
+        /// one under test, and the ownership rule is read where it is enforced: the
+        /// direct command buffer must stay empty while the feature is ready, and must
+        /// fill once the feature is disposed. Without the second half, an empty batch
+        /// would make the first assertion pass for the wrong reason.
+        /// </summary>
+        [Test]
+        public void Initialize_WithLiveOverlayFeature_HandsDrawingToTheFeatureWithoutDoubleDraw()
+        {
+            var feature = ScriptableObject.CreateInstance<UnitOverlayRendererFeature>();
+            var previous = UnitOverlayRendererFeature.Active;
+            var disposed = false;
+            try
+            {
+                feature.Create();
+                Assert.That(UnitOverlayRendererFeature.Active, Is.SameAs(feature));
+
+                var runner = BuildRunner();
+                runner.Initialize(SmallRoster, createVisuals: true, autoStartRealTime: false);
+
+                Assert.That(feature.IsReady, Is.True,
+                    "the slice has to attach its binder to the installed feature; a ready renderer " +
+                    "with no match draws nothing and this slice would then draw through the fallback");
+
+                SelectLocalUnits(runner, 4);
+                StepTicks(runner, 2);
+                runner.StepPresentationFrame(FrameSeconds, 1.0);
+                Assert.That(runner.OverlayBatcher.SelectionRingCount, Is.EqualTo(4),
+                    "the selection has to reach the overlay batch before the ownership rule means anything");
+
+                var direct = OverlayCommandBufferOf(runner);
+                Assert.That(direct.sizeInBytes, Is.EqualTo(0), "a fresh command buffer is empty");
+
+                runner.DrawOverlaysDirect();
+                Assert.That(direct.sizeInBytes, Is.EqualTo(0),
+                    "the live feature owns the batches, so the direct path must record nothing: drawing " +
+                    "both would put a second set of rings on the first");
+
+                feature.Dispose();
+                disposed = true;
+                Assert.That(feature.IsReady, Is.False);
+                Assert.That(UnitOverlayRendererFeature.Active, Is.Null);
+
+                runner.DrawOverlaysDirect();
+                Assert.That(direct.sizeInBytes, Is.GreaterThan(0),
+                    "with the feature gone the same frame has to reach the direct path, or the empty " +
+                    "buffer above was an empty batch rather than a hand-off");
+            }
+            finally
+            {
+                if (!disposed)
+                {
+                    feature.Dispose();
+                }
+
+                // The pipeline's own feature may have been the active one before this
+                // test created its stand-in; a disposed feature leaves Active null, and
+                // the next renderer creation is the only other path back.
+                if (previous != null && previous != feature)
+                {
+                    previous.Create();
+                }
+            }
+        }
+
+        private static CommandBuffer OverlayCommandBufferOf(TacticalVerticalSliceRunner runner)
+        {
+            var field = typeof(TacticalVerticalSliceRunner).GetField(
+                "_overlayCommandBuffer",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(field, Is.Not.Null,
+                "the runner no longer owns a direct overlay command buffer, so the fallback under " +
+                "test is gone");
+            var buffer = (CommandBuffer)field.GetValue(runner);
+            Assert.That(buffer, Is.Not.Null,
+                "createVisuals: true must have built the direct command buffer");
+            return buffer;
         }
 
         // ------------------------------------------- overlay drawing hook (playing capture)
@@ -2228,6 +2511,100 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             return new Vector2(
                 rect.xMin + uv.x * rect.width,
                 rect.yMin + uv.y * rect.height);
+        }
+
+        /// <summary>
+        /// The identity a socket would own: the fake transport attaches this session
+        /// and the fake uplink stamps its feedback with it, because in a real seam the
+        /// connection — not the runner — is what knows both ends of the wire.
+        /// </summary>
+        private static readonly SessionId RelayedSession = new SessionId(new Guid(
+            0x0B100004, 0x0000, 0x0000, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11));
+
+        /// <summary>
+        /// An injected downlink that does what a transport does: hands every payload
+        /// it is given to whichever sink the test wired to it. The sink is a delegate
+        /// rather than a reference to the uplink so the two fakes stay independent
+        /// objects, which is the arrangement F-11 exists to prove the runner accepts.
+        /// </summary>
+        private sealed class RelayTransport : IReplicationTransport
+        {
+            public Action<ulong, byte[], int> PayloadSink { get; set; }
+
+            /// <summary>Payloads the emitter put on this downlink.</summary>
+            public int PayloadCount { get; private set; }
+
+            public event Action<SessionId, MatchId, PlayerId> SessionAttached;
+
+            public event Action<SessionId, MatchId, PlayerId> SessionReattached;
+
+            public event Action<SessionId> PostSessionReattached;
+
+            public event Action<SessionId, TransportDisconnectReason> SessionDetached;
+
+            public event Action<ReplicationFeedbackMessage> FeedbackReceived;
+
+            public bool SendToSession(
+                SessionId session,
+                ulong envelopeTick,
+                byte[] buffer,
+                int length)
+            {
+                if (buffer == null || length < 1 || length > buffer.Length)
+                {
+                    return false;
+                }
+
+                PayloadCount++;
+                PayloadSink?.Invoke(envelopeTick, buffer, length);
+                return true;
+            }
+
+            public void AttachOneClient() =>
+                SessionAttached?.Invoke(RelayedSession, default, new PlayerId(1));
+
+            public void ReattachOneClient()
+            {
+                SessionReattached?.Invoke(RelayedSession, default, new PlayerId(1));
+                PostSessionReattached?.Invoke(RelayedSession);
+            }
+
+            public void DetachOneClient() =>
+                SessionDetached?.Invoke(RelayedSession, TransportDisconnectReason.ClientRequested);
+
+            public void DeliverFeedback(ReplicationFeedbackMessage message) =>
+                FeedbackReceived?.Invoke(message);
+        }
+
+        /// <summary>
+        /// An injected uplink that records the bridge's control records and forwards
+        /// them to the sink the test wired. It exposes the snapshot event the bridge
+        /// subscribes to, so payloads handed in by the downlink arrive as if a socket
+        /// had surfaced them.
+        /// </summary>
+        private sealed class RelayUplink : IReplicationUplink
+        {
+            public Action<ReplicationFeedbackKind, byte[], int> FeedbackSink { get; set; }
+
+            /// <summary>Control records the bridge put on this uplink.</summary>
+            public int FeedbackCount { get; private set; }
+
+            public event Action<ulong, byte[], int> SnapshotPayloadReceived;
+
+            public bool TrySendFeedback(ReplicationFeedbackKind kind, byte[] payload, int length)
+            {
+                if (payload == null || length < 1 || length > payload.Length)
+                {
+                    return false;
+                }
+
+                FeedbackCount++;
+                FeedbackSink?.Invoke(kind, payload, length);
+                return true;
+            }
+
+            public void Deliver(ulong envelopeTick, byte[] buffer, int length) =>
+                SnapshotPayloadReceived?.Invoke(envelopeTick, buffer, length);
         }
 
         /// <summary>

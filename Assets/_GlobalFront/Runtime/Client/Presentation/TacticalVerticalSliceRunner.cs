@@ -444,6 +444,13 @@ namespace GlobalFront.Client.Presentation
         private ServerReplicationEmitter _emitter;
         private CorpseReapSnapshotSource _snapshotSource;
         private LocalReplicationLoopback _loopback;
+
+        // The seams the replication loop actually runs on. With no injection they are the
+        // loopback itself; with one they are whatever the caller supplied, and every wire
+        // below keeps addressing the interfaces rather than the in-process shortcut.
+        private IReplicationTransport _transport;
+        private IReplicationUplink _uplink;
+
         private ClientReplicationReceiver _receiver;
         private ClientTransportReplicationBridge _bridge;
         private ClientReplicationWorld _world;
@@ -525,6 +532,16 @@ namespace GlobalFront.Client.Presentation
         public ServerReplicationEmitter Emitter => _emitter;
 
         public LocalReplicationLoopback Loopback => _loopback;
+
+        /// <summary>
+        /// The downlink the host's emitter sends through. This is the loopback unless
+        /// <see cref="Initialize"/> was handed an external seam, and it is null before
+        /// initialization and after <see cref="Shutdown"/>.
+        /// </summary>
+        public IReplicationTransport Transport => _transport;
+
+        /// <summary>The uplink the replication bridge sends feedback through.</summary>
+        public IReplicationUplink Uplink => _uplink;
 
         public ClientReplicationReceiver Receiver => _receiver;
 
@@ -624,11 +641,26 @@ namespace GlobalFront.Client.Presentation
         /// <see cref="SimulationConstants.AutoAcquireRangeMm"/>. The local army is
         /// always player-driven, so this is what makes the slice defensive or inert.
         /// </param>
+        /// <param name="transport">
+        /// The downlink the host's emitter sends through. Supplying a seam together
+        /// with <paramref name="uplink"/> replaces the in-process
+        /// <see cref="LocalReplicationLoopback"/>; supplying neither keeps it. The
+        /// pair is all-or-nothing because one half of the loop without the other
+        /// leaves the slice holding a bridge it cannot feed.
+        /// </param>
+        /// <param name="uplink">
+        /// The uplink the replication bridge sends feedback through. It belongs to
+        /// the same transport as <paramref name="transport"/>: the seam that owns
+        /// the connection is the one that raises the session-attachment events and
+        /// accepts the acknowledgements on the way back.
+        /// </param>
         public void Initialize(
             int unitCount = DefaultUnitCount,
             bool createVisuals = true,
             bool autoStartRealTime = true,
-            bool enemyAutoAcquire = true)
+            bool enemyAutoAcquire = true,
+            IReplicationTransport transport = null,
+            IReplicationUplink uplink = null)
         {
             if (_isInitialized)
             {
@@ -651,6 +683,15 @@ namespace GlobalFront.Client.Presentation
                     $"a tactical vertical slice needs between {MinUnitCount} and {maxCapacity} units.");
             }
 
+            if ((transport == null) != (uplink == null))
+            {
+                throw new ArgumentException(
+                    "an external replication seam needs both a transport and an uplink: " +
+                    "one without the other leaves half of the loop unwired.");
+            }
+
+            _transport = transport;
+            _uplink = uplink;
             _unitCount = unitCount;
             _createVisuals = createVisuals;
 
@@ -931,7 +972,9 @@ namespace GlobalFront.Client.Presentation
                 if (_loopback != null)
                 {
                     // Stops the emitter tracking this session, the same signal a
-                    // client leaving a real match raises.
+                    // client leaving a real match raises. An injected transport owns
+                    // its own disconnect: this runner never opened its connection and
+                    // has no interface to close it.
                     _loopback.DetachClient(TransportDisconnectReason.ClientRequested);
                 }
             }
@@ -984,6 +1027,8 @@ namespace GlobalFront.Client.Presentation
             _snapshotSource = null;
             _host = null;
             _loopback = null;
+            _transport = null;
+            _uplink = null;
             _clientSession = null;
             _unitCount = 0;
             _friendlyAliveCount = 0;
@@ -1165,14 +1210,23 @@ namespace GlobalFront.Client.Presentation
 
         private void AttachReplication()
         {
-            _loopback = new LocalReplicationLoopback(_localSession, _match, _localPlayer);
+            // No injected seam means the slice still closes its loop in process. The
+            // loopback is remembered separately from the interfaces it is stored in,
+            // because it is the only seam whose session is this runner's to attach and
+            // detach; a network transport owns that life cycle itself.
+            if (_transport == null)
+            {
+                _loopback = new LocalReplicationLoopback(_localSession, _match, _localPlayer);
+                _transport = _loopback;
+                _uplink = _loopback;
+            }
 
             // The emitter has to exist before the session attaches: it only
             // tracks attachments that arrive after it was constructed.
             _snapshotSource = new CorpseReapSnapshotSource(
                 new MatchServerSnapshotSource(_host.Server),
                 ClientReplicationWorld.DefaultCapacity);
-            _emitter = _host.AttachReplication(_loopback, ServerReplicationEmitterConfig.Default, _snapshotSource);
+            _emitter = _host.AttachReplication(_transport, ServerReplicationEmitterConfig.Default, _snapshotSource);
 
             _receiver = new ClientReplicationReceiver(ClientReplicationWorld.DefaultCapacity);
             _world = _receiver.World;
@@ -1189,9 +1243,9 @@ namespace GlobalFront.Client.Presentation
                 addSink: ClientReplicationWorld.DefaultCapacity,
                 updateSink: ClientReplicationWorld.DefaultCapacity,
                 removeSink: ClientReplicationWorld.DefaultCapacity);
-            _bridge = new ClientTransportReplicationBridge(_loopback, _receiver, in bridgeConfig);
+            _bridge = new ClientTransportReplicationBridge(_uplink, _receiver, in bridgeConfig);
 
-            _loopback.AttachClient();
+            _loopback?.AttachClient();
         }
 
         private void BuildPresentation()
@@ -1528,12 +1582,17 @@ namespace GlobalFront.Client.Presentation
             {
                 // Naming what each half of the loop reported is the difference
                 // between a failure a reader can diagnose and a number.
+                // An injected seam has no loopback counters to quote: saying so is more
+                // useful than reporting three zeroes as if they were measurements.
+                var seamReport = _loopback != null
+                    ? $"loopback forwarded {_loopback.ForwardedSliceCount} slices and " +
+                      $"{_loopback.ForwardedDeltaCount} deltas, rejected {_loopback.RejectedMessageCount}"
+                    : "the replication seam is injected, so no loopback counters exist";
                 throw new InvalidOperationException(
                     $"the replicated world holds {_world.LiveCount} of {unitCount} units after {limit} ticks " +
                     $"(receiver state {_receiver.State}, failure {_receiver.FailureReason}, " +
                     $"last applied tick {_receiver.LastAppliedTick}, baseline {_receiver.BaseKeyframeTick}; " +
-                    $"loopback forwarded {_loopback.ForwardedSliceCount} slices and {_loopback.ForwardedDeltaCount} deltas, " +
-                    $"rejected {_loopback.RejectedMessageCount}).");
+                    $"{seamReport}).");
             }
 
             // Binding happens in Render, and a zero delta is the documented

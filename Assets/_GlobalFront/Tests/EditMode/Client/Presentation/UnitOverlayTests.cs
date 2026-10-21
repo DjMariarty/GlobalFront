@@ -855,34 +855,57 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             return found;
         }
 
-        private static Mesh FindOverlayMesh(string name)
-        {
-            var meshes = Resources.FindObjectsOfTypeAll<Mesh>();
-            for (var index = 0; index < meshes.Length; index++)
-            {
-                if (meshes[index].name == name)
-                {
-                    return meshes[index];
-                }
-            }
-
-            return null;
-        }
-
-        /// <summary>The material the renderer feature built for itself, or null.</summary>
-        private static Material FindProceduralOverlayMaterial()
+        /// <summary>
+        /// All procedural overlay materials currently alive. A count rather than a
+        /// lookup: since the feature is installed on the URP renderers, the pipeline
+        /// may own one of its own, and a name search cannot tell whose is whose.
+        /// </summary>
+        private static int CountProceduralOverlayMaterials()
         {
             var materials = Resources.FindObjectsOfTypeAll<Material>();
+            var found = 0;
             for (var index = 0; index < materials.Length; index++)
             {
-                var candidate = materials[index];
-                if (candidate.name == ProceduralMaterialName && candidate.hideFlags == HideFlags.DontSave)
+                if (materials[index].name == ProceduralMaterialName &&
+                    materials[index].hideFlags == HideFlags.DontSave)
                 {
-                    return candidate;
+                    found++;
                 }
             }
 
-            return null;
+            return found;
+        }
+
+        /// <summary>
+        /// The resources one feature instance owns, read from its pass rather than
+        /// by name: with the feature installed on the renderers, the pipeline's own
+        /// pair has the same mesh and material names and a global lookup would
+        /// answer about the wrong object.
+        /// </summary>
+        private static object OverlayPassOf(UnitOverlayRendererFeature feature)
+        {
+            var field = typeof(UnitOverlayRendererFeature).GetField(
+                "_pass", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(field, Is.Not.Null, "the feature must still own its render pass");
+            var pass = field.GetValue(feature);
+            Assert.That(pass, Is.Not.Null, "the feature has no pass to read resources from");
+            return pass;
+        }
+
+        private static Mesh FeatureMesh(UnitOverlayRendererFeature feature, string fieldName)
+        {
+            var pass = OverlayPassOf(feature);
+            var field = pass.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(field, Is.Not.Null, $"the render pass no longer has a {fieldName} field");
+            return (Mesh)field.GetValue(pass);
+        }
+
+        private static Material FeatureMaterial(UnitOverlayRendererFeature feature)
+        {
+            var pass = OverlayPassOf(feature);
+            var field = pass.GetType().GetField("_material", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(field, Is.Not.Null, "the render pass no longer has a _material field");
+            return (Material)field.GetValue(pass);
         }
 
         /// <summary>
@@ -903,7 +926,11 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         public void RendererFeature_Create_WithNullMaterial_BuildsProceduralResourcesAndBecomesReadyWhenAttached()
         {
             EnsureOverlayShaderResident();
-            Assert.That(CountOverlayMeshes(), Is.EqualTo(0), "no overlay mesh should exist before a feature is created");
+
+            // The feature is installed on the URP renderers, so the live pipeline may
+            // already own a pair of its own; every count below is a delta from here.
+            var meshesBefore = CountOverlayMeshes();
+            var materialsBefore = CountProceduralOverlayMaterials();
 
             var feature = ScriptableObject.CreateInstance<UnitOverlayRendererFeature>();
             try
@@ -918,9 +945,9 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                 // whether it had built the resources, and the pass is always there, so the
                 // first call — and every later one with no material assigned — took the
                 // early exit and the overlays never existed.
-                Assert.That(CountOverlayMeshes(), Is.EqualTo(2),
-                    "with no material assigned, the first Create() has to build the procedural pair");
-                var material = FindProceduralOverlayMaterial();
+                Assert.That(CountOverlayMeshes(), Is.EqualTo(meshesBefore + 2),
+                    "with no material assigned, the first Create() has to build exactly one procedural pair");
+                var material = FeatureMaterial(feature);
                 Assert.That(material == null, Is.False, "and the material with it");
                 Assert.That(material.enableInstancing, Is.True,
                     "URP refuses DrawMeshInstanced for a material that is not instanced");
@@ -937,9 +964,9 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
 
             Assert.That(feature.IsReady, Is.False, "dispose takes the pass away");
             Assert.That(UnitOverlayRendererFeature.Active, Is.Null, "and uninstalls the feature");
-            Assert.That(CountOverlayMeshes(), Is.EqualTo(0),
+            Assert.That(CountOverlayMeshes(), Is.EqualTo(meshesBefore),
                 "the meshes it built are native objects and must not outlive it");
-            Assert.That(FindProceduralOverlayMaterial() == null, Is.True,
+            Assert.That(CountProceduralOverlayMaterials(), Is.EqualTo(materialsBefore),
                 "and so must the material");
         }
 
@@ -947,6 +974,8 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         public void RendererFeature_Create_IsIdempotentAndReleasesOldResourcesOnMaterialChange()
         {
             EnsureOverlayShaderResident();
+            var meshesBefore = CountOverlayMeshes();
+            var materialsBefore = CountProceduralOverlayMaterials();
             var feature = ScriptableObject.CreateInstance<UnitOverlayRendererFeature>();
             var callerMaterial = new Material(Shader.Find(UnitOverlayGeometry.ShaderName))
             {
@@ -955,20 +984,20 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             try
             {
                 feature.Create();
-                var ringBefore = FindOverlayMesh(RingMeshName);
-                var procedural = FindProceduralOverlayMaterial();
+                var ringBefore = FeatureMesh(feature, "_ringMesh");
+                var procedural = FeatureMaterial(feature);
                 Assert.That(ringBefore == null, Is.False, "the first build produced a ring mesh");
                 Assert.That(procedural == null, Is.False, "and its own material");
-                Assert.That(CountOverlayMeshes(), Is.EqualTo(2));
+                Assert.That(CountOverlayMeshes(), Is.EqualTo(meshesBefore + 2));
 
                 feature.Create();
                 feature.Create();
 
                 // Re-running Create is the normal case (script reload, inspector edit), so
                 // it must neither rebuild nor strand the previous pair.
-                Assert.That(CountOverlayMeshes(), Is.EqualTo(2),
+                Assert.That(CountOverlayMeshes(), Is.EqualTo(meshesBefore + 2),
                     "repeating Create with the same assignment must not build a second pair");
-                Assert.That(FindOverlayMesh(RingMeshName), Is.SameAs(ringBefore),
+                Assert.That(FeatureMesh(feature, "_ringMesh"), Is.SameAs(ringBefore),
                     "and not replace the pair it already has");
 
                 // Now change the assignment to a material somebody else owns. The previous
@@ -982,11 +1011,13 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                     "the ring mesh the superseded build created was destroyed, not just dropped");
                 Assert.That(procedural == null, Is.True,
                     "and the material it owned with it");
-                Assert.That(CountOverlayMeshes(), Is.EqualTo(2),
+                Assert.That(CountOverlayMeshes(), Is.EqualTo(meshesBefore + 2),
                     "and replaced by exactly one new pair");
                 Assert.That(callerMaterial == null, Is.False,
                     "an assigned material belongs to the caller: the feature must not destroy it");
-                Assert.That(FindProceduralOverlayMaterial() == null, Is.True,
+                Assert.That(FeatureMaterial(feature), Is.SameAs(callerMaterial),
+                    "the rebuilt pass has to draw with the material it was handed");
+                Assert.That(CountProceduralOverlayMaterials(), Is.EqualTo(materialsBefore),
                     "and rebuilding must not quietly create a second one of its own");
             }
             finally
@@ -996,8 +1027,8 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
 
             Assert.That(callerMaterial == null, Is.False,
                 "Dispose drops what it drew with, but never a material it was only handed");
-            Assert.That(CountOverlayMeshes(), Is.EqualTo(0), "and it does release the pair it built");
-            Assert.That(FindProceduralOverlayMaterial() == null, Is.True,
+            Assert.That(CountOverlayMeshes(), Is.EqualTo(meshesBefore), "and it does release the pair it built");
+            Assert.That(CountProceduralOverlayMaterials(), Is.EqualTo(materialsBefore),
                 "so no overlay material of the feature's own is left for the next test");
             Object.DestroyImmediate(callerMaterial);
         }

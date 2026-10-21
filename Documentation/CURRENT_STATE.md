@@ -12,7 +12,7 @@
 
 - **Phase 1 (Simulation Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Спринты hardening 1.1–1.5.1 закрыли concurrency, reentrancy, friendly-fire и snapshot allocations (`5b16a05`..`349a074`).
 - **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Шаги 2.1–2.8 + спринты hardening 2.1–2.5 (`5c94e07`..`4cb8ffa`). Grand Re-Audit сертифицирован единогласно 3 независимыми аудиторами: Qwen 3.8 Max, NVIDIA Nemotron 3.5 Super VL, MiniMax M3.1 Flash с вердиктом **`[APPROVED: ZERO DEFECTS]`** (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`). Уязвимость N-01 / D-10 / A-01 полностью ликвидирована на 3 независимых слоях.
-- **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Шаги 3.1–3.7 (ADR-012, OD-23..OD-29). Сквозной вертикальный срез на 400 юнитах (`3414ba6` / `cb01ea2`). Замер OD-28: **0.623 ms/frame** (гард 8.0 ms, потолок 16.67 ms для 60 FPS) и **0 B GC.Alloc** за 60 steady-state кадров.
+- **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Шаги 3.1–3.7 (ADR-012, OD-23..OD-29). Сквозной вертикальный срез на 400 юнитах (`3414ba6` / `cb01ea2`). Замер OD-28: **0.623 ms/frame** — это CPU-пайплайн симуляции и презентации (headless EditMode, 400 юнитов, гард 8.0 ms), а не полный кадр с физическим GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров.
 - **Следующий шаг:** переход к **Phase 4 (Multiplayer Gameplay Integration)** — соединение проверенного сетевого фундамента Phase 2 с принятым RTS-геймплеем Phase 3.
 
 ## Last Commit
@@ -25,7 +25,7 @@
 - PlayMode: **16/16 passed** (100% green, 0 failed, 0 skipped, 2026-10-20; gate: `Artifacts/TestResults/sprint25-playmode-final.xml`)
 - Всего: **1178 автоматизированных тестов** (100% green)
 - Компиляция: 0 warnings, 0 errors
-- OD-28 (400 юнитов): **0.623 ms/frame** среднее за 120 презентационных кадров (гард 8.0 ms, потолок 60 FPS 16.67 ms); **0 B GC.Alloc** за 60 steady-state кадров и 60 loopback-тиков
+- OD-28 (400 юнитов): **0.623 ms/frame** — среднее CPU-время тика симуляции и презентационного кадра за 120 итераций в headless EditMode (`createVisuals: false`), гард 8.0 ms, потолок 60 FPS 16.67 ms; это не замер полного кадра с GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров и 60 loopback-тиков
 - Unity: `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
 
 ## Completed Milestones
