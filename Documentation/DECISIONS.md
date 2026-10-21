@@ -481,6 +481,70 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - **Post-certification remediation:** все оставшиеся замечания Grand Audit (F-1..F-11, F-13..F-15; N-02..N-04) закрыты в Hardening Phase 3.7.1 блоками 1–5 (`934840d`..`3a112ad` + документация); каждое code-level замечание подтверждено bite-прогоном, baseline **1179 EditMode + 16 PlayMode**.
 - Результат: **P0/P1 = 0** сертифицированы; после закрытия P2/P3 фундамент Phase 1.0–2.8 и Phase 3.0 заморожен и готов к Phase 4.
 
+## ADR-014: Phase 4 Multiplayer Gameplay Integration & Architecture
+*Status:* ACCEPTED (Consensus: Dual Adversarial R&D — GLM 5.3 Flash & Qwen 3.8 Max 0902; verified on `bbfd19d`)  
+*Date:* 2026-10-21  
+*Target:* Unity 6000.6.2f1 / Core / Server / ServerHost / Client / LiteNetLib 1.3.5 / URP 17.6.0  
+
+### Context & Problem Statement
+Фаза 2 создала детерминированный сетевой фундамент (`GlobalFront.Server`, `MatchServer`, `TickDriver`, `SessionManager`, `LiteNetLibCarrier`, `DeltaSnapshotWireCodec`, reconnect/resync), а Фаза 3 построила клиентский презентационный стек (`TacticalVerticalSliceRunner`, `UnitViewTickBuffer`, `UnitViewBinder`, `UnitOverlayRendererFeature`, HUD/Minimap) на 400 юнитах в локальном лупбеке.
+Задача Фазы 4 — объединить оба стека в полноценный сетевой RTS-мультиплеер (Dedicated Server + Remote Clients).
+В ходе двойного состязательного исследования (`Phase_04_Multiplayer_Gameplay_Integration_RND.md` и `Phase_04_Multiplayer_Gameplay_Integration_RND_Rev2.md`) были выявлены критические архитектурные вызовы:
+1. `LocalMatchHost` находится в сборке клиента с ограничением `!UNITY_SERVER` — сборка Dedicated Server в Unity 6 вырезает хост.
+2. Отсутствие Fog of War приводит к переполнению лимита одиночного UDP-пакета (8192 байта) на 400 юнитах.
+3. Простой битмап `KnownSet` для видимости при потере пакетов вызывает фатальный `DuplicateEntity` на клиенте и шторм 16 КБ ключевых кадров.
+4. Накопление бэклога в `FixedStepClock` при спайках задержки > 200 мс может навсегда отставить сервер от реального времени.
+
+### Owner Decisions (OD-35 — OD-43):
+
+#### [OD-35] Dedicated Server Build Target
+- Выделенный сервер компилируется через официальный Unity 6 Build Target `StandaloneBuildSubtarget.Server` с дефайном `UNITY_SERVER`.
+- Исключаются рендеринг, физика, звук и UI-лупы. Чистый консольный C# host отложен на Phase 8.
+
+#### [OD-36] Server Core Relocation & Assembly Separation
+- Ядро хоста матча извлекается из `LocalMatchHost.cs` (`GlobalFront.Client`) в чистый класс `ServerHost.cs` в сборке `GlobalFront.Server` (`noEngineReferences: true`).
+- Связка с клиентским координатором реконнекта `BindReconnectCoordinator` инвертируется через абстракцию/событие.
+- Создаётся новая Unity-сборка `GlobalFront.ServerHost` (`UNITY_SERVER`), содержащая `DedicatedServerBootstrap.cs` и `DedicatedServerRunner.cs` (`MonoBehaviour`).
+
+#### [OD-37] Dedicated Server Tick Pump Loop & Backlog Clamp
+- Раннер выделенного сервера работает на `Application.targetFrameRate = 120` (без холостого spin-wait) и передает реальное дельта-время в `TickDriver.AdvanceRealTime(elapsed)`.
+- `ServerTransportHost.Pump(nowMs, drainTick)` вызывается на каждом цикле откачки, управляя сетевыми событиями сокетов.
+- Вводится жесткий кламп бэклога `FixedStepClock` при просадках > 200 мс для защиты от перманентного отставания сервера.
+
+#### [OD-38] Networked Slice Modes in TacticalVerticalSliceRunner
+- В `TacticalVerticalSliceRunner` вводится перечисление `SliceNetworkMode { LocalLoopback, ListenServer, DedicatedClient }`.
+- В режиме `DedicatedClient` раннер не создаёт локальный хост, а подключается через `ClientTransportEndpoint` и реальный `LiteNetLibCarrier`, используя созданный в F-11 инъекционный шов `IReplicationTransport` + `IReplicationUplink`.
+
+#### [OD-39] Server-Side Fog of War & Visibility History Ring
+- Фильтрация репликации строго серверная (anti-maphack). Клиент не получает координаты и данные юнитов вне зоны видимости.
+- Пространственная структура: целочисленный Uniform Grid (`VisibilityEngine`) в `GlobalFront.Core` на `WorldPointMm` с ячейками 8192 мм (8 м), обеспечивающий сложность $O(N \cdot k)$ (~0.1 мс на 1024 юнита).
+- Детерминированный учет видимости: `VisibilityHistoryRing` (120 тиков, 128 байт на игрока) в `GlobalFront.Server.Replication`. Изменение видимости вычисляется между подтверждённым `baseTick` и `curTick`, делая `Reveal` (ADD) и `Hide` (REMOVE) идемпотентными и исключая срывы в `DuplicateEntity` при потере UDP-пакетов.
+- Удержание размера дельт строго в пределах `MaxPayloadBytes = 8192`.
+
+#### [OD-40] Per-Client StateChecksum
+- Контрольная сумма `StateChecksum` вычисляется сервером per-client по FNV-1a строго над подмножеством сущностей, подтверждённых видимыми для данного игрока (`KnownSet` на `curTick`).
+- Клиент вычисляет аналогичный хэш над своими активными сущностями в `ClientReplicationWorld`. Паритет детекции десинков сохраняется без утечки координат скрытых юнитов.
+
+#### [OD-41] Authoritative Command Ingress Without Movement Prediction
+- Команды игрока отправляются по надежному каналу C1 (`NetworkCommandChannel`).
+- Клиент получает мгновенный локальный отклик интерфейса (звук, маркер клика, декаль выбора), но локальное предсказание движения (prediction/rollback) не применяется во избежание дивергенции поиска путей и резиновых отскоков 400 юнитов.
+- Сервер валидирует владение (`PlayerId`), состояние сущности и планирует исполнение на тик $T_{exec} = T_{server} + leadTicks$ (где lead сглажен по RTT).
+
+#### [OD-42] Live Combat Reconnect & View Batch Recycling
+- При дисконнекте клиента активируется тактическая пауза (серверный grace period 4000 тиков = 200 с, 5-секундный клиентский countdown).
+- Клиент восстанавливает сессию по 32-байтному `SessionSecret32` (`SessionManager.TryRebindSession`).
+- Сервер поставляет ключевой кадр только видимых юнитов.
+- Подключается пропущенная проводка: `ClientReconnectCoordinator.OnKeyframeInstalled` связывается с `ClientReplicationReceiver.KeyframeInstalled`.
+- `UnitViewBinder.HandleResync` перепривязывает 400 представлений из прогретого `UnitViewPool` за один кадр без GC-аллокаций.
+
+#### [OD-43] Multi-Leg Network Harness with Impairment
+- Шаг 4.6 переиспользует существующий детерминированный `ImpairmentProfile` (100 мс задержка, 5% потерь пакетов, джиттер переупорядочивания) для сквозных тестов 1v1 и 2v2 без флакающих тестов.
+
+### Verification Criteria
+- Сквозные тесты Dedicated Server + 2 Remote Clients на 400 юнитах без десинков (`ChecksumMismatchCount == 0`).
+- Полное отсутствие аллокаций памяти (`Is.Not.AllocatingGCMemory()`) на серверном тике и клиентском цикле рендеринга.
+- Успешный реконнект в разгаре боя на 400 юнитах с сохранением 100% консистентности мира.
+
 ## Open Decision Queue
 
 - Replay-формат и desync diagnostics.
