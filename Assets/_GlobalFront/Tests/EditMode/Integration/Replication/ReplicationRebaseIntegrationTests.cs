@@ -3,11 +3,14 @@ using GlobalFront.Client.Replication;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Snapshot;
+using GlobalFront.Server;
 using GlobalFront.Server.Replication;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
 using UnityEngine.TestTools.Constraints;
 using Is = NUnit.Framework.Is;
+
+#pragma warning disable CS0067
 
 namespace GlobalFront.Tests.EditMode.Integration.Replication
 {
@@ -226,6 +229,338 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
             Assert.That(receiver.TryTakeRequest(out var request), Is.True);
             Assert.That(request.Kind, Is.EqualTo(ReplicationRequestKind.SnapshotRequest));
             Assert.That(request.LastAppliedTick, Is.EqualTo(103UL));
+        }
+
+        // ------------------------------------------------------------------
+        // N-03: client sinks must cover the server's merged-delta limits
+        // ------------------------------------------------------------------
+
+        [Test]
+        public void Delta_With512Removes_DecodesThroughDefaultBridgeWithoutBufferTooSmall()
+        {
+            const int removeCount = 512;
+            var receiver = new ClientReplicationReceiver(removeCount * 2);
+            var bridge = new ClientTransportReplicationBridge(new FakeReplicationUplink(), receiver);
+
+            var initial = new DeltaAddRecord[removeCount];
+            var removes = new DeltaRemoveRecord[removeCount];
+            for (var index = 0; index < removeCount; index++)
+            {
+                var entity = new EntityId((ulong)(index + 1));
+                initial[index] = new DeltaAddRecord(
+                    entity,
+                    new PlayerId(1),
+                    new WorldPointMm(index * 100, 0),
+                    100,
+                    false,
+                    default,
+                    default,
+                    false);
+                removes[index] = new DeltaRemoveRecord(entity, DeltaRemoveCause.Destroyed);
+            }
+
+            Assert.That(
+                receiver.ReceiveKeyframe(0, keyframeSeq: 1, tick: 100, initial),
+                Is.EqualTo(ClientReplicationOutcome.BaselineInstalled));
+            Assert.That(receiver.TryTakeAck(0, out _), Is.True, "drain the baseline ack");
+
+            var header = DeltaSnapshotHeader.CreateDelta(
+                101, 100, DeltaFlags.None, 0, 0, 0, removeCount, keyframeRef: 1);
+            var payload = new byte[DeltaSnapshotProtocol.MaxPacketBytes];
+            Assert.That(
+                DeltaSnapshotWireCodec.TryEncode(
+                    header,
+                    ReadOnlySpan<DeltaAddRecord>.Empty,
+                    ReadOnlySpan<DeltaUpdateRecord>.Empty,
+                    removes,
+                    payload,
+                    out var written),
+                Is.EqualTo(DeltaCodecResult.Ok));
+            Assert.That(written, Is.LessThanOrEqualTo(payload.Length));
+
+            bridge.HandleSnapshotPayload(101, payload, written, nowMs: 0);
+
+            Assert.That(
+                bridge.BufferTooSmallCount, Is.Zero,
+                "the default remove sink must hold a legal 512-remove establishing delta " +
+                "(ServerReplicationEmitterConfig.DefaultRemoveCapacity)");
+            Assert.That(
+                bridge.MalformedPayloadCount, Is.Zero,
+                "a sink shortfall is a local capacity problem, not a corrupt packet");
+            Assert.That(bridge.ForwardedDeltaCount, Is.EqualTo(1));
+            Assert.That(receiver.AppliedRemoveCount, Is.EqualTo(removeCount));
+            Assert.That(receiver.World.LiveCount, Is.Zero);
+        }
+
+        [Test]
+        public void Delta_SinkShortfallAndCorruption_AreCountedApart()
+        {
+            var receiver = new ClientReplicationReceiver(16);
+            var bridge = new ClientTransportReplicationBridge(
+                new FakeReplicationUplink(),
+                receiver,
+                new ClientTransportReplicationBridgeConfig(
+                    maxKeyframeUnits: ClientTransportReplicationBridgeConfig.DefaultMaxKeyframeUnits,
+                    maxParts: ClientTransportReplicationBridgeConfig.DefaultMaxParts,
+                    maxSlicePayloadBytes: ClientTransportReplicationBridgeConfig.DefaultMaxSlicePayloadBytes,
+                    addSink: 16,
+                    updateSink: 16,
+                    removeSink: 1));
+
+            var removes = new[]
+            {
+                new DeltaRemoveRecord(new EntityId(1), DeltaRemoveCause.Destroyed),
+                new DeltaRemoveRecord(new EntityId(2), DeltaRemoveCause.Destroyed)
+            };
+            var header = DeltaSnapshotHeader.CreateDelta(
+                101, 100, DeltaFlags.None, 0, 0, 0, (ushort)removes.Length, keyframeRef: 1);
+            var payload = new byte[DeltaSnapshotProtocol.MaxPacketBytes];
+            Assert.That(
+                DeltaSnapshotWireCodec.TryEncode(
+                    header,
+                    ReadOnlySpan<DeltaAddRecord>.Empty,
+                    ReadOnlySpan<DeltaUpdateRecord>.Empty,
+                    removes,
+                    payload,
+                    out var written),
+                Is.EqualTo(DeltaCodecResult.Ok));
+
+            bridge.HandleSnapshotPayload(101, payload, written, nowMs: 0);
+            Assert.That(bridge.BufferTooSmallCount, Is.EqualTo(1),
+                "two removes cannot fit a one-record sink");
+            Assert.That(bridge.MalformedPayloadCount, Is.Zero);
+            Assert.That(bridge.ForwardedDeltaCount, Is.Zero);
+
+            // Same packet, corrupt protocol version: structural damage, not a
+            // shortfall, and the two counters must not collapse into one.
+            payload[1] = 0xFF;
+            bridge.HandleSnapshotPayload(102, payload, written, nowMs: 0);
+            Assert.That(bridge.BufferTooSmallCount, Is.EqualTo(1));
+            Assert.That(bridge.MalformedPayloadCount, Is.EqualTo(1));
+        }
+
+        // ------------------------------------------------------------------
+        // F-14/F-15: checksum covers owner and auto-acquire, in canonical order
+        // ------------------------------------------------------------------
+
+        [Test]
+        public void StateChecksum_ServerAndClient_EntityOrderAgreement()
+        {
+            const int unitCount = 50;
+            var server = new MatchServer();
+            var records = new DeltaAddRecord[unitCount];
+            for (var index = 0; index < unitCount; index++)
+            {
+                // 37 is coprime with 50, so this is a deterministic permutation
+                // of 1..50: ids arrive out of order on the client and in the
+                // server's spawn history.
+                var id = (ulong)(index * 37 % unitCount + 1);
+                var owner = new PlayerId((byte)(index % 2 + 1));
+                var position = new WorldPointMm((int)id * 1000, (int)id * 2000);
+                var autoAcquire = index % 3 == 0;
+                server.SpawnUnitWithEntity(
+                    new EntityId(id),
+                    owner,
+                    TransportTestSupport.StandardStats,
+                    position,
+                    speedMmPerTick: 350,
+                    autoAcquire: autoAcquire);
+                records[index] = new DeltaAddRecord(
+                    new EntityId(id),
+                    owner,
+                    position,
+                    100,
+                    false,
+                    default,
+                    default,
+                    autoAcquire);
+            }
+
+            // The authoritative capture walks canonical ascending entity-id order.
+            var capture = new ServerUnitSnapshot[unitCount];
+            Assert.That(server.CopySnapshots(capture), Is.EqualTo(unitCount));
+            for (var index = 1; index < unitCount; index++)
+            {
+                Assert.That(
+                    capture[index].Entity.Value,
+                    Is.GreaterThan(capture[index - 1].Entity.Value),
+                    "the server capture must be in ascending entity-id order");
+            }
+
+            // The client table is filled in shuffled spawn order, so its physical
+            // slots are not canonical: the digest can only match if the in-place
+            // checksum sort actually runs.
+            var client = BuildChecksumClientWorld(records);
+            Assert.That(
+                IsSlotOrderAscending(client, unitCount), Is.False,
+                "the client slots must start in non-canonical order, or this test " +
+                "does not exercise the checksum sort");
+
+            var serverChecksum = CaptureServerChecksum(server);
+            Assert.That(
+                client.ComputeStateChecksum(), Is.EqualTo(serverChecksum),
+                "server capture order and the client heapsort must produce one digest");
+
+            // Coverage witnesses: with every other hashed field identical, a
+            // divergence in auto-acquire or owner must break parity. These fail
+            // if either field is dropped from ComputeStateChecksum.
+            Assert.That(
+                BuildChecksumClientWorld(records, flipAutoAcquireAt: 0).ComputeStateChecksum(),
+                Is.Not.EqualTo(serverChecksum),
+                "auto-acquire must be part of the state checksum (F-14)");
+            Assert.That(
+                BuildChecksumClientWorld(records, flipOwnerAt: 1).ComputeStateChecksum(),
+                Is.Not.EqualTo(serverChecksum),
+                "the unit owner must be part of the state checksum (F-14)");
+        }
+
+        /// <summary>
+        /// Drives a real emitter over a capturing transport until the 1 Hz
+        /// cadence puts a checksum on a delta, and returns that server digest.
+        /// </summary>
+        private static uint CaptureServerChecksum(MatchServer server)
+        {
+            var transport = new ChecksumCapturingTransport();
+            var emitter = new ServerReplicationEmitter(
+                new MatchServerSnapshotSource(server),
+                transport,
+                ServerReplicationEmitterConfig.Default);
+
+            transport.RaiseAttached();
+            emitter.OnTickCompleted(1);
+            transport.RaiseSnapshotRequest();
+
+            for (var tick = 2UL; tick <= 64UL; tick++)
+            {
+                emitter.OnTickCompleted(tick);
+                if (transport.TryTakeChecksumDelta(out var captured))
+                {
+                    Assert.That(emitter.StateChecksumCount, Is.GreaterThan(0));
+                    return captured.StateChecksum;
+                }
+            }
+
+            Assert.Fail("the emitter never sent a delta carrying a state checksum");
+            return 0;
+        }
+
+        private static ClientReplicationWorld BuildChecksumClientWorld(
+            DeltaAddRecord[] records,
+            int flipAutoAcquireAt = -1,
+            int flipOwnerAt = -1)
+        {
+            var world = new ClientReplicationWorld(records.Length * 2);
+            for (var index = 0; index < records.Length; index++)
+            {
+                var record = records[index];
+                if (index == flipAutoAcquireAt)
+                {
+                    record = new DeltaAddRecord(
+                        record.Entity,
+                        record.Owner,
+                        record.Position,
+                        record.CurrentHealth,
+                        record.HasMoveTarget,
+                        record.MoveTarget,
+                        record.AttackTarget,
+                        !record.AutoAcquireEnemies);
+                }
+
+                if (index == flipOwnerAt)
+                {
+                    record = new DeltaAddRecord(
+                        record.Entity,
+                        new PlayerId((byte)(record.Owner.Value == 1 ? 2 : 1)),
+                        record.Position,
+                        record.CurrentHealth,
+                        record.HasMoveTarget,
+                        record.MoveTarget,
+                        record.AttackTarget,
+                        record.AutoAcquireEnemies);
+                }
+
+                Assert.That(
+                    world.ApplyAdd(in record), Is.EqualTo(ClientWorldApplyResult.Ok),
+                    $"record {index} must be accepted");
+            }
+
+            return world;
+        }
+
+        private static bool IsSlotOrderAscending(ClientReplicationWorld world, int count)
+        {
+            var previous = 0UL;
+            var ascending = true;
+            for (var slot = 0; slot < count; slot++)
+            {
+                Assert.That(world.TryGetSlotState(slot, out var state), Is.True);
+                if (slot > 0 && state.Entity.Value < previous)
+                {
+                    ascending = false;
+                }
+
+                previous = state.Entity.Value;
+            }
+
+            return ascending;
+        }
+
+        /// <summary>Fake transport that captures the first delta bearing a checksum.</summary>
+        private sealed class ChecksumCapturingTransport : IReplicationTransport
+        {
+            private static readonly SessionId ClientSession = new SessionId(new Guid(
+                0x11121314, 0x1516, 0x1718,
+                0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20));
+
+            private DeltaSnapshotHeader _checksumDelta;
+            private bool _hasChecksumDelta;
+
+            public event Action<SessionId, MatchId, PlayerId> SessionAttached;
+            public event Action<SessionId, MatchId, PlayerId> SessionReattached;
+            public event Action<SessionId> PostSessionReattached;
+            public event Action<SessionId, TransportDisconnectReason> SessionDetached;
+            public event Action<ReplicationFeedbackMessage> FeedbackReceived;
+
+            public void RaiseAttached() =>
+                SessionAttached?.Invoke(ClientSession, default, new PlayerId(1));
+
+            public void RaiseSnapshotRequest()
+            {
+                var request = new ReplicationRequestWire(
+                    ReplicationRequestWireKind.SnapshotRequest, attempt: 1, 0, 0, 0);
+                var buffer = new byte[ReplicationRequestCodec.SizeBytes];
+                Assert.That(
+                    ReplicationRequestCodec.TryEncode(request, buffer, out var written),
+                    Is.EqualTo(ReplicationRequestCodecResult.Ok));
+                FeedbackReceived?.Invoke(new ReplicationFeedbackMessage(
+                    ClientSession,
+                    TransportMessageType.ReplicationRequest,
+                    buffer,
+                    0,
+                    written));
+            }
+
+            public bool TryTakeChecksumDelta(out DeltaSnapshotHeader header)
+            {
+                header = _checksumDelta;
+                return _hasChecksumDelta;
+            }
+
+            public bool SendToSession(SessionId session, ulong envelopeTick, byte[] buffer, int length)
+            {
+                if (buffer != null &&
+                    length >= DeltaSnapshotProtocol.HeaderSizeBytes &&
+                    buffer[0] == DeltaSnapshotProtocol.MessageTypeDelta &&
+                    DeltaSnapshotWireCodec.TryDecodeHeader(
+                        buffer.AsSpan(0, length), out var header) == DeltaCodecResult.Ok &&
+                    header.HasChecksum)
+                {
+                    _checksumDelta = header;
+                    _hasChecksumDelta = true;
+                }
+
+                return true;
+            }
         }
     }
 }

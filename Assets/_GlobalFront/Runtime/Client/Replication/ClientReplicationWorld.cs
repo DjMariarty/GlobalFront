@@ -447,8 +447,9 @@ namespace GlobalFront.Client.Replication
         /// <summary>
         /// Deterministic 32-bit fingerprint of the live replicated world (audit P1-2):
         /// 32-bit FNV-1a over every active unit in canonical ascending entity-id
-        /// order, mixing entity id, position (X, Z) and health. Strictly matches
-        /// the server's fingerprinting logic in ServerReplicationEmitter.
+        /// order, mixing entity id, owner, position (X, Z), health, move target,
+        /// attack target and auto-acquire. Strictly matches the server's
+        /// fingerprinting logic in ServerReplicationEmitter.
         ///
         /// Strict zero-GC: operates on the preallocated <see cref="_checksumSlots"/>
         /// scratch array and uses an iterative, in-place heapsort without allocating
@@ -477,6 +478,7 @@ namespace GlobalFront.Client.Replication
                 {
                     var unit = _slots[_checksumSlots[i]];
                     hash = MixChecksumByte(hash, unit.Entity.Value);
+                    hash = MixChecksumByte(hash, (ulong)unit.Owner.Value);
                     hash = MixChecksumByte(hash, (ulong)unit.PosX);
                     hash = MixChecksumByte(hash, (ulong)unit.PosZ);
                     hash = MixChecksumByte(hash, (ulong)unit.Health);
@@ -492,6 +494,7 @@ namespace GlobalFront.Client.Replication
                     hash = MixChecksumByte(hash, (ulong)moveTargetX);
                     hash = MixChecksumByte(hash, (ulong)moveTargetZ);
                     hash = MixChecksumByte(hash, unit.AttackTarget.Value);
+                    hash = MixChecksumByte(hash, unit.AutoAcquire ? 1UL : 0UL);
                 }
 
                 return hash;

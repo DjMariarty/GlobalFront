@@ -18,7 +18,7 @@ namespace GlobalFront.Server.Replication
         public const int DefaultUpdateCapacity = 4096;
         public const int DefaultRemoveCapacity = 512;
 
-        /// <summary>Per-tick pacing refill, ~100 KB/s at the 20 Hz tick (R&amp;D §10).</summary>
+        /// <summary>Per-tick pacing refill, ~40 KB/s (40,960 B/s) at the 20 Hz tick (2048 B × 20 Hz).</summary>
         public const int DefaultPacingRefillBytesPerTick = 2048;
 
         /// <summary>Per-tick burst cap, R&amp;D §3.4 (≤ 16 KB per replication tick).</summary>
@@ -220,15 +220,16 @@ namespace GlobalFront.Server.Replication
     /// ends with a packet the client can ack;</item>
     /// <item>at the 1 Hz cadence a sent delta carries
     /// <see cref="DeltaFlags.HasChecksum"/> with a deterministic FNV-1a
-    /// fingerprint over the live units (entity id, position, health),
-    /// computed from the latest capture (audit P1-2);</item>
+    /// fingerprint over the live units (entity id, owner, position, health,
+    /// move target, attack target, auto-acquire),
+    /// computed from the latest capture (audit P1-2/F-14);</item>
     /// <item>a keyframe replaces the stream whenever the merge is impossible
     /// (base evicted from the 120-tick window, a change-set overflowed its
     /// buffer, or the merged delta exceeds the 8 KB payload bound). Keyframes
     /// are cut into ≤ 16 KB slices with the
     /// <see cref="KeyframeSliceCodec"/> framing, share one
     /// <c>KeyframeSeq</c> generation and leave through the same token-bucket
-    /// pacing as deltas (R&amp;D §3.4/§10: refill ≈ 100 KB/s, burst ≤ 16 KB per
+    /// pacing as deltas (R&amp;D §3.4/§10: refill ≈ 40 KB/s, burst ≤ 16 KB per
     /// tick) so command traffic is never crowded out.</item>
     /// </list>
     ///
@@ -668,9 +669,12 @@ namespace GlobalFront.Server.Replication
         /// <summary>
         /// Deterministic 32-bit fingerprint of the live world (audit P1-2):
         /// FNV-1a over every captured unit in the capture's deterministic
-        /// entity-id order, mixing entity id, position and health. Pure
-        /// arithmetic — no allocations, no string or object hashing, so the
-        /// value is reproducible across runs and platforms.
+        /// entity-id order, mixing entity id, owner, position, health, move
+        /// target, attack target and auto-acquire. Owner and auto-acquire are
+        /// gameplay state the delta stream can change, so leaving them out
+        /// would hide a real desync (audit F-14). Pure arithmetic — no
+        /// allocations, no string or object hashing, so the value is
+        /// reproducible across runs and platforms.
         /// </summary>
         private uint ComputeStateChecksum()
         {
@@ -683,6 +687,7 @@ namespace GlobalFront.Server.Replication
                 {
                     var unit = capture[index];
                     hash = MixChecksumByte(hash, unit.Entity.Value);
+                    hash = MixChecksumByte(hash, (ulong)unit.Owner.Value);
                     hash = MixChecksumByte(hash, (ulong)unit.Position.X);
                     hash = MixChecksumByte(hash, (ulong)unit.Position.Z);
                     hash = MixChecksumByte(hash, (ulong)unit.CurrentHealth);
@@ -698,6 +703,7 @@ namespace GlobalFront.Server.Replication
                     hash = MixChecksumByte(hash, (ulong)moveTargetX);
                     hash = MixChecksumByte(hash, (ulong)moveTargetZ);
                     hash = MixChecksumByte(hash, unit.AttackTarget.Value);
+                    hash = MixChecksumByte(hash, unit.AutoAcquireEnemies ? 1UL : 0UL);
                 }
 
                 return hash;

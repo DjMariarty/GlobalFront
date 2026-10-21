@@ -77,9 +77,14 @@ namespace GlobalFront.Client.Replication
         public const int DefaultMaxKeyframeUnits = ClientReplicationWorld.DefaultCapacity;
         public const int DefaultMaxParts = 256;
         public const int DefaultMaxSlicePayloadBytes = 16384;
-        public const int DefaultAddSink = 256;
+
+        // Must match the server's merged-delta capacities: a legal establishing
+        // delta can declare up to ServerReplicationEmitterConfig.DefaultAddCapacity
+        // ADDs and DefaultRemoveCapacity REMOVEs, and a smaller sink turns that
+        // packet into a decode failure (audit N-03).
+        public const int DefaultAddSink = 512;
         public const int DefaultUpdateSink = 4096;
-        public const int DefaultRemoveSink = 256;
+        public const int DefaultRemoveSink = 512;
 
         public ClientTransportReplicationBridgeConfig(
             int maxKeyframeUnits,
@@ -185,9 +190,11 @@ namespace GlobalFront.Client.Replication
         /// How long one keyframe generation may stay incomplete before its
         /// partial assembly is discarded. A lost slice would otherwise pin the
         /// assembly state forever; aging it out lets the next keyframe (the
-        /// FSM's re-baseline answer) start from a clean slate. The server
-        /// paces a full 1024-unit keyframe in ~650 ms at 20 Hz, so the window
-        /// leaves margin for jitter without ever cutting a healthy transfer.
+        /// FSM's re-baseline answer) start from a clean slate. At 20 Hz a full
+        /// 1024-unit keyframe is one 16 KB burst seed plus two slices paced at
+        /// 2 KB/tick, completing in ~650 ms from a full token bucket and
+        /// ~1.05 s from a drained one: the window leaves margin for jitter
+        /// without ever cutting a healthy transfer.
         /// </summary>
         public const long AssemblyTimeoutMs = 1500;
 
@@ -227,6 +234,7 @@ namespace GlobalFront.Client.Replication
         private int _droppedStaleSliceCount;
         private int _droppedDuplicateSliceCount;
         private int _malformedPayloadCount;
+        private long _bufferTooSmallCount;
         private int _ignoredLegacySnapshotCount;
         private int _forwardedDeltaCount;
         private int _multipartDeltaCount;
@@ -292,6 +300,13 @@ namespace GlobalFront.Client.Replication
         public int DroppedStaleSliceCount => _droppedStaleSliceCount;
         public int DroppedDuplicateSliceCount => _droppedDuplicateSliceCount;
         public int MalformedPayloadCount => _malformedPayloadCount;
+
+        /// <summary>
+        /// Deltas the local decode sinks could not hold. Counted apart from
+        /// <see cref="MalformedPayloadCount"/>: an undersized sink is a local
+        /// capacity shortfall, not a corrupt packet (audit N-03).
+        /// </summary>
+        public long BufferTooSmallCount => _bufferTooSmallCount;
         public int IgnoredLegacySnapshotCount => _ignoredLegacySnapshotCount;
         public int ForwardedDeltaCount => _forwardedDeltaCount;
         public int MultipartDeltaCount => _multipartDeltaCount;
@@ -388,7 +403,15 @@ namespace GlobalFront.Client.Replication
                 _removeSink);
             if (result != DeltaCodecResult.Ok)
             {
-                _malformedPayloadCount++;
+                if (result == DeltaCodecResult.BufferTooSmall)
+                {
+                    _bufferTooSmallCount++;
+                }
+                else
+                {
+                    _malformedPayloadCount++;
+                }
+
                 return;
             }
 
