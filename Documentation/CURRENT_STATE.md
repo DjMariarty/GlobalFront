@@ -16,18 +16,20 @@
 - **Hardening Phase 3.7.1 (закрытие Grand Audit):** [100% COMPLETED]. Блоки 1–4 (`934840d`..`3a112ad`) закрыли code-level замечания F-1..F-11, F-13..F-15 и N-02..N-04; блок 5 закрыл F-6 и F-10. 17 новых EditMode-тестов (1162 → 1179), bite-прогоны по каждому наблюдаемому дефекту.
 - **Phase 4 (Multiplayer Gameplay Integration):** [ACTIVE / IN PROGRESS]. ADR-014 принят (OD-35..OD-43, `DECISIONS.md`).
 - **Шаг 4.1 (Dedicated Server Core Relocation & Headless Runner):** [COMPLETE / COMMITTED `5f2f29e`]. `ServerHost` вынесен в `GlobalFront.Server` (engine-free), `LocalMatchHost` остался тонкой клиентской обёрткой с `BindReconnectCoordinator`; добавлена сборка `GlobalFront.ServerHost` с `DedicatedServerRunner` (цикл `Pump` → `AdvanceRealTime`, 120 FPS) и `DedicatedServerBootstrap` (`-port`, `-tickrate`, `-dedicatedServer` / `UNITY_SERVER`); в `FixedStepClock` добавлен кламп бэклога `MaxBacklogSeconds = 0.25` (OD-45).
-- **Шаг 4.2 (Client Remote Connection & Handshake):** [IMPLEMENTED / UNCOMMITTED]. `ClientTransportEndpoint` отправляет `Ping` и публикует `PongReceived`; `RemoteSliceSession` компонует endpoint, uplink, receiver/bridge, C1 command channel и RTT-контур (каденс 1 Гц, EWMA α = 0.125 по клиентским часам); `TacticalVerticalSliceRunner.InitializeDedicatedClient` работает без локального `_host` (тик — из `ClientReplicationReceiver`, команды — через `NetworkCommandChannel`, пул прогревается по полученному ростеру), RTT и сетевой статус выводятся в `NetworkHudPresenter`. Гейт: EditMode **1210/1210**, PlayMode **17/17**.
-- **Следующий шаг:** верификация diff координатором и коммит Шага 4.2; далее по Rev.2 — 4.3 (FoW / per-client filtering).
+- **Шаг 4.2 (Client Remote Connection & Handshake):** [COMPLETE / COMMITTED `1760f17`]. `ClientTransportEndpoint` отправляет `Ping` и публикует `PongReceived`; `RemoteSliceSession` компонует endpoint, uplink, receiver/bridge, C1 command channel и RTT-контур (каденс 1 Гц, EWMA α = 0.125 по клиентским часам); `TacticalVerticalSliceRunner.InitializeDedicatedClient` работает без локального `_host` (тик — из `ClientReplicationReceiver`, команды — через `NetworkCommandChannel`, пул прогревается по полученному ростеру), RTT и сетевой статус выводятся в `NetworkHudPresenter`.
+- **Шаг 4.2.1 (Client Bootstrap CLI `-connect`):** [IMPLEMENTED / UNCOMMITTED]. `GlobalFrontRuntimeBootstrap` разбирает `-connect <host>[:<port>]` и `-connect=<host>[:<port>]` (порт по умолчанию 7777, диапазон 1..65535; отсутствие флага/пустой хост/невалидный порт → `false`). При наличии флага `Initialize()` не строит легаси-прототип, а вызывает `ActivateDedicatedClient`: снимает легаси-прототип и предыдущий срез, создаёт `RemoteSliceSession`, подключается и инициализирует раннер в `DedicatedClient`; сессией владеет бутстрап и освобождает её при замене среза. Гейт: EditMode **1219/1219**, PlayMode **17/17**; live PlayMode-проверка с реальным UDP-сервером: `Established`, RTT 28–29 ms, HUD-слот `Connected`.
+- **Следующий шаг:** верификация diff координатором и коммит Шага 4.2.1; далее по Rev.2 — 4.3 (FoW / per-client filtering).
 
 ## Last Commit
 
-`5f2f29e` (`feat(server): relocate ServerHost, implement DedicatedServerRunner, and add backlog clamp (Step 4.1)`)
+`1760f17` (`feat(client): implement remote connection, RTT EWMA loop, and dedicated client mode (Step 4.2)`)
 
 ## Tests
 
-- EditMode: **1210/1210 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step42-editmode-final.xml`)
-- PlayMode: **17/17 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step42-playmode-final.xml`)
-- Всего: **1227 автоматизированных тестов** (100% green; +11 EditMode и +1 PlayMode к базовым 1215)
+- EditMode: **1219/1219 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step421-editmode-final.xml`)
+- PlayMode: **17/17 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step421-playmode-final.xml`)
+- Всего: **1236 автоматизированных тестов** (100% green; +9 EditMode к базовым 1210)
+- Bite-прогоны 4.2.1: `step421-bite1-connect.xml` (forced `false` → 4 падения, `Expected: True But was: False`), `step421-bite2-endpoint-split.xml` (сломанный split → 5 падений), `step421-bite3-activation.xml` (`LocalLoopback` вместо `DedicatedClient`)
 - Компиляция: 0 warnings, 0 errors
 - OD-28 (400 юнитов): **0.623 ms/frame** — среднее CPU-время тика симуляции и презентационного кадра за 120 итераций в headless EditMode (`createVisuals: false`), гард 8.0 ms, потолок 60 FPS 16.67 ms; это не замер полного кадра с GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров и 60 loopback-тиков
 - Unity: `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
@@ -74,12 +76,18 @@
   - Phase 3.5 Selection System, Screen-Space Drag-Box & RTS Command Issuing — COMPLETE (`cfa24c2`) — [APPROVED: ZERO DEFECTS]
   - Phase 3.6 Minimap & Tactical HUD — COMPLETE (`2a754db`) — [APPROVED: ZERO DEFECTS]
   - Phase 3.7 Vertical Slice Integration, 400-Unit Benchmark, Multi-Frame PlayMode Suite & Architecture Invariants Gate — COMPLETE (`3414ba6`, `cb01ea2`) — [APPROVED: ZERO DEFECTS]
-- **Phase 4.2 Client Remote Connection & Handshake — IMPLEMENTED (uncommitted on `5f2f29e`):**
+- **Phase 4.2 Client Remote Connection & Handshake — COMPLETE (`1760f17`):**
   - `ClientTransportEndpoint.TrySendPing` / `PongReceived` и ветка `Pong` в `HandleMessage` (C0, `long` timestamp клиента).
   - `SliceNetworkMode` (`LocalLoopback` = 0 по умолчанию, `DedicatedClient` = 2) и `RemoteSliceSession` — единый владелец endpoint/uplink/receiver/bridge/command channel, пинг раз в 1000 мс, `sampleRtt = clientNow - timestamp`, EWMA 0.875/0.125.
   - `TacticalVerticalSliceRunner.InitializeDedicatedClient`: `Host == null`, `CurrentTick` из `ClientReplicationReceiver.LastAppliedTick`, команды через `NetworkCommandChannel`, прогрев пула по полученному baseline-ростеру, защита локальных путей (`StepSimulationTick`, `IssueConvergenceMarch`/`IssueEngagementOrders`) от dedicated-режима.
   - RTT и `SlotStatus` уходят в `NetworkHudPresenter`; `CurrentTick + 1 + ceil(RTT/2 / 50 ms)` как запрошенный тик команды.
   - Bite-прогоны: `step42-bite1-pong.xml` (RTT sample 0 вместо 40), `step42-bite2-isolation.xml` (`Host` не null), `step42-bite3-command.xml` (сервер получил 0 команд).
+- **Phase 4.2.1 Client Bootstrap CLI `-connect` — IMPLEMENTED (uncommitted on `1760f17`):**
+  - `GlobalFrontRuntimeBootstrap.TryParseConnectEndpoint`: форматы `-connect host[:port]` и `-connect=host[:port]` (case-insensitive), порт по умолчанию 7777, валидация 1..65535, `LastIndexOf(':')` сохраняет IPv6-литерал.
+  - `GlobalFrontRuntimeBootstrap.ActivateDedicatedClient`: снимает легаси-прототип и предыдущий срез, создаёт `RemoteSliceSession`, вызывает `Connect`, затем `TacticalVerticalSliceRunner.InitializeDedicatedClient(session, createVisuals, autoStartRealTime: true)`; предыдущая bootstrap-сессия освобождается при замене среза.
+  - `Initialize()` при наличии `-connect` уходит в dedicated-ветку и не создаёт одиночный легаси-прототип.
+  - 9 новых EditMode-тестов (разбор аргументов, dedicated-режим, снятие прототипа, замена среза); live PlayMode-проверка с реальным UDP-сервером на 7777: `NetworkMode=DedicatedClient`, `Host=null`, `Established`, игрок назначен, HUD-слот `Connected`, RTT EWMA 28–29 ms, тики идут с 20 Гц.
+  - Bite-прогоны: `step421-bite1-connect.xml`, `step421-bite2-endpoint-split.xml`, `step421-bite3-activation.xml`.
 - **Phase 4.1 Dedicated Server Core Relocation & Headless Runner — COMPLETE (`5f2f29e`):**
   - `Assets/_GlobalFront/Runtime/Server/ServerHost.cs` — двигатель-нейтральное ядро хоста (MatchServer + TickDriver + SessionManager + репликация + пауза), без ссылок на `GlobalFront.Client` и `UnityEngine`.
   - `Assets/_GlobalFront/Runtime/Client/LocalMatchHost.cs` — тонкая обёртка над `ServerHost`; сохранены конструкторы, API и клиентский `BindReconnectCoordinator`.
@@ -95,7 +103,7 @@
 
 ## Next Step
 
-**Phase 4 (Multiplayer Gameplay Integration) — [ACTIVE]**: Шаг 4.2 реализован и ожидает верификации/коммита координатором. Далее по Rev.2: 4.3 (FoW / per-client filtering).
+**Phase 4 (Multiplayer Gameplay Integration) — [ACTIVE]**: Шаг 4.2.1 реализован и ожидает верификации/коммита координатором. Далее по Rev.2: 4.3 (FoW / per-client filtering).
 
 ## Backlog
 
@@ -107,7 +115,7 @@
 - Current runtime: `ServerHost` (engine-independent, `GlobalFront.Server`) владеет `MatchServer`, `TickDriver` и `SessionManager`; `LocalMatchHost` — клиентская обёртка, добавляющая `BindReconnectCoordinator`. Dedicated-серверная обвязка живёт в отдельной сборке `GlobalFront.ServerHost` и не протекает в Core/Server.
 - Server tick lifecycle отделён от Unity client lifecycle (ADR-007). Session/player identity реализованы как server-authoritative layer (ADR-008): PlayerId назначается только сервером, command ingress проходит session gate.
 - Сетевой транспорт реализован по ADR-009 (OD-1 = LiteNetLib за контрактом `INetworkCarrier`) и сертифицирован.
-- **Headless transport pump (F-10):** `ServerTransportHost.Pump` имеет продакшн call-site в `DedicatedServerRunner.Update` (Phase 4, Шаг 4.1); вертикальный срез использует `LocalReplicationLoopback` по умолчанию и `DedicatedClient` через `RemoteSliceSession` (Шаг 4.2).
+- **Headless transport pump (F-10):** `ServerTransportHost.Pump` имеет продакшн call-site в `DedicatedServerRunner.Update` (Phase 4, Шаг 4.1); вертикальный срез использует `LocalReplicationLoopback` по умолчанию и `DedicatedClient` через `RemoteSliceSession` (Шаг 4.2), запуск клиента — флагом `-connect <host>[:<port>]` (Шаг 4.2.1).
 - Reconnect/resync реализованы и приняты (Phase 2.7, OD-18…OD-22) с тактической паузой и 5-секундным countdown.
 - Презентационный стек Phase 3 (OD-23..OD-29) доказал Zero-GC steady state и 0.623 ms/frame на 400 активных юнитах.
 - Product 1.0 включает пять основных фракций (NATO, Russia, China, GLA, USA); их gameplay/content будет развёрнут в последующих фазах.

@@ -1,5 +1,7 @@
+using System;
 using GlobalFront.Client.Presentation;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace GlobalFront.Client
 {
@@ -11,10 +13,27 @@ namespace GlobalFront.Client
         /// <summary>Name of the GameObject that carries the Phase 3 vertical slice.</summary>
         public const string TacticalSliceRootName = "[GlobalFront Tactical Vertical Slice]";
 
+        /// <summary>Command-line switch that boots a client against a remote server.</summary>
+        public const string ConnectFlag = "-connect";
+
+        /// <summary>Port assumed when <c>-connect</c> names a host without one.</summary>
+        public const int DefaultConnectPort = 7777;
+
+        private static RemoteSliceSession _dedicatedSession;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Initialize()
         {
             Application.runInBackground = true;
+
+            if (TryParseConnectEndpoint(
+                    Environment.GetCommandLineArgs(),
+                    out var host,
+                    out var port))
+            {
+                ActivateDedicatedClient(host, port);
+                return;
+            }
 
             if (GameObject.Find(RuntimeRootName) != null)
             {
@@ -85,27 +104,8 @@ namespace GlobalFront.Client
             bool issueInitialConvergenceMarch = false,
             bool createVisuals = true)
         {
-            var previous = GameObject.Find(TacticalSliceRootName);
-            if (previous != null)
-            {
-                // Re-arming the slice replaces the battle it was running: two
-                // hosts pacing two matches into one camera is not a switch,
-                // and the runner refuses to initialize twice anyway. Destroy is
-                // deferred to the end of a Play Mode frame, so the outgoing
-                // runner is stopped and renamed on the way out: its Update must
-                // not present ticks the new slice owns, and a second call in
-                // this same frame must not find a dying root by name.
-                var outgoing = previous.GetComponent<TacticalVerticalSliceRunner>();
-                if (outgoing != null)
-                {
-                    outgoing.Shutdown();
-                    outgoing.enabled = false;
-                }
-
-                previous.name = TacticalSliceRootName + " [Released]";
-                DestroyContent(previous);
-            }
-
+            DestroyExistingSlice();
+            DisposeDedicatedSession();
             DestroyLegacyPrototype();
 
             var root = new GameObject(TacticalSliceRootName);
@@ -123,6 +123,159 @@ namespace GlobalFront.Client
             }
 
             return runner;
+        }
+
+        /// <summary>
+        /// Boots the tactical slice as a client of a remote dedicated server
+        /// (Phase 4, step 4.2.1, OD-38). The session owns the connection: the
+        /// server's accept, the replication stream and the command channel all
+        /// arrive through it, and the runner presents what the server decided.
+        ///
+        /// No local host is created, so the legacy prototype is taken down
+        /// first: it would otherwise put a second, locally simulated battle in
+        /// front of the same camera.
+        /// </summary>
+        /// <param name="host">Server host name or address.</param>
+        /// <param name="port">Server UDP port.</param>
+        /// <param name="createVisuals">Build the battlefield and unit meshes.</param>
+        /// <returns>The running slice.</returns>
+        public static TacticalVerticalSliceRunner ActivateDedicatedClient(
+            string host,
+            int port,
+            bool createVisuals = true)
+        {
+            DestroyExistingSlice();
+            DisposeDedicatedSession();
+            DestroyLegacyPrototype();
+
+            var root = new GameObject(TacticalSliceRootName);
+            var runner = root.AddComponent<TacticalVerticalSliceRunner>();
+
+            var session = new RemoteSliceSession();
+            _dedicatedSession = session;
+            session.Connect(host, port);
+
+            runner.InitializeDedicatedClient(session, createVisuals, autoStartRealTime: true);
+            return runner;
+        }
+
+        /// <summary>
+        /// Parses <c>-connect &lt;host&gt;[:&lt;port&gt;]</c> or
+        /// <c>-connect=&lt;host&gt;[:&lt;port&gt;]</c>. A host without a port
+        /// connects to <see cref="DefaultConnectPort"/>; a missing flag, an
+        /// empty host or a port outside 1..65535 fails the parse.
+        /// </summary>
+        public static bool TryParseConnectEndpoint(string[] args, out string host, out int port)
+        {
+            host = null;
+            port = 0;
+
+            if (args == null)
+            {
+                return false;
+            }
+
+            var prefix = ConnectFlag + "=";
+            for (var index = 0; index < args.Length; index++)
+            {
+                var argument = args[index];
+                string endpoint = null;
+
+                if (string.Equals(argument, ConnectFlag, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (index + 1 < args.Length)
+                    {
+                        endpoint = args[index + 1];
+                    }
+                }
+                else if (argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    endpoint = argument.Substring(prefix.Length);
+                }
+
+                if (endpoint == null)
+                {
+                    continue;
+                }
+
+                return TryParseEndpoint(endpoint, out host, out port);
+            }
+
+            return false;
+        }
+
+        private static bool TryParseEndpoint(string endpoint, out string host, out int port)
+        {
+            host = null;
+            port = 0;
+
+            // A following switch is a missing value, not a host name.
+            if (string.IsNullOrWhiteSpace(endpoint) || endpoint[0] == '-')
+            {
+                return false;
+            }
+
+            port = DefaultConnectPort;
+
+            // LastIndexOf keeps an IPv6 literal such as [::1]:7777 intact.
+            var separator = endpoint.LastIndexOf(':');
+            if (separator >= 0)
+            {
+                var portText = endpoint.Substring(separator + 1);
+                if (!int.TryParse(portText, out port) || port < 1 || port > 65535)
+                {
+                    port = 0;
+                    return false;
+                }
+
+                endpoint = endpoint.Substring(0, separator);
+            }
+
+            if (string.IsNullOrWhiteSpace(endpoint))
+            {
+                port = 0;
+                return false;
+            }
+
+            host = endpoint;
+            return true;
+        }
+
+        private static void DestroyExistingSlice()
+        {
+            var previous = GameObject.Find(TacticalSliceRootName);
+            if (previous == null)
+            {
+                return;
+            }
+
+            // Re-arming the slice replaces the battle it was running: two
+            // hosts pacing two matches into one camera is not a switch,
+            // and the runner refuses to initialize twice anyway. Destroy is
+            // deferred to the end of a Play Mode frame, so the outgoing
+            // runner is stopped and renamed on the way out: its Update must
+            // not present ticks the new slice owns, and a second call in
+            // this same frame must not find a dying root by name.
+            var outgoing = previous.GetComponent<TacticalVerticalSliceRunner>();
+            if (outgoing != null)
+            {
+                outgoing.Shutdown();
+                outgoing.enabled = false;
+            }
+
+            previous.name = TacticalSliceRootName + " [Released]";
+            DestroyContent(previous);
+        }
+
+        /// <summary>
+        /// The bootstrap owns the session it created for the dedicated client,
+        /// while the runner only borrows it. Replacing the slice has to close
+        /// the connection the outgoing runner can no longer release.
+        /// </summary>
+        private static void DisposeDedicatedSession()
+        {
+            _dedicatedSession?.Dispose();
+            _dedicatedSession = null;
         }
 
         private static void DestroyLegacyPrototype()
