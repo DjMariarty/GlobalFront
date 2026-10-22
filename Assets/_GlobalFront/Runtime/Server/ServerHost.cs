@@ -419,22 +419,41 @@ namespace GlobalFront.Server
         public ServerReplicationEmitter AttachReplication(
             IReplicationTransport transport,
             in ServerReplicationEmitterConfig config) =>
-            AttachReplication(transport, config, null);
+            AttachReplication(transport, config, (IServerSnapshotSource)null);
+
+        /// <summary>
+        /// Attaches the emitter with a per-client view filter (ADR-014,
+        /// OD-39). A null filter keeps the global stream. The filter must be
+        /// composed before clients connect, like the emitter itself.
+        /// </summary>
+        public ServerReplicationEmitter AttachReplication(
+            IReplicationTransport transport,
+            in ServerReplicationEmitterConfig config,
+            IReplicationFilter filter) =>
+            AttachReplication(transport, config, null, filter);
+
+        public ServerReplicationEmitter AttachReplication(
+            IReplicationTransport transport,
+            in ServerReplicationEmitterConfig config,
+            IServerSnapshotSource snapshotSource) =>
+            AttachReplication(transport, config, snapshotSource, null);
 
         /// <summary>
         /// The same attach, with the roster the emitter describes supplied by
-        /// the caller. Null keeps the default <see cref="MatchServerSnapshotSource"/>,
-        /// so this overload adds a seam rather than changing what the host
-        /// streams: it exists because a snapshot source is the only place a
-        /// consumer can decide that a unit has stopped being part of the world
-        /// it replicates (a corpse leaving the roster is what makes the diff
-        /// engine emit <c>DeltaRemoveRecord</c>; the server itself keeps
+        /// the caller and an optional per-client view filter. Null keeps the
+        /// default <see cref="MatchServerSnapshotSource"/> and the global
+        /// stream, so this overload adds seams rather than changing what the
+        /// host streams: it exists because a snapshot source is the only place
+        /// a consumer can decide that a unit has stopped being part of the
+        /// world it replicates (a corpse leaving the roster is what makes the
+        /// diff engine emit <c>DeltaRemoveRecord</c>; the server itself keeps
         /// simulating a roster it never shrinks).
         /// </summary>
         public ServerReplicationEmitter AttachReplication(
             IReplicationTransport transport,
             in ServerReplicationEmitterConfig config,
-            IServerSnapshotSource snapshotSource)
+            IServerSnapshotSource snapshotSource,
+            IReplicationFilter filter)
         {
             if (transport == null)
             {
@@ -448,7 +467,7 @@ namespace GlobalFront.Server
             }
 
             var source = snapshotSource ?? new MatchServerSnapshotSource(_server);
-            var emitter = new ServerReplicationEmitter(source, transport, config);
+            var emitter = new ServerReplicationEmitter(source, transport, config, filter);
             Replication = emitter;
             TickCompleted += emitter.OnTickCompleted;
             transport.SessionDetached += (session, reason) =>

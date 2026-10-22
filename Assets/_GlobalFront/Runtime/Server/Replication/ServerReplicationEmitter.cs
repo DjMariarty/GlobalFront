@@ -1,6 +1,7 @@
 using System;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Snapshot;
+using GlobalFront.Core.Visibility;
 using GlobalFront.Server.Transport;
 
 namespace GlobalFront.Server.Replication
@@ -255,6 +256,7 @@ namespace GlobalFront.Server.Replication
     {
         private readonly IServerSnapshotSource _source;
         private readonly IReplicationTransport _transport;
+        private readonly IReplicationFilter _filter;
         private readonly ServerReplicationEmitterConfig _config;
         private readonly ServerSnapshotDiffEngine _engine;
         private readonly ReplicationHistoryRing _ring;
@@ -291,6 +293,7 @@ namespace GlobalFront.Server.Replication
         private sealed class ClientState
         {
             public SessionId Session;
+            public PlayerId Player;
             public bool Active;
             public bool NeedsKeyframe;
             public bool KeyframeInFlight;
@@ -326,7 +329,16 @@ namespace GlobalFront.Server.Replication
             MatchServer server,
             IReplicationTransport transport,
             in ServerReplicationEmitterConfig config)
-            : this(new MatchServerSnapshotSource(server), transport, config)
+            : this(new MatchServerSnapshotSource(server), transport, config, null)
+        {
+        }
+
+        public ServerReplicationEmitter(
+            MatchServer server,
+            IReplicationTransport transport,
+            in ServerReplicationEmitterConfig config,
+            IReplicationFilter filter)
+            : this(new MatchServerSnapshotSource(server), transport, config, filter)
         {
         }
 
@@ -334,9 +346,25 @@ namespace GlobalFront.Server.Replication
             IServerSnapshotSource source,
             IReplicationTransport transport,
             in ServerReplicationEmitterConfig config)
+            : this(source, transport, config, null)
+        {
+        }
+
+        /// <summary>
+        /// Creates the emitter with an optional per-client view filter
+        /// (ADR-014, OD-39). A null filter — or a filter whose
+        /// <see cref="IReplicationFilter.IsEnabled"/> is false — keeps the
+        /// established global stream.
+        /// </summary>
+        public ServerReplicationEmitter(
+            IServerSnapshotSource source,
+            IReplicationTransport transport,
+            in ServerReplicationEmitterConfig config,
+            IReplicationFilter filter)
         {
             _source = source ?? throw new ArgumentNullException(nameof(source));
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+            _filter = filter;
             _config = config;
 
             _engine = new ServerSnapshotDiffEngine(
@@ -376,6 +404,11 @@ namespace GlobalFront.Server.Replication
         }
 
         public ServerReplicationEmitterConfig Config => _config;
+
+        /// <summary>The per-client view filter, or null for the global stream.</summary>
+        public IReplicationFilter Filter => _filter;
+
+        private bool IsFilterActive => _filter != null && _filter.IsEnabled;
 
         public ReplicationHistoryRing History => _ring;
 
@@ -508,6 +541,14 @@ namespace GlobalFront.Server.Replication
             _captureCounts[next] = count;
             _hasCapture = true;
 
+            // The filter observes exactly the capture the rest of the pipeline
+            // diffs, before any early return: a skipped diff tick must not
+            // leave a hole in the visibility history as well.
+            if (_filter != null)
+            {
+                _filter.UpdateTick(tick, _captures[next].AsSpan(0, count), count);
+            }
+
             if (!canDiff)
             {
                 return;
@@ -568,14 +609,27 @@ namespace GlobalFront.Server.Replication
                 return;
             }
 
-            if (!_ring.TryMergeRange(baseTick, tick, _builder))
+            var filterActive = IsFilterActive;
+            ReplicationChangeSet merged;
+            if (filterActive)
+            {
+                if (!TryBuildFilteredDelta(client, baseTick, tick, out merged))
+                {
+                    _keyframeFallbackCount++;
+                    QueueKeyframe(client);
+                    return;
+                }
+            }
+            else if (!_ring.TryMergeRange(baseTick, tick, _builder))
             {
                 _keyframeFallbackCount++;
                 QueueKeyframe(client);
                 return;
             }
-
-            var merged = _builder.ChangeSet;
+            else
+            {
+                merged = _builder.ChangeSet;
+            }
             var isIdleKeepAlive = merged.RecordCount == 0;
             if (isIdleKeepAlive &&
                 tick - client.LastSentTick <
@@ -600,8 +654,11 @@ namespace GlobalFront.Server.Replication
 
             var sizeResult = DeltaSnapshotWireCodec.GetEncodedSize(
                 merged.Adds, merged.Updates, merged.Removes, out var encodedSize);
+            var payloadLimit = filterActive
+                ? DeltaSnapshotProtocol.MaxPayloadBytes
+                : DeltaSnapshotProtocol.MaxPacketBytes;
             if (sizeResult != DeltaCodecResult.Ok ||
-                encodedSize > DeltaSnapshotProtocol.MaxPacketBytes)
+                encodedSize > payloadLimit)
             {
                 // An establishing delta beyond the payload bound means the
                 // client drifted too far for one packet: re-baseline instead
@@ -620,9 +677,10 @@ namespace GlobalFront.Server.Replication
             var flags = DeltaFlags.None;
             var stateChecksum = 0u;
             if (tick - client.LastChecksumTick >=
-                (ulong)ServerReplicationEmitterConfig.DefaultChecksumIntervalTicks)
+                (ulong)ServerReplicationEmitterConfig.DefaultChecksumIntervalTicks &&
+                TryComputeStateChecksumForClient(client, tick, out var clientChecksum))
             {
-                stateChecksum = ComputeStateChecksum();
+                stateChecksum = clientChecksum;
                 flags |= DeltaFlags.HasChecksum;
                 client.LastChecksumTick = tick;
                 _stateChecksumCount++;
@@ -667,17 +725,196 @@ namespace GlobalFront.Server.Replication
         }
 
         /// <summary>
-        /// Deterministic 32-bit fingerprint of the live world (audit P1-2):
-        /// FNV-1a over every captured unit in the capture's deterministic
-        /// entity-id order, mixing entity id, owner, position, health, move
-        /// target, attack target and auto-acquire. Owner and auto-acquire are
-        /// gameplay state the delta stream can change, so leaving them out
-        /// would hide a real desync (audit F-14). Pure arithmetic — no
-        /// allocations, no string or object hashing, so the value is
-        /// reproducible across runs and platforms.
+        /// Builds one client's establishing delta from the visibility sets at
+        /// the base and target tick (ADR-014, OD-39):
+        /// <list type="bullet">
+        /// <item><c>0 → 1</c>: ADD with the entity's absolute current state;</item>
+        /// <item><c>1 → 0</c>: REMOVE with <see cref="DeltaRemoveCause.FogOfWarHidden"/>,
+        /// or <see cref="DeltaRemoveCause.Destroyed"/> when the entity no longer
+        /// exists in the authoritative capture;</item>
+        /// <item><c>1 → 1</c>: the merged changes of <c>(baseTick, tick]</c>, if any;</item>
+        /// <item><c>0 → 0</c>: nothing — the client never knew the entity, so
+        /// no record may describe it (anti-maphack).</item>
+        /// </list>
+        ///
+        /// Returns false — the receiver needs a keyframe — when a mask is not
+        /// retained, the global merge fails, or a section outgrows the scratch
+        /// buffer.
         /// </summary>
-        private uint ComputeStateChecksum()
+        private bool TryBuildFilteredDelta(
+            ClientState client,
+            ulong baseTick,
+            ulong tick,
+            out ReplicationChangeSet changeSet)
         {
+            changeSet = ReplicationChangeSet.Empty;
+
+            if (!_filter.TryGetVisibilityMask(baseTick, client.Player, out var baseMask) ||
+                !_filter.TryGetVisibilityMask(tick, client.Player, out var currentMask))
+            {
+                return false;
+            }
+
+            if (!_ring.TryMergeRange(baseTick, tick, _builder))
+            {
+                return false;
+            }
+
+            var merged = _builder.ChangeSet;
+
+            // CaptureAndRecord already folded the diff output into the history
+            // ring, so the engine's buffer is free to serve as this client's
+            // filtered scratch. Nothing else reads it between capture and the
+            // per-client encode below.
+            var buffer = _engine.Buffer;
+            var capture = _captures[_captureIndex];
+            var count = _captureCounts[_captureIndex];
+            var adds = buffer.Adds;
+            var updates = buffer.Updates;
+            var removes = buffer.Removes;
+            var addCount = 0;
+            var updateCount = 0;
+            var removeCount = 0;
+
+            var mergedAdds = merged.Adds;
+            var mergedUpdates = merged.Updates;
+            var addCursor = 0;
+            var updateCursor = 0;
+
+            for (var index = 0; index < count; index++)
+            {
+                var unit = capture[index];
+                var entityValue = unit.Entity.Value;
+                if (entityValue == 0 || entityValue > BitMask1024.BitCount)
+                {
+                    continue;
+                }
+
+                var bitIndex = (int)entityValue - 1;
+                if (!currentMask.IsSet(bitIndex))
+                {
+                    continue;
+                }
+
+                while (addCursor < mergedAdds.Length &&
+                       mergedAdds[addCursor].Entity.Value < entityValue)
+                {
+                    addCursor++;
+                }
+
+                if (!baseMask.IsSet(bitIndex))
+                {
+                    if (addCount >= adds.Length)
+                    {
+                        return false;
+                    }
+
+                    adds[addCount++] = ServerSnapshotDiffEngine.ToAddRecord(in unit);
+                    continue;
+                }
+
+                if (addCursor < mergedAdds.Length &&
+                    mergedAdds[addCursor].Entity.Value == entityValue)
+                {
+                    // Visible at both endpoints but "added" inside the window:
+                    // the histories disagree, so only a keyframe is trusted.
+                    return false;
+                }
+
+                while (updateCursor < mergedUpdates.Length &&
+                       mergedUpdates[updateCursor].Entity.Value < entityValue)
+                {
+                    updateCursor++;
+                }
+
+                if (updateCursor < mergedUpdates.Length &&
+                    mergedUpdates[updateCursor].Entity.Value == entityValue)
+                {
+                    if (updateCount >= updates.Length)
+                    {
+                        return false;
+                    }
+
+                    updates[updateCount++] = mergedUpdates[updateCursor];
+                }
+            }
+
+            for (var bit = 0; bit < BitMask1024.BitCount; bit++)
+            {
+                if (!baseMask.IsSet(bit) || currentMask.IsSet(bit))
+                {
+                    continue;
+                }
+
+                if (removeCount >= removes.Length)
+                {
+                    return false;
+                }
+
+                var entity = new EntityId((ulong)bit + 1);
+                removes[removeCount++] = new DeltaRemoveRecord(
+                    entity,
+                    EntityExists(entity)
+                        ? DeltaRemoveCause.FogOfWarHidden
+                        : DeltaRemoveCause.Destroyed);
+            }
+
+            changeSet = buffer.AsChangeSet(addCount, updateCount, removeCount);
+            return true;
+        }
+
+        /// <summary>Binary search of the current capture (ascending entity ids).</summary>
+        private bool EntityExists(EntityId entity)
+        {
+            var capture = _captures[_captureIndex];
+            var low = 0;
+            var high = _captureCounts[_captureIndex] - 1;
+            while (low <= high)
+            {
+                var middle = low + ((high - low) >> 1);
+                var value = capture[middle].Entity.Value;
+                if (value == entity.Value)
+                {
+                    return true;
+                }
+
+                if (value < entity.Value)
+                {
+                    low = middle + 1;
+                }
+                else
+                {
+                    high = middle - 1;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Deterministic 32-bit fingerprint of the world one client is allowed
+        /// to hold at <paramref name="tick"/> (audit P1-2, OD-40): FNV-1a over
+        /// the captured units in the capture's deterministic entity-id order,
+        /// restricted to the player's current visibility set when a filter is
+        /// active. Owner and auto-acquire are gameplay state the delta stream
+        /// can change, so leaving them out would hide a real desync (audit
+        /// F-14). Pure arithmetic — no allocations, no string or object
+        /// hashing, so the value is reproducible across runs and platforms.
+        ///
+        /// Returns false when the filter cannot supply the tick's visibility
+        /// mask: a checksum computed over a guessed set would turn every other
+        /// packet into a false desync, so the caller omits the flag instead.
+        /// </summary>
+        private bool TryComputeStateChecksumForClient(ClientState client, ulong tick, out uint checksum)
+        {
+            checksum = 0u;
+            var filterActive = IsFilterActive;
+            var mask = default(BitMask1024);
+            if (filterActive && !_filter.TryGetVisibilityMask(tick, client.Player, out mask))
+            {
+                return false;
+            }
+
             unchecked
             {
                 var hash = 2166136261u;
@@ -686,26 +923,46 @@ namespace GlobalFront.Server.Replication
                 for (var index = 0; index < count; index++)
                 {
                     var unit = capture[index];
-                    hash = MixChecksumByte(hash, unit.Entity.Value);
-                    hash = MixChecksumByte(hash, (ulong)unit.Owner.Value);
-                    hash = MixChecksumByte(hash, (ulong)unit.Position.X);
-                    hash = MixChecksumByte(hash, (ulong)unit.Position.Z);
-                    hash = MixChecksumByte(hash, (ulong)unit.CurrentHealth);
-                    hash = MixChecksumByte(hash, unit.HasMoveTarget ? 1UL : 0UL);
+                    if (filterActive)
+                    {
+                        var entityValue = unit.Entity.Value;
+                        if (entityValue == 0 || entityValue > BitMask1024.BitCount ||
+                            !mask.IsSet((int)entityValue - 1))
+                        {
+                            continue;
+                        }
+                    }
 
-                    // Exactly the term the client world hashes. The authoritative
-                    // record keeps its last destination after a unit arrives, but
-                    // the wire omits the coordinates of a cleared move target, so
-                    // hashing them here describes state no client could ever hold
-                    // and turns a completed march into a permanent false desync.
-                    var moveTargetX = unit.HasMoveTarget ? unit.MoveTarget.X : 0;
-                    var moveTargetZ = unit.HasMoveTarget ? unit.MoveTarget.Z : 0;
-                    hash = MixChecksumByte(hash, (ulong)moveTargetX);
-                    hash = MixChecksumByte(hash, (ulong)moveTargetZ);
-                    hash = MixChecksumByte(hash, unit.AttackTarget.Value);
-                    hash = MixChecksumByte(hash, unit.AutoAcquireEnemies ? 1UL : 0UL);
+                    hash = MixChecksumUnit(hash, in unit);
                 }
 
+                checksum = hash;
+                return true;
+            }
+        }
+
+        private static uint MixChecksumUnit(uint hash, in ServerUnitSnapshot unit)
+        {
+            unchecked
+            {
+                hash = MixChecksumByte(hash, unit.Entity.Value);
+                hash = MixChecksumByte(hash, (ulong)unit.Owner.Value);
+                hash = MixChecksumByte(hash, (ulong)unit.Position.X);
+                hash = MixChecksumByte(hash, (ulong)unit.Position.Z);
+                hash = MixChecksumByte(hash, (ulong)unit.CurrentHealth);
+                hash = MixChecksumByte(hash, unit.HasMoveTarget ? 1UL : 0UL);
+
+                // Exactly the term the client world hashes. The authoritative
+                // record keeps its last destination after a unit arrives, but
+                // the wire omits the coordinates of a cleared move target, so
+                // hashing them here describes state no client could ever hold
+                // and turns a completed march into a permanent false desync.
+                var moveTargetX = unit.HasMoveTarget ? unit.MoveTarget.X : 0;
+                var moveTargetZ = unit.HasMoveTarget ? unit.MoveTarget.Z : 0;
+                hash = MixChecksumByte(hash, (ulong)moveTargetX);
+                hash = MixChecksumByte(hash, (ulong)moveTargetZ);
+                hash = MixChecksumByte(hash, unit.AttackTarget.Value);
+                hash = MixChecksumByte(hash, unit.AutoAcquireEnemies ? 1UL : 0UL);
                 return hash;
             }
         }
@@ -748,20 +1005,49 @@ namespace GlobalFront.Server.Replication
             EnsureCapture();
 
             var unitCount = _captureCounts[_captureIndex];
-            var stagingBytes = unitCount * DeltaSnapshotProtocol.AddRecordSizeBytes;
+            var capture = _captures[_captureIndex];
+
+            // A filtered keyframe carries exactly the units the client is
+            // allowed to know at the keyframe tick: every other entity must
+            // arrive later as an ADD when it becomes visible. When the mask is
+            // unavailable the baseline is empty — the fail-closed direction for
+            // an anti-maphack filter (the next tick re-baselines once the mask
+            // exists again).
+            var filterActive = IsFilterActive;
+            var maskAvailable = !filterActive;
+            var mask = default(BitMask1024);
+            if (filterActive)
+            {
+                maskAvailable = _filter.TryGetVisibilityMask(tick, client.Player, out mask);
+            }
+
+            var addCount = 0;
+            for (var index = 0; index < unitCount; index++)
+            {
+                var unit = capture[index];
+                if (filterActive)
+                {
+                    var entityValue = unit.Entity.Value;
+                    if (!maskAvailable ||
+                        entityValue == 0 ||
+                        entityValue > BitMask1024.BitCount ||
+                        !mask.IsSet((int)entityValue - 1))
+                    {
+                        continue;
+                    }
+                }
+
+                _addScratch[addCount++] = ServerSnapshotDiffEngine.ToAddRecord(in unit);
+            }
+
+            var stagingBytes = addCount * DeltaSnapshotProtocol.AddRecordSizeBytes;
             if (client.KeyframeStaging == null || client.KeyframeStaging.Length < stagingBytes)
             {
                 client.KeyframeStaging = new byte[Math.Max(stagingBytes, ClientState.DefaultKeyframeStagingBytes)];
             }
 
-            var capture = _captures[_captureIndex];
-            for (var index = 0; index < unitCount; index++)
-            {
-                _addScratch[index] = ServerSnapshotDiffEngine.ToAddRecord(capture[index]);
-            }
-
             var encodeResult = DeltaSnapshotWireCodec.TryEncodeAddRecords(
-                _addScratch.AsSpan(0, unitCount),
+                _addScratch.AsSpan(0, addCount),
                 client.KeyframeStaging,
                 out var staged);
             if (encodeResult != DeltaCodecResult.Ok)
@@ -775,10 +1061,10 @@ namespace GlobalFront.Server.Replication
             client.NextKeyframeSeq = (ushort)(client.NextKeyframeSeq + 1);
             client.KeyframeSeq = client.NextKeyframeSeq;
             client.KeyframeTick = tick;
-            client.StagedUnitCount = unitCount;
-            client.PendingPartCount = unitCount == 0
+            client.StagedUnitCount = addCount;
+            client.PendingPartCount = addCount == 0
                 ? 1
-                : (unitCount + _recordsPerSlice - 1) / _recordsPerSlice;
+                : (addCount + _recordsPerSlice - 1) / _recordsPerSlice;
             client.PendingNextPart = 0;
             client.KeyframeInFlight = true;
             client.NeedsKeyframe = false;
@@ -933,14 +1219,27 @@ namespace GlobalFront.Server.Replication
                 return;
             }
 
-            if (!_ring.TryMergeRange(baseTick, target, _builder))
+            var filterActive = IsFilterActive;
+            ReplicationChangeSet merged;
+            if (filterActive)
+            {
+                if (!TryBuildFilteredDelta(client, baseTick, target, out merged))
+                {
+                    _keyframeFallbackCount++;
+                    QueueKeyframe(client);
+                    return;
+                }
+            }
+            else if (!_ring.TryMergeRange(baseTick, target, _builder))
             {
                 _keyframeFallbackCount++;
                 QueueKeyframe(client);
                 return;
             }
-
-            var merged = _builder.ChangeSet;
+            else
+            {
+                merged = _builder.ChangeSet;
+            }
             if (merged.RecordCount == 0)
             {
                 // Empty interval: the client's state already equals the target.
@@ -988,8 +1287,11 @@ namespace GlobalFront.Server.Replication
 
             var sizeResult = DeltaSnapshotWireCodec.GetEncodedSize(
                 merged.Adds, merged.Updates, merged.Removes, out var encodedSize);
+            var payloadLimit = filterActive
+                ? DeltaSnapshotProtocol.MaxPayloadBytes
+                : DeltaSnapshotProtocol.MaxPacketBytes;
             if (sizeResult != DeltaCodecResult.Ok ||
-                encodedSize > DeltaSnapshotProtocol.MaxPacketBytes)
+                encodedSize > payloadLimit)
             {
                 _keyframeFallbackCount++;
                 QueueKeyframe(client);
@@ -1054,6 +1356,7 @@ namespace GlobalFront.Server.Replication
             }
 
             client.Session = session;
+            client.Player = player;
             client.Active = true;
             client.NeedsKeyframe = false;
             client.KeyframeInFlight = false;
@@ -1098,6 +1401,7 @@ namespace GlobalFront.Server.Replication
                 client.Session = session;
             }
 
+            client.Player = player;
             client.Active = true;
             client.NeedsKeyframe = false;
             client.KeyframeInFlight = false;
