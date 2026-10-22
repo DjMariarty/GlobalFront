@@ -17,18 +17,21 @@
 - **Phase 4 (Multiplayer Gameplay Integration):** [ACTIVE / IN PROGRESS]. ADR-014 принят (OD-35..OD-43, `DECISIONS.md`).
 - **Шаг 4.1 (Dedicated Server Core Relocation & Headless Runner):** [COMPLETE / COMMITTED `5f2f29e`]. `ServerHost` вынесен в `GlobalFront.Server` (engine-free), `LocalMatchHost` остался тонкой клиентской обёрткой с `BindReconnectCoordinator`; добавлена сборка `GlobalFront.ServerHost` с `DedicatedServerRunner` (цикл `Pump` → `AdvanceRealTime`, 120 FPS) и `DedicatedServerBootstrap` (`-port`, `-tickrate`, `-dedicatedServer` / `UNITY_SERVER`); в `FixedStepClock` добавлен кламп бэклога `MaxBacklogSeconds = 0.25` (OD-45).
 - **Шаг 4.2 (Client Remote Connection & Handshake):** [COMPLETE / COMMITTED `1760f17`]. `ClientTransportEndpoint` отправляет `Ping` и публикует `PongReceived`; `RemoteSliceSession` компонует endpoint, uplink, receiver/bridge, C1 command channel и RTT-контур (каденс 1 Гц, EWMA α = 0.125 по клиентским часам); `TacticalVerticalSliceRunner.InitializeDedicatedClient` работает без локального `_host` (тик — из `ClientReplicationReceiver`, команды — через `NetworkCommandChannel`, пул прогревается по полученному ростеру), RTT и сетевой статус выводятся в `NetworkHudPresenter`.
-- **Шаг 4.2.1 (Client Bootstrap CLI `-connect`):** [IMPLEMENTED / UNCOMMITTED]. `GlobalFrontRuntimeBootstrap` разбирает `-connect <host>[:<port>]` и `-connect=<host>[:<port>]` (порт по умолчанию 7777, диапазон 1..65535; отсутствие флага/пустой хост/невалидный порт → `false`). При наличии флага `Initialize()` не строит легаси-прототип, а вызывает `ActivateDedicatedClient`: снимает легаси-прототип и предыдущий срез, создаёт `RemoteSliceSession`, подключается и инициализирует раннер в `DedicatedClient`; сессией владеет бутстрап и освобождает её при замене среза. Гейт: EditMode **1219/1219**, PlayMode **17/17**; live PlayMode-проверка с реальным UDP-сервером: `Established`, RTT 28–29 ms, HUD-слот `Connected`.
-- **Следующий шаг:** верификация diff координатором и коммит Шага 4.2.1; далее по Rev.2 — 4.3 (FoW / per-client filtering).
+- **Шаг 4.2.1 (Client Bootstrap CLI `-connect`):** [COMPLETE / COMMITTED `34e994e`]. `GlobalFrontRuntimeBootstrap` разбирает `-connect <host>[:<port>]` и `-connect=<host>[:<port>]` (порт по умолчанию 7777, диапазон 1..65535; отсутствие флага/пустой хост/невалидный порт → `false`). При наличии флага `Initialize()` не строит легаси-прототип, а вызывает `ActivateDedicatedClient`: снимает легаси-прототип и предыдущий срез, создаёт `RemoteSliceSession`, подключается и инициализирует раннер в `DedicatedClient`; сессией владеет бутстрап и освобождает её при замене среза. Гейт: EditMode **1219/1219**, PlayMode **17/17**; live PlayMode-проверка с реальным UDP-сервером: `Established`, RTT 28–29 ms, HUD-слот `Connected`.
+- **Шаг 4.3.1 (Core Visibility Engine & Visibility History Ring):** [IMPLEMENTED / UNCOMMITTED on `34e994e`]. `GlobalFront.Core.Visibility`: `BitMask1024` (ровно 128 B, 16 `ulong`, bounds-checked set/Clear/IsSet, `Or`/`And`/`AndNot`, SWAR popcount), `VisibilityEngine` (uniform grid 8192 мм: плотный прямоугольник для компактных сцен + hash fallback для разреженных, мемоизация полностью видимых ячеек, свои и союзники видны безусловно, враги — по радиусу 20 м, команды через `SetPlayerTeam`, zero-GC) и `GlobalFront.Server.Replication.VisibilityHistoryRing` (120 тиков × 10 игроков, forward-only, вытеснение, бинарный поиск, zero-GC). Вход движка — engine-free `VisibilityUnitSnapshot`: `ServerUnitSnapshot` живёт в `GlobalFront.Server`, на который Core ссылаться не может. 39 новых EditMode-тестов. Гейт: EditMode **1258/1258**, PlayMode **17/17**; 1024 юнита — **0.694 ms** median за расчёт в финальном гейте (0.709 ms focused; минимум по прогонам 0.398 ms), гард 1.0 ms, 0 B GC.Alloc. Bite-прогоны: 9 / 4 / 1 падений. `ServerReplicationEmitter`, `MatchServer`, `ClientReplicationWorld` не изменялись.
+- **Следующий шаг:** верификация diff Шага 4.3.1 координатором; далее по Rev.2 — 4.3.2 (сетевая интеграция FoW в `ServerReplicationEmitter`: дельты, кейфреймы, чексуммы).
 
 ## Last Commit
 
-`1760f17` (`feat(client): implement remote connection, RTT EWMA loop, and dedicated client mode (Step 4.2)`)
+`34e994e` (`feat(client): add CLI -connect argument parsing and dedicated client auto-activation (Step 4.2.1)`)
 
 ## Tests
 
-- EditMode: **1219/1219 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step421-editmode-final.xml`)
-- PlayMode: **17/17 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step421-playmode-final.xml`)
-- Всего: **1236 автоматизированных тестов** (100% green; +9 EditMode к базовым 1210)
+- EditMode: **1258/1258 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step431-editmode-final.xml`)
+- PlayMode: **17/17 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step431-playmode-final.xml`)
+- Всего: **1275 автоматизированных тестов** (100% green; +39 EditMode к базовым 1219)
+- Step 4.3.1 focused (VisibilityEngineTests): **18/18** (`step431-focused.xml`); 1024 юнита — **0.694 ms** median за расчёт в финальном EditMode-гейте (0.709 ms в focused-прогоне, минимум 0.398 ms), гард 1.0 ms; zero-GC тесты движка и кольца зелёные
+- Bite-прогоны 4.3.1: `step431-bite1-sight-distance.xml` (инвертировано расстояние → 9 падений, включая `19.9 m Expected: True But was: False`), `step431-bite2-allies-visibility.xml` (свои юниты только через радиус → 4 падения, `an own unit 500 m away stays visible`), `step431-bite3-ring-eviction.xml` (старые тики возвращают `true` → 1 падение, `tick 1 must be evicted`)
 - Bite-прогоны 4.2.1: `step421-bite1-connect.xml` (forced `false` → 4 падения, `Expected: True But was: False`), `step421-bite2-endpoint-split.xml` (сломанный split → 5 падений), `step421-bite3-activation.xml` (`LocalLoopback` вместо `DedicatedClient`)
 - Компиляция: 0 warnings, 0 errors
 - OD-28 (400 юнитов): **0.623 ms/frame** — среднее CPU-время тика симуляции и презентационного кадра за 120 итераций в headless EditMode (`createVisuals: false`), гард 8.0 ms, потолок 60 FPS 16.67 ms; это не замер полного кадра с GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров и 60 loopback-тиков
@@ -82,12 +85,18 @@
   - `TacticalVerticalSliceRunner.InitializeDedicatedClient`: `Host == null`, `CurrentTick` из `ClientReplicationReceiver.LastAppliedTick`, команды через `NetworkCommandChannel`, прогрев пула по полученному baseline-ростеру, защита локальных путей (`StepSimulationTick`, `IssueConvergenceMarch`/`IssueEngagementOrders`) от dedicated-режима.
   - RTT и `SlotStatus` уходят в `NetworkHudPresenter`; `CurrentTick + 1 + ceil(RTT/2 / 50 ms)` как запрошенный тик команды.
   - Bite-прогоны: `step42-bite1-pong.xml` (RTT sample 0 вместо 40), `step42-bite2-isolation.xml` (`Host` не null), `step42-bite3-command.xml` (сервер получил 0 команд).
-- **Phase 4.2.1 Client Bootstrap CLI `-connect` — IMPLEMENTED (uncommitted on `1760f17`):**
+- **Phase 4.2.1 Client Bootstrap CLI `-connect` — COMPLETE (`34e994e`):**
   - `GlobalFrontRuntimeBootstrap.TryParseConnectEndpoint`: форматы `-connect host[:port]` и `-connect=host[:port]` (case-insensitive), порт по умолчанию 7777, валидация 1..65535, `LastIndexOf(':')` сохраняет IPv6-литерал.
   - `GlobalFrontRuntimeBootstrap.ActivateDedicatedClient`: снимает легаси-прототип и предыдущий срез, создаёт `RemoteSliceSession`, вызывает `Connect`, затем `TacticalVerticalSliceRunner.InitializeDedicatedClient(session, createVisuals, autoStartRealTime: true)`; предыдущая bootstrap-сессия освобождается при замене среза.
   - `Initialize()` при наличии `-connect` уходит в dedicated-ветку и не создаёт одиночный легаси-прототип.
   - 9 новых EditMode-тестов (разбор аргументов, dedicated-режим, снятие прототипа, замена среза); live PlayMode-проверка с реальным UDP-сервером на 7777: `NetworkMode=DedicatedClient`, `Host=null`, `Established`, игрок назначен, HUD-слот `Connected`, RTT EWMA 28–29 ms, тики идут с 20 Гц.
   - Bite-прогоны: `step421-bite1-connect.xml`, `step421-bite2-endpoint-split.xml`, `step421-bite3-activation.xml`.
+- **Phase 4.3.1 Core Visibility Engine & Visibility History Ring — IMPLEMENTED (uncommitted on `34e994e`):**
+  - `Assets/_GlobalFront/Runtime/Core/Visibility/BitMask1024.cs`: 1024-битная маска (16 `ulong`, 128 B), `Set`/`Clear`/`IsSet` с проверкой 0..1023, `ClearAll`, `IsEmpty`, `PopCount` (SWAR — Unity-профиль не отдаёт `System.Numerics.BitOperations`), `Or`/`And`/`AndNot`, value-equality.
+  - `Assets/_GlobalFront/Runtime/Core/Visibility/VisibilityEngine.cs`: uniform grid 8192 мм; плотный прямоугольник (≤ 128×128 ячеек) с прямым индексом для компактных сцен и hash fallback с открытой адресацией для разреженных миров; мемоизация «ячейка полностью видима»; свои и союзники (общий `TeamId` через `SetPlayerTeam`) видны безусловно, враги — только в радиусе любого дружественного юнита; per-call штампы исключают повторные `Set`/дистанции. Вход — `VisibilityUnitSnapshot` (engine-free дубль трёх полей `ServerUnitSnapshot`, иначе Core зависел бы от Server).
+  - `Assets/_GlobalFront/Runtime/Server/Replication/VisibilityHistoryRing.cs`: 120 тиков × 10 игроков (150 KB), forward-only запись, вытеснение самого старого тика, бинарный поиск, `TryGetVisibility`/`ContainsTick`/`Clear`, index 0 маск-спана игнорируется.
+  - 39 новых EditMode-тестов: границы битов, set algebra, дистанция 19.9/20.0/20.1 м, свои/союзники на 500 м, отсутствие маппинга = враг, союзный обзор, 200 юнитов против brute-force, sparse hash fallback, hash-neighbourhood кластер (60 ячеек), 1024 юнита (< 1 ms, median 5×50), zero-GC движка и кольца, ротация 1..130.
+  - Bite-прогоны: `step431-bite1-sight-distance.xml`, `step431-bite2-allies-visibility.xml`, `step431-bite3-ring-eviction.xml`.
 - **Phase 4.1 Dedicated Server Core Relocation & Headless Runner — COMPLETE (`5f2f29e`):**
   - `Assets/_GlobalFront/Runtime/Server/ServerHost.cs` — двигатель-нейтральное ядро хоста (MatchServer + TickDriver + SessionManager + репликация + пауза), без ссылок на `GlobalFront.Client` и `UnityEngine`.
   - `Assets/_GlobalFront/Runtime/Client/LocalMatchHost.cs` — тонкая обёртка над `ServerHost`; сохранены конструкторы, API и клиентский `BindReconnectCoordinator`.
@@ -103,7 +112,7 @@
 
 ## Next Step
 
-**Phase 4 (Multiplayer Gameplay Integration) — [ACTIVE]**: Шаг 4.2.1 реализован и ожидает верификации/коммита координатором. Далее по Rev.2: 4.3 (FoW / per-client filtering).
+**Phase 4 (Multiplayer Gameplay Integration) — [ACTIVE]**: Шаг 4.3.1 реализован (core visibility math + history ring) и ожидает верификации координатором; сетевая интеграция FoW — следующий шаг 4.3.2 (эмиттер, дельты, чексуммы).
 
 ## Backlog
 

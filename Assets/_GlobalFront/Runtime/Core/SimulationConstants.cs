@@ -31,5 +31,20 @@ namespace GlobalFront.Core.Simulation
         /// layer no longer runs this phase locally.
         /// </summary>
         public const int AutoAcquireRangeMm = 18000;
+
+        /// <summary>
+        /// Edge length in millimetres of one cell of the server-side visibility
+        /// uniform grid (2^13 = 8192 mm = 8.192 m). The grid accelerates
+        /// sight queries from O(N^2) to O(N * k) by scanning only cells that
+        /// can hold a unit inside the sight radius.
+        /// </summary>
+        public const int VisibilityGridCellSizeMm = 8192;
+
+        /// <summary>
+        /// Default sight radius in millimetres (20 m) used by
+        /// <see cref="GlobalFront.Core.Visibility.VisibilityEngine"/> when the
+        /// caller does not pass an explicit radius.
+        /// </summary>
+        public const int DefaultSightRadiusMm = 20000;
     }
 }
