@@ -1,6 +1,6 @@
 # GlobalFront Current State
 
-> Быстрый handoff для AI-агента • обновлено 2026-10-21
+> Быстрый handoff для AI-агента • обновлено 2026-10-22
 
 ## Current Phase
 
@@ -8,25 +8,26 @@
 
 ## Current Task
 
-**Phase 1, 2 и 3 ЗАВЕРШЕНЫ полностью • Следующая фаза: Phase 4 (Multiplayer Gameplay Integration) — [READY / NEXT]**
+**Phase 1, 2 и 3 ЗАВЕРШЕНЫ полностью • Phase 4 (Multiplayer Gameplay Integration) — [ACTIVE / IN PROGRESS]**
 
 - **Phase 1 (Simulation Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Спринты hardening 1.1–1.5.1 закрыли concurrency, reentrancy, friendly-fire и snapshot allocations (`5b16a05`..`349a074`).
 - **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / P0/P1 = 0 CERTIFIED]. Шаги 2.1–2.8 + спринты hardening 2.1–2.5 (`5c94e07`..`4cb8ffa`). Сертификация Phase 2.0 на `4cb8ffa` подтвердила **P0/P1 = 0**: это строгий состязательный ре-аудит, выполненный Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); сам отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели привлекались только на промежуточных этапах ревью и авторами сертификата не являются. Уязвимость N-01 / D-10 / A-01 полностью ликвидирована на 3 независимых слоях. Все оставшиеся замечания (F-1..F-11, F-13..F-15, N-02..N-04) закрыты в Hardening Phase 3.7.1 — см. блоки ниже.
 - **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Шаги 3.1–3.7 (ADR-012, OD-23..OD-29). Сквозной вертикальный срез на 400 юнитах (`3414ba6` / `cb01ea2`). Замер OD-28: **0.623 ms/frame** — это CPU-пайплайн симуляции и презентации (headless EditMode, 400 юнитов, гард 8.0 ms), а не полный кадр с физическим GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров.
 - **Hardening Phase 3.7.1 (закрытие Grand Audit):** [100% COMPLETED]. Блоки 1–4 (`934840d`..`3a112ad`) закрыли code-level замечания F-1..F-11, F-13..F-15 и N-02..N-04; блок 5 закрыл F-6 и F-10. 17 новых EditMode-тестов (1162 → 1179), bite-прогоны по каждому наблюдаемому дефекту.
 - **Phase 4 (Multiplayer Gameplay Integration):** [ACTIVE / IN PROGRESS]. ADR-014 принят (OD-35..OD-43, `DECISIONS.md`).
-- **Шаг 4.1 (Dedicated Server Core Relocation & Headless Runner):** [IMPLEMENTED / UNCOMMITTED]. `ServerHost` вынесен в `GlobalFront.Server` (engine-free), `LocalMatchHost` остался тонкой клиентской обёрткой с `BindReconnectCoordinator`; добавлена сборка `GlobalFront.ServerHost` с `DedicatedServerRunner` (цикл `Pump` → `AdvanceRealTime`, 120 FPS) и `DedicatedServerBootstrap` (`-port`, `-tickrate`, `-dedicatedServer` / `UNITY_SERVER`); в `FixedStepClock` добавлен кламп бэклога `MaxBacklogSeconds = 0.25` (OD-45). Гейт: EditMode **1199/1199**, PlayMode **16/16**.
-- **Следующий шаг:** верификация diff координатором и коммит Шага 4.1; далее по Rev.2 — 4.5 (wiring), затем 4.2 (client remote connection & handshake).
+- **Шаг 4.1 (Dedicated Server Core Relocation & Headless Runner):** [COMPLETE / COMMITTED `5f2f29e`]. `ServerHost` вынесен в `GlobalFront.Server` (engine-free), `LocalMatchHost` остался тонкой клиентской обёрткой с `BindReconnectCoordinator`; добавлена сборка `GlobalFront.ServerHost` с `DedicatedServerRunner` (цикл `Pump` → `AdvanceRealTime`, 120 FPS) и `DedicatedServerBootstrap` (`-port`, `-tickrate`, `-dedicatedServer` / `UNITY_SERVER`); в `FixedStepClock` добавлен кламп бэклога `MaxBacklogSeconds = 0.25` (OD-45).
+- **Шаг 4.2 (Client Remote Connection & Handshake):** [IMPLEMENTED / UNCOMMITTED]. `ClientTransportEndpoint` отправляет `Ping` и публикует `PongReceived`; `RemoteSliceSession` компонует endpoint, uplink, receiver/bridge, C1 command channel и RTT-контур (каденс 1 Гц, EWMA α = 0.125 по клиентским часам); `TacticalVerticalSliceRunner.InitializeDedicatedClient` работает без локального `_host` (тик — из `ClientReplicationReceiver`, команды — через `NetworkCommandChannel`, пул прогревается по полученному ростеру), RTT и сетевой статус выводятся в `NetworkHudPresenter`. Гейт: EditMode **1210/1210**, PlayMode **17/17**.
+- **Следующий шаг:** верификация diff координатором и коммит Шага 4.2; далее по Rev.2 — 4.3 (FoW / per-client filtering).
 
 ## Last Commit
 
-`bbfd19d` (`docs: synchronize phase descriptions, master plan, and AI context to 1195-test baseline`)
+`5f2f29e` (`feat(server): relocate ServerHost, implement DedicatedServerRunner, and add backlog clamp (Step 4.1)`)
 
 ## Tests
 
-- EditMode: **1199/1199 passed** (100% green, 0 failed, 0 skipped, 2026-10-21; gate: `Artifacts/TestResults/step41-editmode-final.xml`)
-- PlayMode: **16/16 passed** (100% green, 0 failed, 0 skipped, 2026-10-21; gate: `Artifacts/TestResults/step41-playmode-final.xml`)
-- Всего: **1215 автоматизированных тестов** (100% green; +20 EditMode к базовым 1195)
+- EditMode: **1210/1210 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step42-editmode-final.xml`)
+- PlayMode: **17/17 passed** (100% green, 0 failed, 0 skipped, 2026-10-22; gate: `Artifacts/TestResults/step42-playmode-final.xml`)
+- Всего: **1227 автоматизированных тестов** (100% green; +11 EditMode и +1 PlayMode к базовым 1215)
 - Компиляция: 0 warnings, 0 errors
 - OD-28 (400 юнитов): **0.623 ms/frame** — среднее CPU-время тика симуляции и презентационного кадра за 120 итераций в headless EditMode (`createVisuals: false`), гард 8.0 ms, потолок 60 FPS 16.67 ms; это не замер полного кадра с GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров и 60 loopback-тиков
 - Unity: `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
@@ -73,7 +74,13 @@
   - Phase 3.5 Selection System, Screen-Space Drag-Box & RTS Command Issuing — COMPLETE (`cfa24c2`) — [APPROVED: ZERO DEFECTS]
   - Phase 3.6 Minimap & Tactical HUD — COMPLETE (`2a754db`) — [APPROVED: ZERO DEFECTS]
   - Phase 3.7 Vertical Slice Integration, 400-Unit Benchmark, Multi-Frame PlayMode Suite & Architecture Invariants Gate — COMPLETE (`3414ba6`, `cb01ea2`) — [APPROVED: ZERO DEFECTS]
-- **Phase 4.1 Dedicated Server Core Relocation & Headless Runner — IMPLEMENTED (uncommitted on `bbfd19d`):**
+- **Phase 4.2 Client Remote Connection & Handshake — IMPLEMENTED (uncommitted on `5f2f29e`):**
+  - `ClientTransportEndpoint.TrySendPing` / `PongReceived` и ветка `Pong` в `HandleMessage` (C0, `long` timestamp клиента).
+  - `SliceNetworkMode` (`LocalLoopback` = 0 по умолчанию, `DedicatedClient` = 2) и `RemoteSliceSession` — единый владелец endpoint/uplink/receiver/bridge/command channel, пинг раз в 1000 мс, `sampleRtt = clientNow - timestamp`, EWMA 0.875/0.125.
+  - `TacticalVerticalSliceRunner.InitializeDedicatedClient`: `Host == null`, `CurrentTick` из `ClientReplicationReceiver.LastAppliedTick`, команды через `NetworkCommandChannel`, прогрев пула по полученному baseline-ростеру, защита локальных путей (`StepSimulationTick`, `IssueConvergenceMarch`/`IssueEngagementOrders`) от dedicated-режима.
+  - RTT и `SlotStatus` уходят в `NetworkHudPresenter`; `CurrentTick + 1 + ceil(RTT/2 / 50 ms)` как запрошенный тик команды.
+  - Bite-прогоны: `step42-bite1-pong.xml` (RTT sample 0 вместо 40), `step42-bite2-isolation.xml` (`Host` не null), `step42-bite3-command.xml` (сервер получил 0 команд).
+- **Phase 4.1 Dedicated Server Core Relocation & Headless Runner — COMPLETE (`5f2f29e`):**
   - `Assets/_GlobalFront/Runtime/Server/ServerHost.cs` — двигатель-нейтральное ядро хоста (MatchServer + TickDriver + SessionManager + репликация + пауза), без ссылок на `GlobalFront.Client` и `UnityEngine`.
   - `Assets/_GlobalFront/Runtime/Client/LocalMatchHost.cs` — тонкая обёртка над `ServerHost`; сохранены конструкторы, API и клиентский `BindReconnectCoordinator`.
   - `Assets/_GlobalFront/Runtime/ServerHost/` — сборка `GlobalFront.ServerHost` с `DedicatedServerRunner` (120 FPS, `Pump` до тиков) и `DedicatedServerBootstrap`.
@@ -88,7 +95,7 @@
 
 ## Next Step
 
-**Phase 4 (Multiplayer Gameplay Integration) — [ACTIVE]**: Шаг 4.1 реализован и ожидает верификации/коммита координатором. Далее по Rev.2: 4.5 (wiring), затем 4.2 (client remote connection & handshake), 4.3 (FoW / per-client filtering).
+**Phase 4 (Multiplayer Gameplay Integration) — [ACTIVE]**: Шаг 4.2 реализован и ожидает верификации/коммита координатором. Далее по Rev.2: 4.3 (FoW / per-client filtering).
 
 ## Backlog
 
@@ -100,7 +107,7 @@
 - Current runtime: `ServerHost` (engine-independent, `GlobalFront.Server`) владеет `MatchServer`, `TickDriver` и `SessionManager`; `LocalMatchHost` — клиентская обёртка, добавляющая `BindReconnectCoordinator`. Dedicated-серверная обвязка живёт в отдельной сборке `GlobalFront.ServerHost` и не протекает в Core/Server.
 - Server tick lifecycle отделён от Unity client lifecycle (ADR-007). Session/player identity реализованы как server-authoritative layer (ADR-008): PlayerId назначается только сервером, command ingress проходит session gate.
 - Сетевой транспорт реализован по ADR-009 (OD-1 = LiteNetLib за контрактом `INetworkCarrier`) и сертифицирован.
-- **Headless transport pump (F-10):** `ServerTransportHost.Pump` теперь имеет продакшн call-site в `DedicatedServerRunner.Update` (Phase 4, Шаг 4.1); вертикальный срез по-прежнему использует `LocalReplicationLoopback`.
+- **Headless transport pump (F-10):** `ServerTransportHost.Pump` имеет продакшн call-site в `DedicatedServerRunner.Update` (Phase 4, Шаг 4.1); вертикальный срез использует `LocalReplicationLoopback` по умолчанию и `DedicatedClient` через `RemoteSliceSession` (Шаг 4.2).
 - Reconnect/resync реализованы и приняты (Phase 2.7, OD-18…OD-22) с тактической паузой и 5-секундным countdown.
 - Презентационный стек Phase 3 (OD-23..OD-29) доказал Zero-GC steady state и 0.623 ms/frame на 400 активных юнитах.
 - Product 1.0 включает пять основных фракций (NATO, Russia, China, GLA, USA); их gameplay/content будет развёрнут в последующих фазах.

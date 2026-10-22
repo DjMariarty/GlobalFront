@@ -92,6 +92,13 @@ namespace GlobalFront.Server.Transport
 
         public event Action<TransportDisconnectReason> Lost;
 
+        /// <summary>
+        /// Echo timestamp of a server Pong (OD-47). The payload is the
+        /// timestamp this client put in its own Ping, so RTT is measured
+        /// entirely on the client's monotonic clock.
+        /// </summary>
+        public event Action<long> PongReceived;
+
         public INetworkCarrier Carrier => _carrier;
 
         public void Connect(string host, int port)
@@ -157,6 +164,29 @@ namespace GlobalFront.Server.Transport
             Array.Copy(payload, 0, _messageBuffer, offset, length);
             return _carrier.Send(
                 _connectionId, TransportChannel.Control, _messageBuffer, 0, offset + length);
+        }
+
+        /// <summary>
+        /// Queues one client→server Ping on the reliable control channel. The
+        /// timestamp is echoed back verbatim by the server, so the caller owns
+        /// the RTT measurement. Returns false while the handshake has not
+        /// completed: there is no session token to attribute the packet to.
+        /// </summary>
+        public bool TrySendPing(long clientSentTimestampMs)
+        {
+            // ClientTransportState has no Reconnecting state (Phase 2.7
+            // reconnects are driven by ClientReconnectCoordinator and a fresh
+            // handshake), so Established is the only ping-capable state.
+            if (State != ClientTransportState.Established)
+            {
+                return false;
+            }
+
+            var offset = MessageCodec.WriteHeader(
+                _messageBuffer, 0, TransportMessageType.Ping, Token, 0);
+            offset = MessageCodec.EncodePingPong(_messageBuffer, offset, clientSentTimestampMs);
+            return _carrier.Send(
+                _connectionId, TransportChannel.Control, _messageBuffer, 0, offset);
         }
 
         public void GracefulDisconnect()
@@ -332,6 +362,18 @@ namespace GlobalFront.Server.Transport
                         offset = MessageCodec.EncodePingPong(_messageBuffer, offset, timestamp);
                         _carrier.Send(
                             _connectionId, TransportChannel.Control, _messageBuffer, 0, offset);
+                    }
+
+                    return;
+
+                case TransportMessageType.Pong:
+                    if (MessageCodec.TryDecodePingPong(
+                            transportEvent.Data,
+                            header.PayloadOffset,
+                            transportEvent.Length,
+                            out var originalTimestamp))
+                    {
+                        PongReceived?.Invoke(originalTimestamp);
                     }
 
                     return;

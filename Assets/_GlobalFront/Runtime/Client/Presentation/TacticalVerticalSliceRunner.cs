@@ -444,6 +444,8 @@ namespace GlobalFront.Client.Presentation
         private ServerReplicationEmitter _emitter;
         private CorpseReapSnapshotSource _snapshotSource;
         private LocalReplicationLoopback _loopback;
+        private RemoteSliceSession _remoteSession;
+        private NetworkHudPresenter _networkHud;
 
         // The seams the replication loop actually runs on. With no injection they are the
         // loopback itself; with one they are whatever the caller supplied, and every wire
@@ -461,7 +463,7 @@ namespace GlobalFront.Client.Presentation
         private UnitOverlayBatcher _overlayBatcher;
         private UnitSelectionController _selection;
         private UnitCommandChannelSink _commandSink;
-        private LocalCommandChannel _commandChannel;
+        private ICommandChannel _commandChannel;
         private TacticalHudPointerBlocker _pointerBlocker;
         private MinimapRadarModel _radarModel;
         private SelectionHudState _selectionHudModel;
@@ -525,8 +527,23 @@ namespace GlobalFront.Client.Presentation
         private int _enemyAliveCount;
         private bool _isInitialized;
         private bool _createVisuals;
+        private bool _autoStartRealTime = true;
+        private bool _remotePoolWarmed;
         private int _unitCount;
 
+        /// <summary>
+        /// Which authority this slice runs against (Phase 4, step 4.2). The
+        /// default is the in-process loopback every earlier step ran.
+        /// </summary>
+        public SliceNetworkMode NetworkMode { get; private set; } = SliceNetworkMode.LocalLoopback;
+
+        /// <summary>Remote session in <see cref="SliceNetworkMode.DedicatedClient"/>, otherwise null.</summary>
+        public RemoteSliceSession RemoteSession => _remoteSession;
+
+        /// <summary>Network slot model fed with the session's RTT and connection status.</summary>
+        public NetworkHudPresenter NetworkHud => _networkHud;
+
+        /// <summary>Null in <see cref="SliceNetworkMode.DedicatedClient"/>: there is no local server.</summary>
         public LocalMatchHost Host => _host;
 
         public ServerReplicationEmitter Emitter => _emitter;
@@ -612,7 +629,12 @@ namespace GlobalFront.Client.Presentation
 
         public int ReapedCorpseCount => _snapshotSource?.ReapedCount ?? 0;
 
-        public ulong CurrentTick => _host?.CurrentTick ?? 0ul;
+        /// <summary>
+        /// Authoritative tick the presentation should act on: the local
+        /// host's tick, or in a dedicated client the tick of the last applied
+        /// replication packet (there is no local server to ask).
+        /// </summary>
+        public ulong CurrentTick => _host != null ? _host.CurrentTick : _receiver?.LastAppliedTick ?? 0ul;
 
         public double RenderTick => _tickBuffer?.RenderTick ?? 0.0;
 
@@ -690,6 +712,8 @@ namespace GlobalFront.Client.Presentation
                     "one without the other leaves half of the loop unwired.");
             }
 
+            NetworkMode = SliceNetworkMode.LocalLoopback;
+            _autoStartRealTime = autoStartRealTime;
             _transport = transport;
             _uplink = uplink;
             _unitCount = unitCount;
@@ -714,6 +738,95 @@ namespace GlobalFront.Client.Presentation
         }
 
         /// <summary>
+        /// Builds a slice whose authority is a dedicated server (Phase 4, step
+        /// 4.2, OD-38). No local <see cref="LocalMatchHost"/> exists: the
+        /// receiver, world, bridge and command channel all belong to
+        /// <paramref name="session"/>, and every position and tick comes from
+        /// its replication stream.
+        ///
+        /// The session may already be established or still be connecting; in
+        /// the latter case identity and the selection's local player are bound
+        /// when the server's accept arrives.
+        /// </summary>
+        public void InitializeDedicatedClient(
+            RemoteSliceSession session,
+            bool createVisuals = true,
+            bool autoStartRealTime = true)
+        {
+            if (_isInitialized)
+            {
+                throw new InvalidOperationException(
+                    "the tactical vertical slice is already initialized; call Shutdown first");
+            }
+
+            if (session == null)
+            {
+                throw new ArgumentNullException(nameof(session));
+            }
+
+            NetworkMode = SliceNetworkMode.DedicatedClient;
+            _autoStartRealTime = autoStartRealTime;
+            _createVisuals = createVisuals;
+            _unitCount = 0;
+
+            _remoteSession = session;
+            _uplink = session.Uplink;
+            _receiver = session.Receiver;
+            _world = session.World;
+            _bridge = session.Bridge;
+            _commandChannel = session.CommandChannel;
+            _commandSink = new UnitCommandChannelSink(_commandChannel);
+
+            // The whole point of the mode: nothing local to simulate against.
+            _host = null;
+            _loopback = null;
+            _transport = null;
+
+            _networkHud = new NetworkHudPresenter();
+            _remoteSession.RttUpdated += HandleRemoteRttUpdated;
+            _remoteSession.Connected += HandleRemoteConnected;
+            _remoteSession.Disconnected += HandleRemoteDisconnected;
+
+            BuildPresentation();
+            BuildInterface();
+
+            // The session may already hold a baseline (a runner attached to a
+            // live match): the roster is known now, so warm before the first
+            // Render instead of waiting for a capture that already happened.
+            if (_world.LiveCount > 0)
+            {
+                _remotePoolWarmed = true;
+                WarmReplicatedPool();
+            }
+
+            if (_remoteSession.Endpoint.State == ClientTransportState.Established)
+            {
+                HandleRemoteConnected();
+            }
+
+            _isInitialized = true;
+        }
+
+        /// <summary>
+        /// One dedicated-client network frame: pump the session (endpoint,
+        /// replication bridge, feedback and the 1 Hz ping), then capture the
+        /// applied tick into the presentation buffer exactly like the local
+        /// loopback path does after its host tick.
+        /// </summary>
+        public void PumpNetwork(long nowMs)
+        {
+            EnsureInitialized();
+            if (NetworkMode != SliceNetworkMode.DedicatedClient || _remoteSession == null)
+            {
+                throw new InvalidOperationException(
+                    "PumpNetwork needs a slice initialized in DedicatedClient mode");
+            }
+
+            _remoteSession.Pump(nowMs);
+            CaptureReplicatedTick();
+        }
+
+        /// <summary>
         /// Advances exactly one authoritative tick and the replication it
         /// produces: the host simulates, the emitter streams, the loopback
         /// delivers, the receiver applies, and the tick buffer captures the
@@ -722,6 +835,12 @@ namespace GlobalFront.Client.Presentation
         public void StepSimulationTick()
         {
             EnsureInitialized();
+            if (NetworkMode == SliceNetworkMode.DedicatedClient)
+            {
+                throw new InvalidOperationException(
+                    "a dedicated client has no local tick to advance; its authority is the server");
+            }
+
             EnsureManualTickDriver();
             AdvanceOneTick();
         }
@@ -779,7 +898,10 @@ namespace GlobalFront.Client.Presentation
 
             // Commands land on the next tick, the same contract the legacy
             // controller keeps (ADR-007), and both pointer paths read it here.
-            var requestedTick = _host.CurrentTick + 1ul;
+            // A dedicated client is behind the server by its RTT and applies
+            // ticks later still, so it asks for a tick far enough ahead that
+            // the command is not stale on arrival (OD-47).
+            var requestedTick = CurrentTick + 1ul + CalculateLeadTicks();
             _selectionDriver.RequestedTick = requestedTick;
             _minimapInteraction.RequestedTick = requestedTick;
             _permanentHud.RequestedTick = requestedTick;
@@ -913,6 +1035,7 @@ namespace GlobalFront.Client.Presentation
         public int IssueConvergenceMarch()
         {
             EnsureInitialized();
+            EnsureLocalArmies();
 
             return IssueArmyOrders(
                        _localSession, _localPlayer, _friendlyEntities, GameCommandType.Move,
@@ -939,6 +1062,7 @@ namespace GlobalFront.Client.Presentation
             bool forEnemyArmy = true)
         {
             EnsureInitialized();
+            EnsureLocalArmies();
 
             var accepted = 0;
             if (forLocalArmy)
@@ -966,6 +1090,18 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         public void Shutdown()
         {
+            if (_remoteSession != null)
+            {
+                // The session is caller-owned (the runner was handed it), so it
+                // is unsubscribed and forgotten, never disconnected here.
+                _remoteSession.RttUpdated -= HandleRemoteRttUpdated;
+                _remoteSession.Connected -= HandleRemoteConnected;
+                _remoteSession.Disconnected -= HandleRemoteDisconnected;
+            }
+
+            _networkHud?.Dispose();
+            _networkHud = null;
+
             if (_host != null)
             {
                 _host.StopRealTime();
@@ -1027,6 +1163,7 @@ namespace GlobalFront.Client.Presentation
             _snapshotSource = null;
             _host = null;
             _loopback = null;
+            _remoteSession = null;
             _transport = null;
             _uplink = null;
             _clientSession = null;
@@ -1034,8 +1171,11 @@ namespace GlobalFront.Client.Presentation
             _friendlyAliveCount = 0;
             _enemyAliveCount = 0;
             _lastCapturedTick = 0;
+            _remotePoolWarmed = false;
             _clockSeconds = 0.0;
             _createVisuals = false;
+            _autoStartRealTime = true;
+            NetworkMode = SliceNetworkMode.LocalLoopback;
             _isInitialized = false;
         }
 
@@ -1079,7 +1219,28 @@ namespace GlobalFront.Client.Presentation
         private void Update()
         {
 #if !UNITY_SERVER
-            if (!_isInitialized || _host.TickDriverMode != TickDriverMode.RealTime)
+            if (!_isInitialized)
+            {
+                return;
+            }
+
+            if (NetworkMode == SliceNetworkMode.DedicatedClient)
+            {
+                // The session owns the connection; this loop only pumps it and
+                // presents what the server already decided. A manual-testing
+                // slice (autoStartRealTime false) is stepped by its caller.
+                if (!_autoStartRealTime || _remoteSession == null)
+                {
+                    return;
+                }
+
+                _clockSeconds = _remoteSession.Clock.NowMs / 1000.0;
+                PumpNetwork(_remoteSession.Clock.NowMs);
+                StepPresentationFrame(Time.unscaledDeltaTime, Time.unscaledTimeAsDouble);
+                return;
+            }
+
+            if (_host.TickDriverMode != TickDriverMode.RealTime)
             {
                 return;
             }
@@ -1092,7 +1253,8 @@ namespace GlobalFront.Client.Presentation
             //
             // Mock mode gates it rather than the null check alone: a slice whose pointer is
             // pinned by a test stays pinned, so a measured frame is still decided by what the
-            // test sets and not by whatever someone types into the editor meanwhile.
+            // test sets and not by whatever someone types into the editor meanwhile. A
+            // dedicated client has no local armies to command, so [M] is loopback-only.
             if (!_inputManager.IsMockMode)
             {
                 var keyboard = UnityEngine.InputSystem.Keyboard.current;
@@ -1157,6 +1319,72 @@ namespace GlobalFront.Client.Presentation
             }
         }
 
+        private void EnsureLocalArmies()
+        {
+            if (NetworkMode == SliceNetworkMode.DedicatedClient)
+            {
+                throw new InvalidOperationException(
+                    "a dedicated client has no local armies to order; commands go through the selection");
+            }
+        }
+
+        /// <summary>
+        /// How many ticks ahead of the last applied tick a command should be
+        /// requested for, so it lands after the server has already passed the
+        /// client's confirmed tick. Half the smoothed RTT is the one-way
+        /// estimate; the caller adds the usual one-tick lead on top.
+        /// </summary>
+        private ulong CalculateLeadTicks()
+        {
+            if (NetworkMode != SliceNetworkMode.DedicatedClient || _remoteSession == null)
+            {
+                return 0ul;
+            }
+
+            var tickMilliseconds = SimulationConstants.ServerTickDurationSeconds * 1000.0;
+            var oneWayMilliseconds = _remoteSession.SmoothedRttMs * 0.5;
+            return (ulong)Math.Ceiling(oneWayMilliseconds / tickMilliseconds);
+        }
+
+        private void HandleRemoteConnected()
+        {
+            var endpoint = _remoteSession.Endpoint;
+            _localSession = endpoint.Session;
+            _match = endpoint.Match;
+            _localPlayer = endpoint.Player;
+            _clientSession = _localPlayer.IsValid
+                ? new ClientSession(_localSession, _match, _localPlayer)
+                : null;
+
+            // The selection is built before the handshake can complete, so
+            // its owner is assigned here rather than at construction.
+            if (_selection != null)
+            {
+                _selection.LocalPlayerId = _localPlayer;
+            }
+
+            _networkHud?.SetSlotStatus(_localPlayer, SlotStatus.Connected);
+            if (_networkHud != null && _remoteSession.RttSampleCount > 0)
+            {
+                _networkHud.UpdatePing(_localPlayer, _remoteSession.SmoothedRttMs);
+            }
+        }
+
+        private void HandleRemoteDisconnected(TransportDisconnectReason reason)
+        {
+            if (_localPlayer.IsValid)
+            {
+                _networkHud?.SetSlotStatus(_localPlayer, SlotStatus.Disconnected);
+            }
+        }
+
+        private void HandleRemoteRttUpdated(int rttMs)
+        {
+            // Slot model only; a player the 2v2 layout does not describe is
+            // silently ignored by TryGetSlot, which is the HUD's contract.
+            _networkHud?.UpdatePing(_localPlayer, rttMs);
+        }
+
         /// <summary>
         /// Routes the feedback the receiver queued and captures the world when
         /// an applied packet moved it. Capture is gated on the applied tick
@@ -1166,7 +1394,17 @@ namespace GlobalFront.Client.Presentation
         private void PumpReplication()
         {
             _bridge.Pump(ClockMilliseconds);
+            CaptureReplicatedTick();
+        }
 
+        /// <summary>
+        /// Turns one applied replication packet into a presentation sample.
+        /// Shared by the loopback pump and the dedicated-client pump: whichever
+        /// authority produced the packet, the tick buffer only advances when
+        /// the receiver's applied tick moved.
+        /// </summary>
+        private void CaptureReplicatedTick()
+        {
             var applied = _receiver.LastAppliedTick;
             if (applied == 0ul || applied <= _lastCapturedTick)
             {
@@ -1175,7 +1413,37 @@ namespace GlobalFront.Client.Presentation
 
             _tickBuffer.CaptureTick(applied, _world);
             _lastCapturedTick = applied;
+
+            // The dedicated client learns its roster from the baseline, so
+            // this is the first moment it can warm the pool to the exact
+            // archetype counts. Warming later would be an allocation in a
+            // frame; warming never, an un-presented army.
+            if (NetworkMode == SliceNetworkMode.DedicatedClient && !_remotePoolWarmed)
+            {
+                _remotePoolWarmed = true;
+                WarmReplicatedPool();
+            }
+
             ComputeAliveCounts();
+        }
+
+        private void WarmReplicatedPool()
+        {
+            Array.Clear(_entityCountByKind, 0, _entityCountByKind.Length);
+            for (var slot = 0; slot < _world.Capacity; slot++)
+            {
+                if (!_world.TryGetSlotState(slot, out var state))
+                {
+                    continue;
+                }
+
+                if ((uint)state.UnitKind < (uint)_entityCountByKind.Length)
+                {
+                    _entityCountByKind[state.UnitKind]++;
+                }
+            }
+
+            WarmupPool();
         }
 
         private long ClockMilliseconds => (long)(_clockSeconds * 1000.0 + 0.5);
@@ -1555,7 +1823,10 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         private void WarmupPool()
         {
-            for (var kind = 1; kind < _entityCountByKind.Length; kind++)
+            // Kind 0 is UnitKinds.Unknown, which a legacy or foreign roster can
+            // legally carry; a dedicated client cannot refuse to present a
+            // record the server actually sent.
+            for (var kind = 0; kind < _entityCountByKind.Length; kind++)
             {
                 var count = _entityCountByKind[kind];
                 if (count > 0)

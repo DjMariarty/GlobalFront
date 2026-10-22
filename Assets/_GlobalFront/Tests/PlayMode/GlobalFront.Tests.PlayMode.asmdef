@@ -6,6 +6,7 @@
         "UnityEditor.TestRunner",
         "GlobalFront.Core",
         "GlobalFront.Server",
+        "GlobalFront.ServerHost",
         "GlobalFront.Client",
         "UnityEngine.UI"
     ],
@@ -14,7 +15,8 @@
     "allowUnsafeCode": false,
     "overrideReferences": true,
     "precompiledReferences": [
-        "nunit.framework.dll"
+        "nunit.framework.dll",
+        "LiteNetLib.dll"
     ],
     "autoReferenced": false,
     "defineConstraints": [],
