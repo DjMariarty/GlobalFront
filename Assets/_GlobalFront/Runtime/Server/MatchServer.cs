@@ -5,6 +5,7 @@ using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
+using GlobalFront.Server.Replication;
 
 namespace GlobalFront.Server
 {
@@ -38,7 +39,13 @@ namespace GlobalFront.Server
         /// command path instead of relying on the downstream target-clearing
         /// gates to suppress the damage.
         /// </summary>
-        FriendlyTarget = 11
+        FriendlyTarget = 11,
+
+        /// <summary>
+        /// Phase 4 (ADR-014, OD-41): The attack target is hidden in the fog of
+        /// war for the commanding player at the time of order submission.
+        /// </summary>
+        TargetInFogOfWar = 12
     }
 
     /// <summary>
@@ -167,6 +174,14 @@ namespace GlobalFront.Server
         /// </summary>
         private readonly ICombatRelation _combatRelation;
 
+        /// <summary>
+        /// Optional fog-of-war view used as the anti-maphack gate on orders
+        /// (Phase 4, OD-41). Null keeps the command path in passthrough mode,
+        /// so a server without replication accepts any valid hostile target,
+        /// exactly as before the gate existed.
+        /// </summary>
+        private IReplicationFilter _visibilityFilter;
+
         /// <param name="combatRelation">
         /// Hostility and termination policy for this match, defaulting to
         /// <see cref="SkirmishCombatRelation.Instance"/> so every existing
@@ -179,6 +194,29 @@ namespace GlobalFront.Server
         {
             _combatRelation = combatRelation ?? SkirmishCombatRelation.Instance;
         }
+
+        /// <summary>
+        /// Creates a match whose command path is gated by the given fog-of-war
+        /// view (Phase 4, OD-41). A null filter keeps passthrough behaviour.
+        /// </summary>
+        public MatchServer(ICombatRelation combatRelation, IReplicationFilter visibilityFilter)
+            : this(combatRelation)
+        {
+            _visibilityFilter = visibilityFilter;
+        }
+
+        /// <summary>
+        /// The fog-of-war view used to refuse orders against targets hidden
+        /// from the commanding player, or null while the gate is bypassed.
+        /// </summary>
+        public IReplicationFilter VisibilityFilter => _visibilityFilter;
+
+        /// <summary>
+        /// Installs or clears the view used by the OD-41 command gate. The
+        /// filter is read at submission time, so a host may swap it between
+        /// matches; null disables the gate.
+        /// </summary>
+        public void SetVisibilityFilter(IReplicationFilter filter) => _visibilityFilter = filter;
 
         private sealed class UnitRecord
         {
@@ -577,6 +615,16 @@ namespace GlobalFront.Server
             if (!_combatRelation.AreEnemies(header.Player, targetRecord.Combat.Owner))
             {
                 return MatchCommandRejection.FriendlyTarget;
+            }
+
+            // Phase 4 (OD-41): Anti-maphack gate. An order against a target currently
+            // hidden in the fog of war for this player is refused before entering the
+            // schedule. A null or disabled filter keeps the historical passthrough
+            // behaviour, so pre-replication hosts are unaffected.
+            if (_visibilityFilter != null && _visibilityFilter.IsEnabled &&
+                !_visibilityFilter.IsVisible(CurrentTick, header.Player, target))
+            {
+                return MatchCommandRejection.TargetInFogOfWar;
             }
 
             Schedule(new ScheduledCommand { Header = header, Attack = command }, header.RequestedTick);

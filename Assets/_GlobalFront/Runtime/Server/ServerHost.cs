@@ -167,6 +167,14 @@ namespace GlobalFront.Server
         /// </summary>
         public ServerReplicationEmitter Replication { get; private set; }
 
+        /// <summary>
+        /// The fog-of-war view installed on the authoritative server by
+        /// <see cref="AttachReplication"/>, or null while none is attached.
+        /// This is the same instance the OD-41 command gate consults, exposed
+        /// for diagnostics and test witnesses.
+        /// </summary>
+        public IReplicationFilter VisibilityFilter => _server.VisibilityFilter;
+
         /// <summary>Underlying tick driver, exposed for diagnostics.</summary>
         public TickDriver TickDriver => _tickDriver;
 
@@ -469,6 +477,14 @@ namespace GlobalFront.Server
             var source = snapshotSource ?? new MatchServerSnapshotSource(_server);
             var emitter = new ServerReplicationEmitter(source, transport, config, filter);
             Replication = emitter;
+
+            // Phase 4 (OD-41): the same view that filters the stream is what
+            // decides whether an attack target is hidden from its commander.
+            if (filter != null)
+            {
+                _server.SetVisibilityFilter(filter);
+            }
+
             TickCompleted += emitter.OnTickCompleted;
             transport.SessionDetached += (session, reason) =>
             {
