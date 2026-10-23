@@ -1115,6 +1115,14 @@ namespace GlobalFront.Client.Presentation
                 }
             }
 
+            // The receiver outlives this presentation (a dedicated client's session
+            // is caller-owned): unsubscribe before Detach so a later keyframe cannot
+            // reach a binder whose pool is about to be disposed.
+            if (_receiver != null && _binder != null)
+            {
+                _receiver.KeyframeInstalled -= _binder.HandleResync;
+            }
+
             _binder?.Detach();
             _viewPool?.Dispose();
             _overlayCommandBuffer?.Dispose();
@@ -1531,6 +1539,15 @@ namespace GlobalFront.Client.Presentation
             var poolRoot = transform;
             _viewPool = new UnitViewPool(poolRoot);
             _binder = new UnitViewBinder(_viewPool, _world, _tickBuffer, _catalog);
+
+            // OD-42: a keyframe wipes and rebuilds the replicated table, so the
+            // binder has to drop every stale slot binding and re-prime the ring
+            // before the next Render acquires views for the new roster.
+            if (_receiver != null)
+            {
+                _receiver.KeyframeInstalled += _binder.HandleResync;
+            }
+
             _overlayBatcher = new UnitOverlayBatcher(
                 Mathf.Max(UnitOverlayBatcher.DefaultCapacity, _unitCount));
             _selection = new UnitSelectionController(_binder, _world, _localPlayer);
