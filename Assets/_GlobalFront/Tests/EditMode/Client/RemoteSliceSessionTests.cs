@@ -322,6 +322,9 @@ namespace GlobalFront.Tests.EditMode.Client
             var clock = new VirtualTransportClock();
             var carrier = new ScriptedCarrier(clock);
             using var session = new RemoteSliceSession(carrier, clock);
+            // This test pins the loss event and the state it leaves behind;
+            // the retry policy is covered by ReconnectRetryPolicyTests.
+            session.AutoReconnect = false;
             session.Connect("127.0.0.1", 7777);
             PumpAt(clock, session, 0);
 

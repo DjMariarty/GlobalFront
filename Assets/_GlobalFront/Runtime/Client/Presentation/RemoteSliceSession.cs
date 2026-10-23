@@ -47,6 +47,8 @@ namespace GlobalFront.Client
         private long _lastPingMs;
         private bool _hasSentPing;
         private bool _disposed;
+        private long _lastReconnectAttemptMs;
+        private bool _hasReconnectAttempt;
 
         /// <summary>
         /// Builds a session over the supplied carrier and clock. Both are
@@ -122,6 +124,20 @@ namespace GlobalFront.Client
 
         public bool IsConnected => Endpoint.State == ClientTransportState.Established;
 
+        /// <summary>
+        /// When true, <see cref="Pump"/> retries a lost session automatically
+        /// once the coordinator is <see cref="ClientReconnectState.Reconnecting"/>
+        /// and the endpoint is back in Disconnected (either because the
+        /// replacement socket failed or because its connect timed out).
+        /// </summary>
+        public bool AutoReconnect { get; set; } = true;
+
+        /// <summary>Minimum milliseconds between automatic reconnect attempts.</summary>
+        public long ReconnectRetryIntervalMs { get; set; } = 500;
+
+        /// <summary>Automatic attempts made in the current loss episode.</summary>
+        public int ReconnectAttemptCount { get; private set; }
+
         public event Action<int> RttUpdated;
 
         public event Action Connected;
@@ -185,6 +201,7 @@ namespace GlobalFront.Client
             LastPumpMs = nowMs;
             Endpoint.Pump(nowMs);
             _bridge.Pump(nowMs);
+            TryAutoReconnect(nowMs);
 
             if (Endpoint.State != ClientTransportState.Established)
             {
@@ -237,8 +254,31 @@ namespace GlobalFront.Client
 
         private void OnLost(TransportDisconnectReason reason)
         {
+            _hasReconnectAttempt = false;
+            ReconnectAttemptCount = 0;
             ReconnectCoordinator.OnTransportDisconnected(reason);
             Disconnected?.Invoke(reason);
+        }
+
+        private void TryAutoReconnect(long nowMs)
+        {
+            if (!AutoReconnect ||
+                ReconnectCoordinator.State != ClientReconnectState.Reconnecting ||
+                Endpoint.State != ClientTransportState.Disconnected)
+            {
+                return;
+            }
+
+            if (_hasReconnectAttempt &&
+                nowMs - _lastReconnectAttemptMs < ReconnectRetryIntervalMs)
+            {
+                return;
+            }
+
+            _hasReconnectAttempt = true;
+            _lastReconnectAttemptMs = nowMs;
+            ReconnectAttemptCount++;
+            TryReconnect();
         }
 
         private void OnSecretReceived(SessionSecret32 secret)

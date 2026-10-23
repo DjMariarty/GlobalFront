@@ -53,7 +53,17 @@ namespace GlobalFront.Server.Transport
         private string _lastHost;
         private int _lastPort;
         private bool _isReconnecting;
+        private bool _connectingViaReconnect;
         private ulong _reconnectTick;
+        private long _connectingStartedMs;
+
+        /// <summary>
+        /// How long a socket may stay in <see cref="ClientTransportState.Connecting"/>
+        /// before the endpoint aborts it and returns to Disconnected. A lost
+        /// connect/handshake packet otherwise pins the reconnect policy
+        /// forever, because every retry is refused while Connecting.
+        /// </summary>
+        public long ConnectTimeoutMs { get; set; } = 2000;
 
         public ClientTransportEndpoint(INetworkCarrier carrier)
         {
@@ -121,6 +131,8 @@ namespace GlobalFront.Server.Transport
 
             _lastHost = host;
             _lastPort = port;
+            _connectingStartedMs = _carrier.Clock.NowMs;
+            _connectingViaReconnect = false;
             _connectionId = _carrier.ConnectToServer(host, port);
             State = ClientTransportState.Connecting;
         }
@@ -136,8 +148,14 @@ namespace GlobalFront.Server.Transport
 
         public void Reconnect(string host, int port, ulong lastAppliedTick)
         {
-            if (_isReconnecting ||
-                State == ClientTransportState.Established ||
+            // The state guard, not _isReconnecting: a connect timeout revives
+            // the retry path while _isReconnecting is still true (the next
+            // Connected event must send a ReconnectRequest, not a handshake).
+            // Idle is deliberately allowed: the retry policy never reaches it,
+            // and a session whose coordinator was primed without a socket may
+            // still open one; a request without a bound session is refused by
+            // the server.
+            if (State == ClientTransportState.Established ||
                 State == ClientTransportState.Connecting)
             {
                 return;
@@ -148,6 +166,8 @@ namespace GlobalFront.Server.Transport
             _reconnectTick = lastAppliedTick;
             _isReconnecting = true;
             _connectRequested = false;
+            _connectingStartedMs = _carrier.Clock.NowMs;
+            _connectingViaReconnect = true;
             State = ClientTransportState.Connecting;
             _connectionId = _carrier.ConnectToServer(host, port);
         }
@@ -159,6 +179,22 @@ namespace GlobalFront.Server.Transport
             while (_carrier.TryDequeueEvent(out var transportEvent))
             {
                 HandleEvent(transportEvent);
+            }
+
+            // Abort a reconnect socket whose connect/handshake never
+            // completed: a lost connect packet would otherwise pin the
+            // endpoint in Connecting and block every retry. The initial
+            // handshake is deliberately not timed out — it has no retry path,
+            // so Disconnected would only strand the caller. The Disconnected
+            // event this close enqueues is drained next pump and is a no-op
+            // because the state is already Disconnected.
+            if (State == ClientTransportState.Connecting &&
+                _connectingViaReconnect &&
+                nowMs - _connectingStartedMs >= ConnectTimeoutMs)
+            {
+                _connectingViaReconnect = false;
+                _carrier.CloseConnection(_connectionId, TransportDisconnectReason.Timeout);
+                State = ClientTransportState.Disconnected;
             }
         }
 
@@ -356,6 +392,7 @@ namespace GlobalFront.Server.Transport
                     if (response.Result == ReconnectResult.Accepted)
                     {
                         State = ClientTransportState.Established;
+                        _connectingViaReconnect = false;
                         if (response.Token != 0)
                         {
                             Token = response.Token;
