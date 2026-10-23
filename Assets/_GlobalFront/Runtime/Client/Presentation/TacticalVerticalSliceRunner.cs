@@ -1330,9 +1330,9 @@ namespace GlobalFront.Client.Presentation
 
         /// <summary>
         /// How many ticks ahead of the last applied tick a command should be
-        /// requested for, so it lands after the server has already passed the
-        /// client's confirmed tick. Half the smoothed RTT is the one-way
-        /// estimate; the caller adds the usual one-tick lead on top.
+        /// requested for, accounting for the presentation's play-out delay,
+        /// network transit and input frame quantization (ADR-014, OD-41).
+        /// The caller adds the usual one-tick lead on top.
         /// </summary>
         private ulong CalculateLeadTicks()
         {
@@ -1343,7 +1343,11 @@ namespace GlobalFront.Client.Presentation
 
             var tickMilliseconds = SimulationConstants.ServerTickDurationSeconds * 1000.0;
             var oneWayMilliseconds = _remoteSession.SmoothedRttMs * 0.5;
-            return (ulong)Math.Ceiling(oneWayMilliseconds / tickMilliseconds);
+            var oneWayTicks = (ulong)Math.Ceiling(oneWayMilliseconds / tickMilliseconds);
+            var renderDelayTicks = (ulong)Math.Ceiling(_tickBuffer?.RenderDelayTicks ?? 0.0);
+
+            // +2 safety margin for input frame quantization and one tick race
+            return renderDelayTicks + oneWayTicks + 2ul;
         }
 
         private void HandleRemoteConnected()

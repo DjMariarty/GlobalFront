@@ -450,6 +450,7 @@ namespace GlobalFront.Client.UI
             "Formation off map", // FormationOutOfBounds
             "Session rejected",  // SessionRejected
             "Allied target",     // FriendlyTarget
+            "Target in fog",     // TargetInFogOfWar
         };
 
         private const string Unrecognised = "Unrecognised";

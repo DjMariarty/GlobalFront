@@ -7,6 +7,7 @@ using GlobalFront.Client.UI;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
+using GlobalFront.Core.Simulation;
 using GlobalFront.Server;
 using GlobalFront.Server.Replication;
 using GlobalFront.Server.Sessions;
@@ -311,6 +312,51 @@ namespace GlobalFront.Tests.EditMode.Client
             Assert.That(runner.CurrentTick, Is.GreaterThan(0ul));
             Assert.That(runner.CurrentTick, Is.EqualTo(rig.Session.Receiver.LastAppliedTick),
                 "with no local host the slice's clock is the replication receiver's");
+        }
+
+        /// <summary>
+        /// OD-41 / ADR-014: a dedicated client is behind the server by its RTT
+        /// and draws still later by the tick buffer's play-out delay, so a
+        /// command dated for the next authoritative tick is already stale on
+        /// arrival. The frame loop has to lead by the render delay, the
+        /// one-way transit estimate and a two-tick safety margin, and that
+        /// total still has to fit the server's +60 future window.
+        /// </summary>
+        [Test]
+        public void DedicatedClient_RequestedTick_LeadsByRenderDelayHalfRttAndMargin()
+        {
+            var rig = CreateRig();
+            rig.StartMatch();
+            Assert.That(rig.PumpUntilStreaming(2), Is.True,
+                "the client must install its baseline: " + rig.Describe());
+            Assert.That(rig.PumpUntil(() => rig.Session.RttSampleCount >= 2, 5000), Is.True,
+                "two ping round trips must complete before the lead is judged: " + rig.Describe());
+
+            var runner = BuildRunner(rig.Session);
+            runner.Binder.Render(0.0);
+            runner.StepPresentationFrame(0.016f, 1.0);
+
+            var currentTick = runner.CurrentTick;
+            var rttMilliseconds = rig.Session.SmoothedRttMs;
+            var renderDelayTicks = runner.TickBuffer.RenderDelayTicks;
+            Assert.That(rttMilliseconds, Is.GreaterThan(0),
+                "the lead's transit term must be measured from a real sample");
+
+            runner.StepPresentationFrame(0.016f, 1.032);
+
+            var tickMilliseconds = SimulationConstants.ServerTickDurationSeconds * 1000.0;
+            var expected = currentTick + 1ul +
+                (ulong)Math.Ceiling(rttMilliseconds * 0.5 / tickMilliseconds) +
+                (ulong)Math.Ceiling(renderDelayTicks) +
+                2ul;
+
+            Assert.That(runner.SelectionDriver.RequestedTick, Is.EqualTo(expected),
+                "the frame loop must date commands by the render play-out delay, one-way " +
+                "transit and the two-tick safety margin");
+            Assert.That(
+                runner.SelectionDriver.RequestedTick - runner.CurrentTick,
+                Is.LessThanOrEqualTo(MatchServer.AcceptedFutureTicks),
+                "the lead must stay inside the server's accepted future window");
         }
 
         [Test]
