@@ -1,5 +1,6 @@
 using System;
 using GlobalFront.Client.Replication;
+using GlobalFront.Core.Reconnect;
 using GlobalFront.Server.Transport;
 
 namespace GlobalFront.Client
@@ -38,6 +39,8 @@ namespace GlobalFront.Client
         private readonly Action _onAttached;
         private readonly Action<TransportDisconnectReason> _onLost;
         private readonly Action<ConnectDenyReason> _onDenied;
+        private readonly Action<SessionSecret32> _onSecretReceived;
+        private readonly Action<ReconnectResponse> _onReconnectResponse;
 
         private double _smoothedRttMs;
         private int _rttSampleCount;
@@ -73,6 +76,10 @@ namespace GlobalFront.Client
                 removeSink: ClientReplicationWorld.DefaultCapacity);
             _bridge = new ClientTransportReplicationBridge(Uplink, _receiver, in bridgeConfig);
 
+            ReconnectCoordinator = new ClientReconnectCoordinator(_receiver);
+            _onSecretReceived = OnSecretReceived;
+            _onReconnectResponse = OnReconnectResponse;
+
             _onPong = OnPongReceived;
             _onAttached = OnAttached;
             _onLost = OnLost;
@@ -82,6 +89,8 @@ namespace GlobalFront.Client
             Endpoint.Attached += _onAttached;
             Endpoint.Lost += _onLost;
             Endpoint.Denied += _onDenied;
+            Endpoint.SecretReceived += _onSecretReceived;
+            Endpoint.ReconnectResponseReceived += _onReconnectResponse;
         }
 
         public INetworkCarrier Carrier => _carrier;
@@ -97,6 +106,8 @@ namespace GlobalFront.Client
         public ClientReplicationReceiver Receiver => _receiver;
 
         public ClientTransportReplicationBridge Bridge => _bridge;
+
+        public ClientReconnectCoordinator ReconnectCoordinator { get; }
 
         public ClientReplicationWorld World => _receiver.World;
 
@@ -181,19 +192,48 @@ namespace GlobalFront.Client
             Endpoint.Attached -= _onAttached;
             Endpoint.Lost -= _onLost;
             Endpoint.Denied -= _onDenied;
+            Endpoint.SecretReceived -= _onSecretReceived;
+            Endpoint.ReconnectResponseReceived -= _onReconnectResponse;
 
+            ReconnectCoordinator.Dispose();
             Endpoint.GracefulDisconnect();
             _carrier.Dispose();
         }
 
         private void OnAttached()
         {
+            if (Endpoint.Secret != default && Endpoint.Player.IsValid)
+            {
+                var secret = Endpoint.Secret;
+                ReconnectCoordinator.CacheSession(
+                    Endpoint.Session, Endpoint.Match, Endpoint.Player, in secret);
+            }
+
             Connected?.Invoke();
         }
 
         private void OnLost(TransportDisconnectReason reason)
         {
+            ReconnectCoordinator.OnTransportDisconnected(reason);
             Disconnected?.Invoke(reason);
+        }
+
+        private void OnSecretReceived(SessionSecret32 secret)
+        {
+            if (Endpoint.State == ClientTransportState.Established && Endpoint.Player.IsValid)
+            {
+                ReconnectCoordinator.CacheSession(
+                    Endpoint.Session, Endpoint.Match, Endpoint.Player, in secret);
+            }
+        }
+
+        private void OnReconnectResponse(ReconnectResponse response)
+        {
+            ReconnectCoordinator.OnReconnectResponse(in response);
+            if (response.Result == ReconnectResult.Accepted)
+            {
+                _bridge.PrepareForResync(response.ActiveKeyframeSeq);
+            }
         }
 
         private void OnDenied(ConnectDenyReason reason)

@@ -36,7 +36,7 @@ namespace GlobalFront.Client
     /// resync priming for <see cref="ClientReplicationReceiver"/>, and OD-20 5-second countdown resumption.
     /// Preserves client command queue during pause without clearing (OD-19).
     /// </summary>
-    public sealed class ClientReconnectCoordinator
+    public sealed class ClientReconnectCoordinator : IDisposable
     {
         public const float DefaultCountdownSeconds = 5.0f;
 
@@ -72,6 +72,22 @@ namespace GlobalFront.Client
         public ClientReconnectCoordinator(ClientReplicationReceiver replicationReceiver = null)
         {
             _replicationReceiver = replicationReceiver;
+            if (_replicationReceiver != null)
+            {
+                _replicationReceiver.KeyframeInstalled += OnReplicationKeyframeInstalled;
+            }
+        }
+
+        /// <summary>
+        /// Detaches from the replication receiver so a discarded coordinator
+        /// cannot keep reacting to (and pinning) a live session.
+        /// </summary>
+        public void Dispose()
+        {
+            if (_replicationReceiver != null)
+            {
+                _replicationReceiver.KeyframeInstalled -= OnReplicationKeyframeInstalled;
+            }
         }
 
         /// <summary>
@@ -151,6 +167,11 @@ namespace GlobalFront.Client
             {
                 SetState(ClientReconnectState.Terminated);
             }
+        }
+
+        private void OnReplicationKeyframeInstalled(ulong tick)
+        {
+            OnKeyframeInstalled();
         }
 
         /// <summary>

@@ -139,14 +139,14 @@ namespace GlobalFront.Tests.EditMode.Integration.Reconnection
 
             Assert.That(responseReceived, Is.True);
             Assert.That(reconnectResponse.Result, Is.EqualTo(ReconnectResult.Accepted));
-            Assert.That(coord0.State, Is.EqualTo(ClientReconnectState.Resyncing));
 
             // Verify Keyframe installed
             Assert.That(client0.Receiver.IsWorldUsable, Is.True,
                 $"Diag: bSeq={client0.Bridge.AssembledKeyframeSeq}, bCount={client0.Bridge.AssembledKeyframeCount}, slices={client0.Bridge.AssembledSliceCount}, stale={client0.Bridge.DroppedStaleSliceCount}, dup={client0.Bridge.DroppedDuplicateSliceCount}, malf={client0.Bridge.MalformedPayloadCount}, leg={client0.Bridge.IgnoredLegacySnapshotCount}, usable={client0.Receiver.IsWorldUsable}, recSeq={client0.Receiver.CurrentKeyframeSeq}, respSeq={reconnectResponse.ActiveKeyframeSeq}");
             Assert.That(client0.Receiver.CurrentKeyframeSeq, Is.EqualTo(reconnectResponse.ActiveKeyframeSeq));
 
-            coord0.OnKeyframeInstalled();
+            // The receiver's KeyframeInstalled event starts the OD-20 countdown
+            // automatically; no manual coordinator call is involved here.
             Assert.That(coord0.State, Is.EqualTo(ClientReconnectState.Countdown));
             Assert.That(coord0.CountdownRemainingSeconds, Is.EqualTo(5.0f));
 

@@ -204,6 +204,12 @@ namespace GlobalFront.Client.Replication
         /// <summary>Total deltas whose state checksum mismatched the authoritative fingerprint.</summary>
         public int ChecksumMismatchCount { get; private set; }
 
+        /// <summary>
+        /// Raised when a keyframe has completely wiped the world and installed a new baseline (OD-20 / OD-42).
+        /// Passes the authoritative snapshot tick of the installed baseline.
+        /// </summary>
+        public event Action<ulong> KeyframeInstalled;
+
         /// <summary>Convenience read of the mirror.</summary>
         public bool TryGetUnit(EntityId entity, out ClientUnitState state) => _world.TryGet(entity, out state);
 
@@ -255,6 +261,7 @@ namespace GlobalFront.Client.Replication
             _fsm.NoteBaseline(keyframeSeq, tick);
             _feedback.NoteApplied(tick, tick);
             KeyframeCount++;
+            KeyframeInstalled?.Invoke(tick);
             return ClientReplicationOutcome.BaselineInstalled;
         }
 

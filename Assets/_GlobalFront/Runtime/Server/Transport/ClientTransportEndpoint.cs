@@ -71,6 +71,12 @@ namespace GlobalFront.Server.Transport
         public ulong Token { get; private set; }
         public SessionSecret32 Secret { get; private set; }
 
+        /// <summary>Raised when the server issues the 32-byte session secret (OD-18 / ADR-011).</summary>
+        public event Action<SessionSecret32> SecretReceived;
+
+        /// <summary>Raised when the server answers a ReconnectRequest (opcode 13).</summary>
+        public event Action<ReconnectResponse> ReconnectResponseReceived;
+
         /// <summary>Raised when the handshake completes and identity is assigned.</summary>
         public event Action Attached;
 
@@ -279,6 +285,31 @@ namespace GlobalFront.Server.Transport
                         transportEvent.Data.AsSpan(0, transportEvent.Length), out var secretMsg))
                 {
                     Secret = secretMsg.Secret;
+                    SecretReceived?.Invoke(Secret);
+                }
+                return;
+            }
+
+            if (transportEvent.Length >= ReconnectWireCodec.ResponseSizeBytes &&
+                transportEvent.Data != null &&
+                transportEvent.Data[0] == ReconnectWireCodec.ResponseOpcode)
+            {
+                if (ReconnectWireCodec.TryDecodeResponse(
+                        transportEvent.Data.AsSpan(0, transportEvent.Length), out var response))
+                {
+                    if (response.Result == ReconnectResult.Accepted)
+                    {
+                        State = ClientTransportState.Established;
+                        if (response.AssignedPlayer != default)
+                        {
+                            Player = response.AssignedPlayer;
+                        }
+                        if (response.Match != default)
+                        {
+                            Match = response.Match;
+                        }
+                    }
+                    ReconnectResponseReceived?.Invoke(response);
                 }
                 return;
             }
