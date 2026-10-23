@@ -45,10 +45,15 @@ namespace GlobalFront.Server.Transport
         private readonly byte[] _messageBuffer =
             new byte[TransportProtocol.MaxMessageBytes];
         private readonly byte[][] _snapshotBuffers = new byte[SnapshotBufferCount][];
+        private readonly byte[] _reconnectRequestBuffer = new byte[ReconnectRequest.SizeBytes];
 
         private int _snapshotBufferIndex;
         private int _connectionId;
         private bool _connectRequested;
+        private string _lastHost;
+        private int _lastPort;
+        private bool _isReconnecting;
+        private ulong _reconnectTick;
 
         public ClientTransportEndpoint(INetworkCarrier carrier)
         {
@@ -114,8 +119,37 @@ namespace GlobalFront.Server.Transport
                 return;
             }
 
+            _lastHost = host;
+            _lastPort = port;
             _connectionId = _carrier.ConnectToServer(host, port);
             State = ClientTransportState.Connecting;
+        }
+
+        /// <summary>
+        /// Opens a replacement socket for the already-established session and
+        /// sends the C0 ReconnectRequest as soon as the carrier reports the
+        /// new connection. The endpoint keeps its SessionId and secret; the
+        /// server answers with a fresh token that the response handler adopts.
+        /// </summary>
+        public void Reconnect(ulong lastAppliedTick) =>
+            Reconnect(_lastHost, _lastPort, lastAppliedTick);
+
+        public void Reconnect(string host, int port, ulong lastAppliedTick)
+        {
+            if (_isReconnecting ||
+                State == ClientTransportState.Established ||
+                State == ClientTransportState.Connecting)
+            {
+                return;
+            }
+
+            _lastHost = host;
+            _lastPort = port;
+            _reconnectTick = lastAppliedTick;
+            _isReconnecting = true;
+            _connectRequested = false;
+            State = ClientTransportState.Connecting;
+            _connectionId = _carrier.ConnectToServer(host, port);
         }
 
         /// <summary>Advances the carrier and dispatches received events.</summary>
@@ -237,7 +271,16 @@ namespace GlobalFront.Server.Transport
             switch (transportEvent.Type)
             {
                 case TransportEventType.Connected:
-                    SendConnectRequest();
+                    if (_isReconnecting)
+                    {
+                        SendReconnectRequest();
+                        _isReconnecting = false;
+                    }
+                    else
+                    {
+                        SendConnectRequest();
+                    }
+
                     return;
 
                 case TransportEventType.Disconnected:
@@ -275,6 +318,19 @@ namespace GlobalFront.Server.Transport
                 _connectionId, TransportChannel.Control, _messageBuffer, 0, offset);
         }
 
+        private void SendReconnectRequest()
+        {
+            var secret = Secret;
+            var request = new ReconnectRequest(Session, in secret, _reconnectTick);
+            if (!ReconnectWireCodec.TryEncodeRequest(request, _reconnectRequestBuffer, out var written))
+            {
+                return;
+            }
+
+            _carrier.Send(
+                _connectionId, TransportChannel.Control, _reconnectRequestBuffer, 0, written);
+        }
+
         private void HandleMessage(TransportEvent transportEvent)
         {
             if (transportEvent.Length == ReconnectWireCodec.SecretMessageSizeBytes &&
@@ -300,6 +356,11 @@ namespace GlobalFront.Server.Transport
                     if (response.Result == ReconnectResult.Accepted)
                     {
                         State = ClientTransportState.Established;
+                        if (response.Token != 0)
+                        {
+                            Token = response.Token;
+                            _carrier.AssignSessionToken(_connectionId, response.Token);
+                        }
                         if (response.AssignedPlayer != default)
                         {
                             Player = response.AssignedPlayer;

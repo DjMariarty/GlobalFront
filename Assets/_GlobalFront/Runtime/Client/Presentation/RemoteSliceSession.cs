@@ -146,6 +146,29 @@ namespace GlobalFront.Client
         }
 
         /// <summary>
+        /// Starts one reconnect attempt for a lost session: opens a replacement
+        /// socket and lets the endpoint send the cached-secret C0 request on
+        /// connect. The coordinator must already be in
+        /// <see cref="ClientReconnectState.Reconnecting"/>, which its transport
+        /// loss handler sets. Retry pacing stays with the hosting layer — this
+        /// call is one attempt, not a loop.
+        /// </summary>
+        public bool TryReconnect()
+        {
+            if (_disposed ||
+                ReconnectCoordinator.State != ClientReconnectState.Reconnecting ||
+                Endpoint.State == ClientTransportState.Connecting ||
+                Endpoint.State == ClientTransportState.Established)
+            {
+                return false;
+            }
+
+            ReconnectCoordinator.LastAppliedTick = _receiver.LastAppliedTick;
+            Endpoint.Reconnect(ReconnectCoordinator.LastAppliedTick);
+            return true;
+        }
+
+        /// <summary>
         /// One session frame: drain the endpoint (which pumps the carrier),
         /// advance the replication bridge, then send a Ping when the 1 Hz
         /// cadence is due. The endpoint pumps the carrier itself — pumping it

@@ -195,6 +195,12 @@ namespace GlobalFront.Core.Reconnect
         public ulong ServerTick { get; }
         public ushort ActiveKeyframeSeq { get; }
 
+        /// <summary>
+        /// Fresh transport token issued by the rebind, so the reconnected
+        /// client can sign C0 commands again. Zero on a rejected response.
+        /// </summary>
+        public ulong Token { get; }
+
         public ulong MatchValue => Match.AsUInt64();
 
         public ReconnectResponse(
@@ -203,7 +209,8 @@ namespace GlobalFront.Core.Reconnect
             PlayerId assignedPlayer,
             MatchId match,
             ulong serverTick,
-            ushort activeKeyframeSeq)
+            ushort activeKeyframeSeq,
+            ulong token = 0)
         {
             Opcode = opcode;
             Result = result;
@@ -211,6 +218,7 @@ namespace GlobalFront.Core.Reconnect
             Match = match;
             ServerTick = serverTick;
             ActiveKeyframeSeq = activeKeyframeSeq;
+            Token = token;
         }
 
         public ReconnectResponse(
@@ -219,8 +227,9 @@ namespace GlobalFront.Core.Reconnect
             PlayerId assignedPlayer,
             ulong match,
             ulong serverTick,
-            ushort activeKeyframeSeq)
-            : this(opcode, result, assignedPlayer, new MatchId(match), serverTick, activeKeyframeSeq)
+            ushort activeKeyframeSeq,
+            ulong token = 0)
+            : this(opcode, result, assignedPlayer, new MatchId(match), serverTick, activeKeyframeSeq, token)
         {
         }
 
@@ -229,8 +238,9 @@ namespace GlobalFront.Core.Reconnect
             PlayerId assignedPlayer,
             MatchId match,
             ulong serverTick,
-            ushort activeKeyframeSeq)
-            : this(ExpectedOpcode, result, assignedPlayer, match, serverTick, activeKeyframeSeq)
+            ushort activeKeyframeSeq,
+            ulong token = 0)
+            : this(ExpectedOpcode, result, assignedPlayer, match, serverTick, activeKeyframeSeq, token)
         {
         }
 
@@ -239,8 +249,9 @@ namespace GlobalFront.Core.Reconnect
             PlayerId assignedPlayer,
             ulong match,
             ulong serverTick,
-            ushort activeKeyframeSeq)
-            : this(ExpectedOpcode, result, assignedPlayer, new MatchId(match), serverTick, activeKeyframeSeq)
+            ushort activeKeyframeSeq,
+            ulong token = 0)
+            : this(ExpectedOpcode, result, assignedPlayer, new MatchId(match), serverTick, activeKeyframeSeq, token)
         {
         }
 
@@ -250,12 +261,13 @@ namespace GlobalFront.Core.Reconnect
             AssignedPlayer.Equals(other.AssignedPlayer) &&
             Match.Equals(other.Match) &&
             ServerTick == other.ServerTick &&
-            ActiveKeyframeSeq == other.ActiveKeyframeSeq;
+            ActiveKeyframeSeq == other.ActiveKeyframeSeq &&
+            Token == other.Token;
 
         public override bool Equals(object obj) => obj is ReconnectResponse other && Equals(other);
 
         public override int GetHashCode() =>
-            HashCode.Combine(Opcode, Result, AssignedPlayer, Match, ServerTick, ActiveKeyframeSeq);
+            HashCode.Combine(Opcode, Result, AssignedPlayer, Match, ServerTick, ActiveKeyframeSeq, Token);
 
         public static bool operator ==(ReconnectResponse left, ReconnectResponse right) => left.Equals(right);
         public static bool operator !=(ReconnectResponse left, ReconnectResponse right) => !left.Equals(right);

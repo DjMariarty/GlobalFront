@@ -374,10 +374,12 @@ namespace GlobalFront.Server.Transport
                 request.SessionId, request.Secret, handle, currentTick, out var session);
 
             ushort activeKeyframeSeq = 0;
+            ulong reboundToken = 0;
             if (result == RebindResult.Accepted)
             {
                 _binder.Release(session.Id);
                 var token = _binder.Bind(session.Id, handle, session.Match, session.Player, transportEvent.ConnectionId);
+                reboundToken = token;
                 _carrier.AssignSessionToken(transportEvent.ConnectionId, token);
 
                 SessionReattached?.Invoke(session.Id, session.Match, session.Player);
@@ -394,7 +396,8 @@ namespace GlobalFront.Server.Transport
                 session?.Player ?? default,
                 session?.Match ?? default,
                 currentTick,
-                activeKeyframeSeq);
+                activeKeyframeSeq,
+                reboundToken);
 
             if (ReconnectWireCodec.TryEncodeResponse(response, _messageBuffer, out var written))
             {

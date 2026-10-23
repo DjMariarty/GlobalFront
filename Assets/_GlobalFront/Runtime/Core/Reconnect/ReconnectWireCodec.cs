@@ -104,8 +104,9 @@ namespace GlobalFront.Core.Reconnect
             BinaryPrimitives.WriteUInt64LittleEndian(buffer.Slice(11, 8), response.ServerTick);
             BinaryPrimitives.WriteUInt16LittleEndian(buffer.Slice(19, 2), response.ActiveKeyframeSeq);
 
-            // Reserved 71 bytes (bytes 21..91) zeroed
-            buffer.Slice(21, 71).Clear();
+            // Rebind token (bytes 21..28); the remaining 63 bytes stay reserved.
+            BinaryPrimitives.WriteUInt64LittleEndian(buffer.Slice(21, 8), response.Token);
+            buffer.Slice(29, 63).Clear();
 
             written = ResponseSizeBytes;
             return true;
@@ -142,8 +143,10 @@ namespace GlobalFront.Core.Reconnect
             ulong matchValue = BinaryPrimitives.ReadUInt64LittleEndian(buffer.Slice(3, 8));
             ulong serverTick = BinaryPrimitives.ReadUInt64LittleEndian(buffer.Slice(11, 8));
             ushort activeKeyframeSeq = BinaryPrimitives.ReadUInt16LittleEndian(buffer.Slice(19, 2));
+            ulong token = BinaryPrimitives.ReadUInt64LittleEndian(buffer.Slice(21, 8));
 
-            response = new ReconnectResponse(opcode, result, assignedPlayer, new MatchId(matchValue), serverTick, activeKeyframeSeq);
+            response = new ReconnectResponse(
+                opcode, result, assignedPlayer, new MatchId(matchValue), serverTick, activeKeyframeSeq, token);
             return true;
         }
 

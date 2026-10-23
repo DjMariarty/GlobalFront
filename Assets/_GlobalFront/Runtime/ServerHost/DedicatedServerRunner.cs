@@ -138,7 +138,8 @@ namespace GlobalFront.DedicatedServer
 
             _host.AttachReplication(
                 new TransportReplicationAdapter(_transportHost),
-                ServerReplicationEmitterConfig.Default);
+                ServerReplicationEmitterConfig.Default,
+                new FogOfWarReplicationFilter());
 
             // StartServer is idempotent: the port overload above already
             // started LiteNetLib, while an injected carrier starts here.

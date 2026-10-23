@@ -442,6 +442,7 @@ namespace GlobalFront.Client.Presentation
         // Wiring the runner owns.
         private LocalMatchHost _host;
         private ServerReplicationEmitter _emitter;
+        private FogOfWarReplicationFilter _visibilityFilter;
         private CorpseReapSnapshotSource _snapshotSource;
         private LocalReplicationLoopback _loopback;
         private RemoteSliceSession _remoteSession;
@@ -1168,6 +1169,7 @@ namespace GlobalFront.Client.Presentation
             _receiver = null;
             _world = null;
             _emitter = null;
+            _visibilityFilter = null;
             _snapshotSource = null;
             _host = null;
             _loopback = null;
@@ -1506,7 +1508,21 @@ namespace GlobalFront.Client.Presentation
             _snapshotSource = new CorpseReapSnapshotSource(
                 new MatchServerSnapshotSource(_host.Server),
                 ClientReplicationWorld.DefaultCapacity);
-            _emitter = _host.AttachReplication(_transport, ServerReplicationEmitterConfig.Default, _snapshotSource);
+
+            // Fog of war is installed but starts disabled here. The slice's
+            // armies spawn 80 m apart (quadrants -160..-40 m and +40..+160 m)
+            // against a 20 m sight radius, so an active filter would replicate
+            // only the friendly half at boot: ReplicateUntilBaseline would
+            // exhaust its ticks waiting for 400 units, and the Phase 3.7
+            // 400-view benchmark would collapse to 200. Enabling it is a
+            // scenario/product decision (spawn layout or sight radius), not a
+            // wiring detail; the dedicated server runs the filter enabled.
+            _visibilityFilter = new FogOfWarReplicationFilter(enabled: false);
+            _emitter = _host.AttachReplication(
+                _transport,
+                ServerReplicationEmitterConfig.Default,
+                _snapshotSource,
+                _visibilityFilter);
 
             _receiver = new ClientReplicationReceiver(ClientReplicationWorld.DefaultCapacity);
             _world = _receiver.World;

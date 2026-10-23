@@ -325,7 +325,15 @@ namespace GlobalFront.Server.Transport
                 if (_connections.TryGetValue(connectionId, out var connection))
                 {
                     _connections.Remove(connectionId);
-                    _endpointToConnection.Remove(connection.RemoteEndpoint);
+
+                    // A reconnect can install a newer connection at the same
+                    // remote endpoint before this removal is swept; only drop
+                    // the mapping when it still belongs to the removed socket.
+                    if (_endpointToConnection.TryGetValue(connection.RemoteEndpoint, out var mapped) &&
+                        mapped == connectionId)
+                    {
+                        _endpointToConnection.Remove(connection.RemoteEndpoint);
+                    }
                 }
             }
 
