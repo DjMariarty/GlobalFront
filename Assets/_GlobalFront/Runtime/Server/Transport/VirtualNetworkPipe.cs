@@ -91,6 +91,58 @@ namespace GlobalFront.Server.Transport
         public long ReorderJitterMs;
         public bool Partitioned;
         public int Seed = 1;
+
+        /// <summary>
+        /// Chance that a non-burst packet starts a run of consecutive drops.
+        /// Zero (the default) keeps the historical independent-loss model.
+        /// </summary>
+        public double BurstLossProbability;
+
+        /// <summary>Shortest run, in packets, started by a burst trigger.</summary>
+        public int BurstLossMin;
+
+        /// <summary>Longest run, in packets, started by a burst trigger.</summary>
+        public int BurstLossMax;
+
+        /// <summary>No latency, no loss, no reordering.</summary>
+        public static ImpairmentProfile Lan(int seed = 1) => new ImpairmentProfile
+        {
+            LatencyMs = 0,
+            LossProbability = 0.0,
+            ReorderJitterMs = 0,
+            Seed = seed
+        };
+
+        /// <summary>Wi-Fi preset: 1% loss, 15 ms base latency, 5 ms jitter.</summary>
+        public static ImpairmentProfile Wifi(int seed = 1) => new ImpairmentProfile
+        {
+            LatencyMs = 15,
+            LossProbability = 0.01,
+            ReorderJitterMs = 5,
+            Seed = seed
+        };
+
+        /// <summary>WAN preset: 5% loss, 60 ms base latency, 20 ms jitter.</summary>
+        public static ImpairmentProfile Wan(int seed = 1) => new ImpairmentProfile
+        {
+            LatencyMs = 60,
+            LossProbability = 0.05,
+            ReorderJitterMs = 20,
+            Seed = seed
+        };
+
+        /// <summary>Sets the serial-drop model and returns this profile.</summary>
+        public ImpairmentProfile WithBurst(double burstLossProbability, int burstMin, int burstMax)
+        {
+            BurstLossProbability = burstLossProbability;
+            BurstLossMin = burstMin;
+            BurstLossMax = burstMax;
+            return this;
+        }
+
+        /// <summary>WAN preset plus 1% chance of a 2..4 packet drop run.</summary>
+        public static ImpairmentProfile WanWithBurst(int seed = 1) =>
+            Wan(seed).WithBurst(0.01, 2, 4);
     }
 
     /// <summary>
@@ -119,11 +171,33 @@ namespace GlobalFront.Server.Transport
 
         private long _nowMs;
         private int _nextEndpoint = 1;
+        private int _burstLossRemaining;
+        private int _sentCount;
+        private int _droppedCount;
+        private int _deliveredCount;
 
         public VirtualNetworkPipe(ImpairmentProfile profile)
         {
             _profile = profile ?? new ImpairmentProfile();
             _random = new System.Random(_profile.Seed);
+        }
+
+        /// <summary>Datagrams handed to the impairment model.</summary>
+        public int SentCount
+        {
+            get { lock (_gate) { return _sentCount; } }
+        }
+
+        /// <summary>Datagrams the impairment model discarded (loss or burst).</summary>
+        public int DroppedCount
+        {
+            get { lock (_gate) { return _droppedCount; } }
+        }
+
+        /// <summary>Datagrams released into an endpoint's delivery queue.</summary>
+        public int DeliveredCount
+        {
+            get { lock (_gate) { return _deliveredCount; } }
         }
 
         public long NowMs
@@ -154,13 +228,41 @@ namespace GlobalFront.Server.Transport
         {
             lock (_gate)
             {
+                _sentCount++;
+
                 if (_profile.Partitioned)
                 {
+                    _droppedCount++;
                     return;
                 }
 
+                if (_burstLossRemaining > 0)
+                {
+                    _burstLossRemaining--;
+                    _droppedCount++;
+                    return;
+                }
+
+                if (_profile.BurstLossProbability > 0 &&
+                    _random.NextDouble() < _profile.BurstLossProbability)
+                {
+                    var burst = _profile.BurstLossMax > _profile.BurstLossMin
+                        ? _random.Next(_profile.BurstLossMin, _profile.BurstLossMax + 1)
+                        : _profile.BurstLossMin;
+                    if (burst > 0)
+                    {
+                        _burstLossRemaining = burst - 1;
+                        _droppedCount++;
+                        return;
+                    }
+                }
+
+                // Deliberately unconditional: profiles with no loss still draw
+                // here, preserving the RNG stream (and trace) of every
+                // pre-burst profile.
                 if (_random.NextDouble() < _profile.LossProbability)
                 {
+                    _droppedCount++;
                     return;
                 }
 
@@ -197,6 +299,7 @@ namespace GlobalFront.Server.Transport
                     if (_delivered.TryGetValue(pending.To, out var deliveryQueue))
                     {
                         deliveryQueue.Enqueue(pending);
+                        _deliveredCount++;
                     }
 
                     _inFlight[index] = null;
