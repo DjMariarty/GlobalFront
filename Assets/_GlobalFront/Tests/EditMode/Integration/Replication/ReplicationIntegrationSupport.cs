@@ -292,7 +292,15 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
                 Assert.That(clientState.Owner, Is.EqualTo(unit.Owner), $"entity {unit.Entity.Value} owner");
                 Assert.That(clientState.Position, Is.EqualTo(unit.Position), $"entity {unit.Entity.Value} position");
                 Assert.That(clientState.Health, Is.EqualTo(unit.CurrentHealth), $"entity {unit.Entity.Value} health");                Assert.That(clientState.HasMoveTarget, Is.EqualTo(unit.HasMoveTarget), $"entity {unit.Entity.Value} hasMoveTarget");
-                Assert.That(clientState.MoveTarget, Is.EqualTo(unit.MoveTarget), $"entity {unit.Entity.Value} moveTarget");
+                // A cleared move target arrives without coordinates (OD-14);
+                // the server snapshot keeps the stale pair while the client
+                // slot holds (0,0). The checksum already excludes those
+                // coordinates, so parity must compare them only while the
+                // target is live.
+                if (unit.HasMoveTarget)
+                {
+                    Assert.That(clientState.MoveTarget, Is.EqualTo(unit.MoveTarget), $"entity {unit.Entity.Value} moveTarget");
+                }
                 Assert.That(clientState.AttackTarget, Is.EqualTo(unit.AttackTarget), $"entity {unit.Entity.Value} attackTarget");
                 Assert.That(clientState.AutoAcquire, Is.EqualTo(unit.AutoAcquireEnemies), $"entity {unit.Entity.Value} autoAcquire");
             }

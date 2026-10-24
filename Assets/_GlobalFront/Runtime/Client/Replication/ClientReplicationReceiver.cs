@@ -204,6 +204,9 @@ namespace GlobalFront.Client.Replication
         /// <summary>Total deltas whose state checksum mismatched the authoritative fingerprint.</summary>
         public int ChecksumMismatchCount { get; private set; }
 
+        /// <summary>Deltas that carried a checksum and therefore compared the mirror.</summary>
+        public int ChecksumCheckCount { get; private set; }
+
         /// <summary>
         /// Raised when a keyframe has completely wiped the world and installed a new baseline (OD-20 / OD-42).
         /// Passes the authoritative snapshot tick of the installed baseline.
@@ -408,6 +411,7 @@ namespace GlobalFront.Client.Replication
 
             if (header.HasChecksum)
             {
+                ChecksumCheckCount++;
                 var clientChecksum = _world.ComputeStateChecksum();
                 if (clientChecksum == header.StateChecksum)
                 {
@@ -458,6 +462,7 @@ namespace GlobalFront.Client.Replication
             WorldPartiallyApplied = false;
             _consecutiveChecksumMismatches = 0;
             ChecksumMismatchCount = 0;
+            ChecksumCheckCount = 0;
 
             KeyframeCount = 0;
             KeyframeUnitCount = 0;
