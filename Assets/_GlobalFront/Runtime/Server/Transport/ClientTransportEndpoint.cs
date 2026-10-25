@@ -46,6 +46,7 @@ namespace GlobalFront.Server.Transport
             new byte[TransportProtocol.MaxMessageBytes];
         private readonly byte[][] _snapshotBuffers = new byte[SnapshotBufferCount][];
         private readonly byte[] _reconnectRequestBuffer = new byte[ReconnectRequest.SizeBytes];
+        private readonly byte[] _readyToResumeBuffer = new byte[ClientReadyToResumeCodec.SizeBytes];
 
         private int _snapshotBufferIndex;
         private int _connectionId;
@@ -263,6 +264,24 @@ namespace GlobalFront.Server.Transport
             offset = MessageCodec.EncodePingPong(_messageBuffer, offset, clientSentTimestampMs);
             return _carrier.Send(
                 _connectionId, TransportChannel.Control, _messageBuffer, 0, offset);
+        }
+
+        /// <summary>
+        /// Sends a standalone C0 ClientReadyToResume frame (opcode 14) after
+        /// the post-reconnect countdown (OD-20). The buffer is preallocated;
+        /// only an established session with a valid identity can signal.
+        /// </summary>
+        public bool TrySendReadyToResume()
+        {
+            if (State != ClientTransportState.Established ||
+                !Session.IsValid ||
+                !ClientReadyToResumeCodec.TryEncode(Session, _readyToResumeBuffer, out var written))
+            {
+                return false;
+            }
+
+            return _carrier.Send(
+                _connectionId, TransportChannel.Control, _readyToResumeBuffer, 0, written);
         }
 
         public void GracefulDisconnect()

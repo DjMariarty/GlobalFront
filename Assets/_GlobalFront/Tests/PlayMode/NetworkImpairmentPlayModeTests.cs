@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Reflection;
 using GlobalFront.Client;
 using GlobalFront.Client.Replication;
 using GlobalFront.Core.Commands;
@@ -399,9 +398,9 @@ namespace GlobalFront.Tests.PlayMode
                 "the other client must keep streaming through the recovery");
 
             // OD-18/OD-20: the host stays paused while the client counts down.
-            // A dedicated host has no ReadyToResume binding (the countdown is
-            // client-local), so the game layer owns the resume decision; this
-            // test performs it after the client's countdown completes.
+            // Countdown completion is published to the server as a C0
+            // ClientReadyToResume signal; no game-layer Resume call is allowed
+            // to make this pass.
             Assert.That(_server.Host.IsPaused, Is.True,
                 "the dedicated host must remain paused during the client countdown");
             session.ReconnectCoordinator.AdvanceCountdown(
@@ -411,9 +410,18 @@ namespace GlobalFront.Tests.PlayMode
             Assert.That(session.ReconnectCoordinator.State,
                 Is.EqualTo(ClientReconnectState.Connected),
                 "the coordinator must return to Connected after the countdown");
-            _server.Host.Resume();
+
+            yield return WaitFor(
+                () =>
+                {
+                    PumpClients();
+                    return !_server.Host.IsPaused;
+                },
+                ReconnectFsmTimeoutSeconds,
+                "the dedicated host must lift the pause after the client's " +
+                "C0 ClientReadyToResume signal");
             Assert.That(_server.Host.IsPaused, Is.False,
-                "the game-layer resume must unpause the dedicated host");
+                "the runtime resume protocol must unpause the dedicated host");
 
             var acknowledgements = new List<CommandAckPayload>();
             session.CommandChannel.CommandResultReceived += acknowledgements.Add;
@@ -611,13 +619,9 @@ namespace GlobalFront.Tests.PlayMode
 
         private static int GetServerConnectionId(DedicatedServerRunner server, SessionId session)
         {
-            const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
-            var transportField = typeof(DedicatedServerRunner).GetField("_transportHost", flags);
-            Assert.That(transportField, Is.Not.Null,
+            var transport = server.TransportHost;
+            Assert.That(transport, Is.Not.Null,
                 "DedicatedServerRunner must keep its ServerTransportHost");
-            var transport = transportField.GetValue(server) as ServerTransportHost;
-            Assert.That(transport, Is.Not.Null);
-
             Assert.That(transport.Binder.TryGetTokenBySession(session, out var token), Is.True,
                 "the victim session must still be bound on the server");
             Assert.That(transport.Binder.TryGetByToken(token, out var binding), Is.True,

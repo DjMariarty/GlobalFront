@@ -41,6 +41,7 @@ namespace GlobalFront.Client
         private readonly Action<ConnectDenyReason> _onDenied;
         private readonly Action<SessionSecret32> _onSecretReceived;
         private readonly Action<ReconnectResponse> _onReconnectResponse;
+        private readonly Action _onReadyToResume;
 
         private double _smoothedRttMs;
         private int _rttSampleCount;
@@ -81,6 +82,7 @@ namespace GlobalFront.Client
             ReconnectCoordinator = new ClientReconnectCoordinator(_receiver);
             _onSecretReceived = OnSecretReceived;
             _onReconnectResponse = OnReconnectResponse;
+            _onReadyToResume = OnCoordinatorReadyToResume;
 
             _onPong = OnPongReceived;
             _onAttached = OnAttached;
@@ -93,6 +95,7 @@ namespace GlobalFront.Client
             Endpoint.Denied += _onDenied;
             Endpoint.SecretReceived += _onSecretReceived;
             Endpoint.ReconnectResponseReceived += _onReconnectResponse;
+            ReconnectCoordinator.ReadyToResume += _onReadyToResume;
         }
 
         public INetworkCarrier Carrier => _carrier;
@@ -234,6 +237,7 @@ namespace GlobalFront.Client
             Endpoint.Denied -= _onDenied;
             Endpoint.SecretReceived -= _onSecretReceived;
             Endpoint.ReconnectResponseReceived -= _onReconnectResponse;
+            ReconnectCoordinator.ReadyToResume -= _onReadyToResume;
 
             ReconnectCoordinator.Dispose();
             Endpoint.GracefulDisconnect();
@@ -297,6 +301,13 @@ namespace GlobalFront.Client
             {
                 _bridge.PrepareForResync(response.ActiveKeyframeSeq);
             }
+        }
+
+        private void OnCoordinatorReadyToResume()
+        {
+            // The countdown is client-local; the server learns about its
+            // completion only through this authoritative C0 signal.
+            Endpoint.TrySendReadyToResume();
         }
 
         private void OnDenied(ConnectDenyReason reason)

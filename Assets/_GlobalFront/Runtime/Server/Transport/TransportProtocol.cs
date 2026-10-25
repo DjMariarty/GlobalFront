@@ -48,7 +48,18 @@ namespace GlobalFront.Server.Transport
         /// (<see cref="GlobalFront.Core.Snapshot.ReplicationRequestWire"/>,
         /// kind SnapshotRequest or DeltaResume) for the replication emitter.
         /// </summary>
-        ReplicationRequest = 11
+        ReplicationRequest = 11,
+
+        // 12 and 13 are the standalone ReconnectRequest/ReconnectResponse
+        // opcodes (ReconnectWireCodec); they never enter the framed envelope.
+
+        /// <summary>
+        /// Client→server C0 control message signaling that the client has
+        /// completed its local post-reconnect countdown and is ready to resume
+        /// simulation (OD-20). Standalone fixed-size frame, not the message
+        /// envelope; see <see cref="GlobalFront.Core.Reconnect.ClientReadyToResumeCodec"/>.
+        /// </summary>
+        ClientReadyToResume = GlobalFront.Core.Reconnect.ClientReadyToResumeCodec.Opcode
     }
 
     /// <summary>Why the server denied a connect request.</summary>

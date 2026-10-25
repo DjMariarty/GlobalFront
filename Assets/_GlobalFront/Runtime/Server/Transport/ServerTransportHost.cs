@@ -64,6 +64,14 @@ namespace GlobalFront.Server.Transport
         /// </summary>
         public event Action<ReplicationFeedbackMessage> ReplicationFeedbackReceived;
 
+        /// <summary>
+        /// Raised on the host thread when a connection bound to the payload
+        /// session sends the standalone C0 ClientReadyToResume signal
+        /// (opcode 14, OD-20). Frames whose SessionId does not match the
+        /// socket's binding are dropped.
+        /// </summary>
+        public event Action<SessionId> ClientReadyToResumeReceived;
+
         public ServerTransportHost(
             INetworkCarrier carrier,
             SessionManager sessions,
@@ -277,6 +285,14 @@ namespace GlobalFront.Server.Transport
                 return;
             }
 
+            // Standalone C0 ClientReadyToResume (opcode 14, fixed 25 bytes).
+            if (transportEvent.Data != null &&
+                transportEvent.Data[0] == ClientReadyToResumeCodec.Opcode)
+            {
+                HandleClientReadyToResume(transportEvent);
+                return;
+            }
+
             var error = MessageCodec.TryDecodeHeader(
                 transportEvent.Data, 0, transportEvent.Length, out var header);
             switch (error)
@@ -409,6 +425,31 @@ namespace GlobalFront.Server.Transport
             {
                 PostSessionReattached?.Invoke(session.Id);
             }
+        }
+
+        private void HandleClientReadyToResume(TransportEvent transportEvent)
+        {
+            if (transportEvent.Channel != TransportChannel.Control ||
+                transportEvent.Data == null ||
+                transportEvent.Length != ClientReadyToResumeCodec.SizeBytes ||
+                !ClientReadyToResumeCodec.TryDecode(
+                    new ReadOnlySpan<byte>(transportEvent.Data, 0, transportEvent.Length),
+                    out var session))
+            {
+                _carrier.Metrics.DroppedMalformed++;
+                return;
+            }
+
+            // One socket owns exactly one session: a frame naming any other
+            // session is a spoof and must not resume the match.
+            if (!_binder.TryGetByConnection(transportEvent.ConnectionId, out var bound) ||
+                bound.Session != session)
+            {
+                _carrier.Metrics.DroppedBadToken++;
+                return;
+            }
+
+            ClientReadyToResumeReceived?.Invoke(session);
         }
 
         private void HandleConnectRequest(TransportEvent transportEvent, TransportMessageHeader header)

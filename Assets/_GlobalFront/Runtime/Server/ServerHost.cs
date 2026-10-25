@@ -321,6 +321,25 @@ namespace GlobalFront.Server
         }
 
         /// <summary>
+        /// Lifts the tactical pause after a bound client's post-reconnect
+        /// countdown completed (OD-20). The pause stays while any session of
+        /// the active match is still inside its reconnect grace window, so a
+        /// single early signal cannot strand another reconnecting player.
+        /// </summary>
+        public void OnClientReadyToResume(SessionId session)
+        {
+            if (!session.IsValid)
+            {
+                return;
+            }
+
+            if (IsPaused && !_sessions.HasDisconnectedSessionsInGrace(_activeSessionMatch))
+            {
+                Resume();
+            }
+        }
+
+        /// <summary>
         /// When true, the host automatically halts tick scheduling via <see cref="Pause"/>
         /// whenever an active session disconnects. Defaults to true (OD-18 / P0-1).
         /// </summary>

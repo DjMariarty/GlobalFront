@@ -42,6 +42,9 @@ namespace GlobalFront.DedicatedServer
         /// <summary>The transport substrate, or null before initialization / after shutdown.</summary>
         public INetworkCarrier Carrier => _carrier;
 
+        /// <summary>The transport host, or null before initialization / after shutdown.</summary>
+        public ServerTransportHost TransportHost => _transportHost;
+
         /// <summary>The auto-join match every handshake is attached to.</summary>
         public MatchId Match => _match;
 
@@ -136,6 +139,12 @@ namespace GlobalFront.DedicatedServer
             _match = _host.CreateSessionMatch(maxPlayers);
             _transportHost.AutoJoinMatch = _match;
 
+            // The dedicated runner is the composition root that owns both the
+            // authoritative host and the transport: a bound client's
+            // post-reconnect countdown completion lifts the OD-18 pause here,
+            // without any manual game-layer Resume call.
+            _transportHost.ClientReadyToResumeReceived += _host.OnClientReadyToResume;
+
             _host.AttachReplication(
                 new TransportReplicationAdapter(_transportHost),
                 ServerReplicationEmitterConfig.Default,
@@ -188,6 +197,7 @@ namespace GlobalFront.DedicatedServer
             }
 
             _host.StopRealTime();
+            _transportHost.ClientReadyToResumeReceived -= _host.OnClientReadyToResume;
             _transportHost.Shutdown();
 
             _transportHost = null;
