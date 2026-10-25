@@ -84,6 +84,15 @@ namespace GlobalFront.Server.Transport
         private int _nextConnectionId = 1;
         private int _clientConnectionId;
 
+        // Impairment configuration is stored even before the manager exists:
+        // clients configure their simulation before Connect, which creates the
+        // manager, so applying only to a live manager would silently ignore it.
+        private bool _simulatePacketLoss;
+        private int _simulationPacketLossChance;
+        private bool _simulateLatency;
+        private int _simulationMinLatencyMs;
+        private int _simulationMaxLatencyMs;
+
         // Per-peer admission reservations (under _peerGate): peers accepted
         // via OnConnectionRequest whose Connected event has not been
         // dispatched yet. Tracking is keyed by the admitted peer itself, so
@@ -168,12 +177,53 @@ namespace GlobalFront.Server.Transport
                 // differ from the ipv4 one, making LocalPort ambiguous.
                 IPv6Enabled = false
             };
+            ApplySimulation(_manager);
             ManagerStarted = _manager.Start(port);
             StartWorker();
         }
 
         /// <summary>Port the manager is bound to (for loopback tests).</summary>
         public int LocalPort => _manager?.LocalPort ?? 0;
+
+        /// <summary>
+        /// Configures hardware-level packet loss and latency simulation on the
+        /// underlying LiteNetLib manager. The configuration is retained and
+        /// applied to a manager created later (clients configure before
+        /// Connect), and it is off by default so production is unaffected.
+        /// Requires a LiteNetLib build with SIMULATE_NETWORK defined.
+        /// </summary>
+        public void ConfigureSimulation(
+            bool packetLoss,
+            int lossChancePercent,
+            bool latency,
+            int minLatencyMs,
+            int maxLatencyMs)
+        {
+            _simulatePacketLoss = packetLoss;
+            _simulationPacketLossChance = System.Math.Max(0, System.Math.Min(100, lossChancePercent));
+            _simulateLatency = latency;
+            _simulationMinLatencyMs = System.Math.Max(0, minLatencyMs);
+            _simulationMaxLatencyMs = System.Math.Max(_simulationMinLatencyMs, maxLatencyMs);
+            ApplySimulation(_manager);
+        }
+
+        /// <summary>Whether packet loss simulation is currently active on this carrier.</summary>
+        public bool IsSimulatingPacketLoss =>
+            _manager != null ? _manager.SimulatePacketLoss : _simulatePacketLoss;
+
+        private void ApplySimulation(NetManager manager)
+        {
+            if (manager == null)
+            {
+                return;
+            }
+
+            manager.SimulatePacketLoss = _simulatePacketLoss;
+            manager.SimulationPacketLossChance = _simulationPacketLossChance;
+            manager.SimulateLatency = _simulateLatency;
+            manager.SimulationMinLatency = _simulationMinLatencyMs;
+            manager.SimulationMaxLatency = _simulationMaxLatencyMs;
+        }
 
         public int ConnectToServer(string host, int port)
         {
@@ -184,6 +234,7 @@ namespace GlobalFront.Server.Transport
                     DisconnectTimeout = (int)TransportProtocol.IdleTimeoutMs,
                     IPv6Enabled = false
                 };
+                ApplySimulation(_manager);
                 ManagerStarted = _manager.Start();
                 StartWorker();
             }
