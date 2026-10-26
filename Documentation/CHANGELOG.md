@@ -13,7 +13,8 @@
 - Зафиксированы пять основных фракций 1.0 и перенос подфракций в post-1.0.
 - Current baseline отделён от approved target architecture.
 - ADR-009 Network Transport Architecture (Phase 2.5) — Accepted (OD-1 = LiteNetLib как preferred initial carrier за контрактом `INetworkCarrier`); R&D-документы в `Documentation/Research/`.
-- Hardening Phase 3.7.1, Block 5: исправлена атрибуция аудита Phase 2.0 (F-6) — сертификат на `4cb8ffa` является строгим состязательным ре-аудитом Claude с областью P0/P1 = 0, а не «сертификацией трёх независимых аудиторов»; задокументирован статус headless-цикла `ServerTransportHost.Pump` (F-10); статус проекта синхронизирован на **1179 EditMode + 16 PlayMode**.
+- ADR-014 Phase 4 Multiplayer Gameplay Integration & Architecture — Accepted & Closed (OD-35..OD-43).
+- Milestone M1 (Multiplayer Prototype) полностью закрыт и зафиксирован.
 
 ### Technical Milestones
 
@@ -35,39 +36,57 @@
 - Phase 3.5 Selection System, Screen-Space Drag-Box & RTS Command Issuing — COMPLETE (`cfa24c2`, 867 EditMode + 6 PlayMode; zero-physics picking, каноническое множество, [APPROVED: ZERO DEFECTS]).
 - Phase 3.6 Minimap & Tactical HUD — COMPLETE (`2a754db`, 1043 EditMode + 6 PlayMode; ADR-012, OD-24/OD-27/OD-28; `MinimapProjection`, `MinimapRadarModel`, батченый `MinimapRadarGraphic` в 1 UI draw call, `MinimapInteractionController`, `TacticalHudPointerBlocker`, `PermanentHudPresenter`, `SelectionHudPresenter`; 0 B GC steady state, [APPROVED: ZERO DEFECTS]).
 - Phase 3.7 Vertical Slice Integration, 400-Unit Benchmark, Multi-Frame PlayMode Suite & Architecture Invariants Gate — COMPLETE (`3414ba6`, `cb01ea2`; ADR-012, OD-23..OD-29; `TacticalVerticalSliceRunner`, `LocalReplicationLoopback`, `CorpseReapSnapshotSource`; 400 юнитов end-to-end; фиксы `ComputeStateChecksum` и `ComputeDirtyMask`; 30 тестов бенчмарка, 7 мультикадровых PlayMode, 12 архитектурных гейтов; профиль OD-28: 0.623 ms/frame, 0 B GC; 1086 EditMode + 13 PlayMode; [APPROVED: ZERO DEFECTS]).
-- Phase 1.0 Hardening Sprints 1..5.1 — COMPLETE (`5b16a05`..`349a074`):
-  - Спринт 1.1 (`5b16a05`): pause drain, packet overflow, zero-GC sort, selection cap.
-  - Спринт 1.2 (`93b465e`): zero-GC formation slots, unified spawn validation, archetype forward.
-  - Спринт 1.3 (`2b275a5`): 2v2 team hostility, friendly fire suppression, team victory outcome.
-  - Спринт 1.4 (`e4c73bb`): de-globalize CombatTickResolver instance scratch, thread-safety, Zero-GC.
-  - Спринт 1.5 (`3e413a7`): final hardening, reentrancy guard, friendly target rejection, zero-alloc snapshots, physical unit cap.
-  - Спринт 1.5.1 (`349a074`): atomic concurrency guard, capacity validation hoisting, instant victory command flush.
-- Phase 2.0 Hardening Sprints 2.1..2.5 — COMPLETE (`5c94e07`..`4cb8ffa`):
-  - Спринт 2.1 (`5c94e07`): socket hijack guard, O(k) grace sweep, rate limiter and pending ack lifecycle cleanup.
-  - Спринт 2.2 (`ceae9a8`): Zero-GC send scratch buffer and receive stale-scan pooling in `LiteNetLibCarrier`.
-  - Спринт 2.3 (`750218c`): canonical PartIndex keyframe assembly and slice timeout aging.
-  - Спринт 2.4 (`e6d91ea`): thread-safe tick driver step capture (`baseTick = _tick - (ulong)scheduled` под `_gate`, лок на `Tick => _tick`) и bounded fragment reassembly maps (`SeqByMessageId` и `SnapshotSeqByMessageId` ограничены до `MaxFragmentGroups = 4` с eviction по старому sequence).
-  - Спринт 2.5 (`4cb8ffa`): exclusive session-socket binding and cross-session reconnect hijack guard (N-01 / D-10 / A-01). Session-aware guard в `ServerTransportHost.cs:333-356` (`bound.Session != request.SessionId -> Denied`), эксклюзивность в `TransportSessionBinder.Bind`, токен-идентичность в `TransportSessionBinder.Release`. 3 новых регрессионных теста в `TransportFlowAndSecurityTests.cs`.
-- Grand Re-Audit Certification of Phase 2.0 (`4cb8ffa`): сертификация подтвердила **P0/P1 = 0**. Строгий состязательный ре-аудит выполнен Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели участвовали только в промежуточных этапах ревью.
-- Hardening Phase 3.7.1 — Grand Audit remediation — COMPLETE (`934840d`..`3a112ad` + Block 5 docs):
-  - Block 1 (`934840d`): F-2 (N-04: control-события `Connected`/`Disconnected` не отбрасываются при переполнении очереди; `Shutdown` очищает rate limiters и pending acks), F-4 (телеметрия cross-session denial), F-5 (изоляция исключений на цепочке `Pump → HandleEvent → HandleMessage`), F-13 (порядок eviction при отклонении фрагмента).
-  - Block 2 (`a08beaf`): F-3 (N-03 sink parity 512 для add и remove), F-14 (`Owner` и `AutoAcquireEnemies` включены в `StateChecksum`), F-15 (согласование серверного и клиентского порядка сущностей), F-9 (pacing-комментарии приведены к константам).
-  - Block 3 (`a944623`): F-1 (zero-alloc обновление `ClientSession` и живой GC-гейт), N-02 (`ArrayPool` и group stack pool в `FragmentAssembler`), мёртвые allocation-метры заменены.
-  - Block 4 (`3a112ad`): F-11 (инъекция transport/uplink seam в раннер), F-7 (регистрация URP RenderGraph overlay feature и handoff), F-8 (дисклеймер для OD-28 0.623 ms/frame как CPU-замера презентации).
-  - Block 5: F-6 (атрибуция аудита), F-10 (статус `ServerTransportHost.Pump`) — документация синхронизирована.
-  - Верификация: 17 новых EditMode-тестов (1162 → 1179), bite-прогоны по каждому наблюдаемому дефекту.
+- Phase 4.1 Dedicated Server Core Relocation & Headless Runner — COMPLETE (`5f2f29e`, ADR-014, OD-35..OD-37).
+- Phase 4.2 Client Remote Connection & Handshake — COMPLETE (`1760f17`, OD-38).
+- Phase 4.2.1 Client Bootstrap CLI `-connect` — COMPLETE (`34e994e`).
+- Phase 4.3.1 Core Visibility Engine & Visibility History Ring — COMPLETE (`e5d2ec0`, OD-39).
+- Phase 4.3.2 Per-Client Replication Filtering & StateChecksum — COMPLETE (`3666834`, OD-39, OD-40).
+- Phase 4.4.1 Server FoW Target Validation & Command Rejection Gates — COMPLETE (`4e830c9`, OD-41).
+- Phase 4.4.2 Client Lead Calculation, Multi-Batch Dispatch & E2E Ingress — COMPLETE (`5bdab1e`, OD-41).
+- Phase 4.5.1 Reconnect Signal Wirings & C0 Transport Integration — COMPLETE (`1b9b288`, OD-18, OD-20).
+- Phase 4.5.2 View Batch Recycling & Presentation Resync — COMPLETE (`364646b`, OD-42).
+- Phase 4.5.3 Live Combat Reconnect & Tactical Pause Governance — COMPLETE (`57a8cef`, OD-42).
+- Phase 4.5.4 Runtime Loop Closure & Production Runner Wiring — COMPLETE (`7be1648`).
+- Phase 4.6.1 Reconnect Retry Policy & Socket-Connect Timeout — COMPLETE (`eb679e0`).
+- Phase 4.6.2 Impairment Harness & Presets (Wi-Fi/WAN/Burst) — COMPLETE (`1b38f05`).
+- Phase 4.6.3 Parity under Loss/Latency on 400 Units — COMPLETE (`4d15ace`, OD-40, OD-43).
+- Phase 4.6.4 Live UDP PlayMode Harness & Reconnect Path B — COMPLETE (`1eeb3d2`, `491811c`, `3eca5de`).
+- Phase 4.6.5 5-Minute 400-Unit Playtest, Full HD Visual Evidence, Polish & Zero-GC Transport — COMPLETE (`666f89f`, `828c55d`, `ff344a9`, `366e444`).
 
 ### Verified
 
 - Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`.
-- **1179/1179 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-10-21 (gate: `Artifacts/TestResults/block5-editmode-final.xml`).
-- **16/16 PlayMode passed (100%)**, 0 failed, 0 skipped, 2026-10-21 (gate: `Artifacts/TestResults/block5-playmode-final.xml`).
-- **1195 автоматизированных тестов суммарно** (0 compiler warnings, 0 compiler errors).
+- **1334/1334 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-10-26 (gate: `Artifacts/TestResults/step465-polish-editmode.xml`).
+- **22/22 PlayMode passed (100%)**, 0 failed, 0 skipped, 2026-10-26 (gate: `Artifacts/TestResults/step465-polish-playmode.xml`).
+- **1356 автоматизированных тестов суммарно** (0 compiler warnings, 0 compiler errors).
+- Zero-GC сетевого транспорта и симуляции под непрерывным боем 402 юнитов: **0 блоков / 0 байт GC.Alloc**.
+- 6 визуальных артефактов Full HD 1080p в `Artifacts/Playtest/` (`01_spawn_and_fog.png` .. `06_interactive_menu.png`).
 
 ## Confirmed Foundation History
 
 | Commit | Milestone |
 |---|---|
+| `366e444` | Phase 4.6.5 Polish Sprint: selection rings resync, HUD 124px layout, honest HP damage, interactive bootstrap, Zero-GC TransportBufferPool |
+| `ff344a9` | Phase 4.6.5 Step 3: synthetic 400-unit PlayMode test, 1080p capture harness, remote pool warming |
+| `828c55d` | Phase 4.6.5 Step 2: wire TacticalPauseOverlay to NetworkHudPresenter and frame presentation loop |
+| `666f89f` | Phase 4.6.5 Step 1: Pump-owned countdown ticker with epsilon threshold |
+| `3eca5de` | Phase 4.6.4 follow-up: frame-driven countdown, retry latch, strict awaitingResume authorization |
+| `491811c` | Phase 4.6.4 Path B: wire C0 ClientReadyToResume auto-resume protocol and document LiteNetLib build provenance |
+| `1eeb3d2` | Phase 4.6.4 Step 4.6.4 live UDP liveness & reconnect under packet loss in PlayMode |
+| `4d15ace` | Phase 4.6.3 validate 400-unit bitwise parity under Wi-Fi/WAN impairment and burst rebase |
+| `1b38f05` | Phase 4.6.2 deterministic network impairment harness & presets (Wi-Fi/WAN/Burst) |
+| `eb679e0` | Phase 4.6.1 reconnect retry policy & socket-connect timeout |
+| `7be1648` | Phase 4.5.4 runtime loop closure & production runner wiring |
+| `57a8cef` | Phase 4.5.3 live combat reconnect & tactical pause governance on 400 units |
+| `364646b` | Phase 4.5.2 view batch recycling & presentation resync |
+| `1b9b288` | Phase 4.5.1 reconnect signal wirings & C0 transport integration |
+| `5bdab1e` | Phase 4.4.2 client lead calculation, multi-batch dispatch & E2E network ingress |
+| `4e830c9` | Phase 4.4.1 server FoW target validation & command rejection gates |
+| `3666834` | Phase 4.3.2 per-client replication filtering & StateChecksum |
+| `e5d2ec0` | Phase 4.3.1 core visibility engine & visibility history ring |
+| `34e994e` | Phase 4.2.1 client bootstrap CLI `-connect` |
+| `1760f17` | Phase 4.2 client remote connection & handshake |
+| `5f2f29e` | Phase 4.1 dedicated server core relocation & headless runner |
 | `3a112ad` | Hardening Phase 3.7.1 Block 4: transport/uplink seam, URP overlay feature, OD-28 disclaimer |
 | `a944623` | Hardening Phase 3.7.1 Block 3: zero-alloc ClientSession update, ArrayPool reassembly |
 | `a08beaf` | Hardening Phase 3.7.1 Block 2: sink parity, checksum fields, order agreement, pacing comments |
@@ -111,3 +130,5 @@
 - [Current State](CURRENT_STATE.md)
 - [Project Status](PROJECT_STATUS.md)
 - [Roadmap](ROADMAP.md)
+- [Phase 04](Phases/Phase_04_Multiplayer_Integration.md)
+- [Phase 05](Phases/Phase_05_Faction_Asymmetry.md)
