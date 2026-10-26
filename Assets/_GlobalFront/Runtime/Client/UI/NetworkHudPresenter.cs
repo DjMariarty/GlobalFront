@@ -44,6 +44,7 @@ namespace GlobalFront.Client.UI
             WireSessionManager();
             WireHost();
             WireCoordinator();
+            SyncCoordinatorState();
 
             _overlay?.UpdateFromState(_state);
         }
@@ -86,6 +87,7 @@ namespace GlobalFront.Client.UI
 
             _coordinator = coordinator;
             WireCoordinator();
+            SyncCoordinatorState();
         }
 
         /// <summary>
@@ -223,10 +225,18 @@ namespace GlobalFront.Client.UI
 
             _coordinator.StateChanged += OnCoordinatorStateChanged;
             _coordinator.ReadyToResume += Resume;
+        }
 
-            if (_coordinator.State == ClientReconnectState.Countdown)
+        /// <summary>
+        /// Mirrors an already-current coordinator state onto the view. Binding a
+        /// runner to a session that is mid-reconnect must show the pause
+        /// overlay immediately, not wait for the next transition.
+        /// </summary>
+        private void SyncCoordinatorState()
+        {
+            if (_coordinator != null)
             {
-                StartCountdown((int)Math.Ceiling(_coordinator.CountdownRemainingSeconds));
+                OnCoordinatorStateChanged(_coordinator.State);
             }
         }
 
@@ -310,9 +320,25 @@ namespace GlobalFront.Client.UI
 
                 case ClientReconnectState.Reconnecting:
                 case ClientReconnectState.Resyncing:
+                    _state.IsTacticalPauseActive = true;
+                    if (_host == null)
+                    {
+                        // A dedicated client does not know the server's grace
+                        // directly; the default matches the 4000-tick contract.
+                        _state.RemainingGraceSeconds = NetworkMatchHudState.DefaultGraceSeconds;
+                    }
+
                     if (_coordinator.PlayerId.IsValid)
                     {
+                        _state.PausingPlayer = _coordinator.PlayerId;
                         SetSlotStatus(_coordinator.PlayerId, SlotStatus.Reconnecting);
+                    }
+
+                    if (_overlay != null)
+                    {
+                        _overlay.SetVisible(true);
+                        _overlay.UpdatePauseState(
+                            _state.PausingPlayer, _state.RemainingGraceSeconds);
                     }
                     break;
 
@@ -323,8 +349,10 @@ namespace GlobalFront.Client.UI
                     {
                         SetSlotStatus(_coordinator.PlayerId, SlotStatus.Connected);
                     }
-                    if (!_state.IsTacticalPauseActive)
+
+                    if (_host == null || !_host.IsPaused)
                     {
+                        _state.IsTacticalPauseActive = false;
                         _overlay?.Hide();
                     }
                     break;

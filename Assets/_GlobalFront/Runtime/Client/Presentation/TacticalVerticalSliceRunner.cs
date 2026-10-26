@@ -784,6 +784,12 @@ namespace GlobalFront.Client.Presentation
             _transport = null;
 
             _networkHud = new NetworkHudPresenter();
+            _networkHud.BindCoordinator(_remoteSession.ReconnectCoordinator);
+
+            var pauseOverlayGo = CreateWiredGameObject("Tactical Pause Overlay");
+            var pauseOverlay = pauseOverlayGo.AddComponent<TacticalPauseOverlay>();
+            _networkHud.BindView(pauseOverlay);
+
             _remoteSession.RttUpdated += HandleRemoteRttUpdated;
             _remoteSession.Connected += HandleRemoteConnected;
             _remoteSession.Disconnected += HandleRemoteDisconnected;
@@ -916,6 +922,7 @@ namespace GlobalFront.Client.Presentation
             _overlayBatcher.BuildBatches(_binder, _cameraController.transform.rotation);
             _permanentHud.ManualUpdate(unscaledTimeSeconds);
             _selectionHud.ManualUpdate();
+            _networkHud?.AdvanceRealTime(deltaTimeSeconds);
         }
 
         /// <summary>

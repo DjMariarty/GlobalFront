@@ -63,6 +63,7 @@ namespace GlobalFront.Tests.PlayMode
         private bool _receiverFailed;
         private GameObject _sliceRoot;
         private TacticalVerticalSliceRunner _sliceRunner;
+        private RemoteSliceSession _runnerDrivenSession;
 
         [SetUp]
         public void SetUp()
@@ -86,6 +87,8 @@ namespace GlobalFront.Tests.PlayMode
                 Object.Destroy(_sliceRoot);
                 _sliceRoot = null;
             }
+
+            _runnerDrivenSession = null;
 
             for (var index = 0; index < _sessions.Count; index++)
             {
@@ -550,6 +553,131 @@ namespace GlobalFront.Tests.PlayMode
                 "TacticalVerticalSliceRunner.Update must advance the OD-20 countdown");
         }
 
+        [UnityTest]
+        public IEnumerator LiveUDP_DedicatedSliceRunner_ShowsPauseOverlayAndHidesAfterResume()
+        {
+            StartServer(packetLoss: false, 0, latency: false);
+            var session = CreateClient(packetLoss: false, 0, latency: false);
+            var sessionB = CreateClient(packetLoss: false, 0, latency: false);
+            session.Connect("127.0.0.1", _serverPort);
+            sessionB.Connect("127.0.0.1", _serverPort);
+
+            yield return WaitFor(
+                () =>
+                {
+                    PumpClients();
+                    return session.IsConnected && sessionB.IsConnected;
+                },
+                HandshakeTimeoutSeconds,
+                "both clients must complete the handshake before the overlay scenario");
+
+            var player = session.Endpoint.Player;
+            var otherPlayer = sessionB.Endpoint.Player;
+            var specs = new[]
+            {
+                new UnitSpawnSpec(player, new WorldPointMm(0, 0), 350, false),
+                new UnitSpawnSpec(otherPlayer, new WorldPointMm(20_000, 0), 350, false)
+            };
+            Assert.That(
+                _server.Host.TryStartSessionMatch(
+                    _server.Match, new MatchConfig(StandardStats, specs), out _),
+                Is.True);
+
+            yield return WaitFor(
+                () =>
+                {
+                    _server.Host.TickOnce();
+                    PumpClients();
+                    return session.World.LiveCount == 2 &&
+                        sessionB.World.LiveCount == 2 &&
+                        session.Receiver.State == ReplicationReceiverState.Streaming &&
+                        sessionB.Receiver.State == ReplicationReceiverState.Streaming;
+                },
+                BaselineTimeoutSeconds,
+                "both clients must install the baseline before the overlay scenario");
+
+            _sliceRoot = new GameObject("NetworkImpairmentPlayModeTests_OverlaySlice");
+            _sliceRunner = _sliceRoot.AddComponent<TacticalVerticalSliceRunner>();
+            _sliceRunner.InitializeDedicatedClient(
+                session, createVisuals: false, autoStartRealTime: true);
+
+            // The runner now owns the victim's session pump.
+            _runnerDrivenSession = session;
+
+            var hud = _sliceRunner.NetworkHud;
+            Assert.That(hud, Is.Not.Null);
+            Assert.That(hud.View, Is.Not.Null,
+                "InitializeDedicatedClient must create and bind the pause overlay");
+            Assert.That(hud.View.IsVisible, Is.False,
+                "the pause overlay must start hidden");
+
+            var sessionId = session.Endpoint.Session;
+            var serverConnectionId = GetServerConnectionId(_server, sessionId);
+            _serverCarrier.CloseConnection(
+                serverConnectionId, TransportDisconnectReason.TransportLost);
+
+            yield return WaitFor(
+                () => _server.Host.TryGetSession(sessionId, out var record) &&
+                    record.State == SessionState.Disconnected,
+                ReconnectFsmTimeoutSeconds,
+                "the server must move the lost session into reconnect grace");
+
+            session.Endpoint.DropConnection(TransportDisconnectReason.TransportLost);
+
+            Assert.That(
+                session.ReconnectCoordinator.State == ClientReconnectState.Reconnecting ||
+                session.ReconnectCoordinator.State == ClientReconnectState.Resyncing,
+                Is.True,
+                "the client must enter the reconnect pause before resync");
+            Assert.That(hud.View.IsVisible, Is.True,
+                "the overlay must appear on the disconnect, not only after the keyframe");
+            Assert.That(hud.View.Message, Does.Contain("переподключается"),
+                "the overlay must name the reconnecting player");
+            Assert.That(hud.View.PausingPlayer, Is.EqualTo(player));
+
+            var graceAtShow = hud.View.RemainingGraceSeconds;
+            var timerDeadline = Time.realtimeSinceStartup + 1.2f;
+            while (hud.View.RemainingGraceSeconds >= graceAtShow &&
+                   Time.realtimeSinceStartup < timerDeadline)
+            {
+                PumpClients();
+                yield return null;
+            }
+
+            Assert.That(hud.View.RemainingGraceSeconds, Is.LessThan(graceAtShow),
+                "StepPresentationFrame must advance the overlay grace timer");
+            Assert.That(hud.View.TimerText, Is.Not.Empty);
+
+            yield return WaitFor(
+                () =>
+                {
+                    _server.Host.TickOnce();
+                    PumpClients();
+                    return session.ReconnectCoordinator.State == ClientReconnectState.Countdown &&
+                        hud.View.IsVisible;
+                },
+                ReconnectFsmTimeoutSeconds,
+                "the overlay must stay visible through resync and the countdown");
+
+            Assert.That(hud.View.CountdownSecondsRemaining, Is.GreaterThan(0));
+            Assert.That(hud.View.CountdownBannerText, Is.Not.Empty);
+
+            yield return WaitFor(
+                () =>
+                {
+                    _server.Host.TickOnce();
+                    PumpClients();
+                    return session.IsConnected &&
+                        session.ReconnectCoordinator.State == ClientReconnectState.Connected &&
+                        !_server.Host.IsPaused;
+                },
+                ReconnectFsmTimeoutSeconds,
+                "the session must auto-resume after the countdown");
+
+            Assert.That(hud.View.IsVisible, Is.False,
+                "the overlay must hide once the pause is lifted");
+        }
+
         /// <summary>
         /// Raises server-to-client loss to 100% for a short pulse and proves
         /// the live client stops applying state, then restores the scenario
@@ -649,6 +777,11 @@ namespace GlobalFront.Tests.PlayMode
             for (var index = 0; index < _sessions.Count; index++)
             {
                 var session = _sessions[index];
+                if (session == _runnerDrivenSession)
+                {
+                    continue;
+                }
+
                 session.Pump(session.Clock.NowMs);
 
                 if (session.Receiver.State == ReplicationReceiverState.ConnectionFailed)
