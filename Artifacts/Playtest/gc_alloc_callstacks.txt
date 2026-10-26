@@ -1,0 +1,61 @@
+GC.Alloc callstack capture — Step 4.6.5 scoped-GC residual
+============================================================
+Date: 2026-10-26
+Unity: 6000.6.2f1 (editor PlayMode via Unity Test Framework)
+Base commit: e6c4411 (diagnostic scaffold applied temporarily, then reverted)
+Test: GlobalFront.Tests.PlayMode.SyntheticPlaytestPlayModeTests
+Suite: full PlayMode (22 tests); this run failed the scoped-GC gate with 1 block.
+
+Method
+------
+Profiler.enableAllocationCallstacks = true was set before Profiler.enabled = true.
+The profiler was enabled at the measured-window warm-up. Profiler.BeginSample("GF.ScopedPump")
+wrapped sessionA.Pump + sessionB.Pump in every measured frame. On a frame where the legacy
+Recorder reported blocks, profiler frames were dumped through ProfilerDriver.GetRawFrameDataView
+and GC.Alloc callstacks were resolved with ResolveMethodInfo.
+
+Frames 4515 and 4516 (main thread), marker GF.ScopedPump at sample 109 / 187.
+The raw frame view reports children=0 for the marker, so samples were classified by their
+position/time relative to the marker and by their resolved callstacks.
+
+All GC.Alloc samples in the two frames
+--------------------------------------
+Frame 4515 (819 samples, main thread)
+- GA 84   unresolved (31 frames, no method info), before the marker
+- GA 110  UnityEngine.TestRunner LogScope.ProcessExpectedLogs / EvaluateLogScope /
+          UnityLogCheckDelegatingCommand.CheckFailingLogs / test-runner MoveNext
+- GA 112  UnityEngine.TestRunner LogScope.EvaluateLogScope /
+          UnityLogCheckDelegatingCommand.CheckFailingLogs / test-runner MoveNext
+- GA 293  UnityEditor PlayModeView.RenderView / GameView.OnGUI / DockArea.OnGUI
+- GA 588, 590, 592, 594  UnityEngine.IMGUIModule GUILayoutUtility/GUILayoutGroup via
+          UniversalRenderPipeline.RenderSingleCamera / ScriptableRenderContext.Submit
+
+Frame 4516 (890 samples, main thread)
+- GA 103, 162  unresolved (31 frames, no method info), before the marker
+- GA 188  LogScope.ProcessExpectedLogs / EvaluateLogScope / CheckFailingLogs / test runner
+- GA 190  LogScope.EvaluateLogScope / CheckFailingLogs / test runner
+- GA 378  UnityEditor PlayModeView.RenderView / GameView.OnGUI
+- GA 659, 661, 663, 665  GUILayoutUtility/GUILayoutGroup via UniversalRenderPipeline
+
+Marker timing (frame 4516, ns): marker start 109087328954400; GA 188 +7.1 us;
+GA 190 +15.7 us; next test-runner coroutine sample +20.6 us.
+
+Conclusion
+----------
+No resolved callstack contains GlobalFront.* runtime, replication, pump, event or ping code,
+and none contains LiteNetLib symbols. The profiler-visible allocations around the measured
+pumps belong to the Unity Test Framework log-scope machinery and to Editor/URP/IMGUI frame
+work. The unresolved samples occur before the marker, outside the pump interval.
+
+Caveat: the profiler + allocation-callstack mode changes frame pacing; two full-suite runs
+with the profiler enabled were green while the un-profiled full suite is known to flake with
+2-8 sample blocks. This capture therefore does not reproduce the original allocation itself;
+it does show that the allocations the profiler can attribute are harness/editor, not the
+game network path, and that an earlier pool diagnostic reported zero buffer-pool misses in
+the frames with blocks.
+
+Audit recommendation: treat the residual as a Test Runner measurement artifact (frame-granular
+legacy Recorder plus harness log-scope allocations). ReturnEventBuffer/TransportBufferPool
+remain clean. A deterministic gate needs a callstack-filtered measurement or a standalone
+player harness without the Test Framework LogScope; this is a test-infrastructure change, not
+a runtime allocation fix.
