@@ -3,8 +3,10 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using GlobalFront.Client;
+using GlobalFront.Client.Catalog;
 using GlobalFront.Client.Presentation;
 using GlobalFront.Client.Replication;
+using GlobalFront.Client.UI;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
@@ -18,6 +20,7 @@ using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.TestTools;
+using UnityEngine.UI;
 using EntityId = GlobalFront.Core.Model.EntityId;
 using Object = UnityEngine.Object;
 using Stopwatch = System.Diagnostics.Stopwatch;
@@ -26,9 +29,10 @@ namespace GlobalFront.Tests.PlayMode
 {
     /// <summary>
     /// Step 4.6.5 synthetic playtest: 400 units over real UDP loopback, Fog of
-    /// War, a bot that box-selects 100 units and marches both armies into
-    /// contact, a server-side disconnect at 20 s, reconnect/resync/countdown,
-    /// the C0 opcode 14 resume, five 1080p screenshots and steady-state metrics.
+    /// War, a bot that box-selects the 100-unit front block and marches it onto
+    /// the enemy line, which holds position and returns fire, a server-side
+    /// disconnect at 20 s, reconnect/resync/countdown, the C0 opcode 14 resume,
+    /// five 1080p screenshots and steady-state metrics.
     /// </summary>
     [TestFixture]
     public sealed class SyntheticPlaytestPlayModeTests
@@ -37,7 +41,29 @@ namespace GlobalFront.Tests.PlayMode
         private const int CombatUnitsPerPlayer = 200;
         private const int SelectedUnits = 100;
         private const int PlaytestTickRate = 20;
-        private const int PlaytestMaxHealth = 200;
+
+        // The client's catalog is the only health denominator the HUD has, and it
+        // clamps a unit at 100% of that archetype's maximum. A match that spawns
+        // 200-HP units under a 100-HP catalog therefore reads 100% until a unit is
+        // half dead, so the playtest has to use the catalog's maximum or its HUD
+        // cannot show the damage the brief asks for.
+        private const int PlaytestMaxHealth = UnitCatalog.PrototypeMaximumHealth;
+
+        // Two damage per volley is a 25 s time-to-kill at the 10-tick cooldown:
+        // slow enough that the selected squad survives the reconnect, fast enough
+        // that the clash screenshot catches a readable mid-fight percentage.
+        private const int PlaytestDamage = 2;
+
+        // The selected squad marches into a stationary enemy line. The destination
+        // sits half a formation cell (0.5 m) off the enemy grid on both axes, so
+        // every defender has one unique nearest attacker once the squad arrives;
+        // the staged fire below is then a 1:1 exchange instead of a focus-fire
+        // that would kill a handful of units and leave the rest at 100%.
+        private const int ContactCentreXMillimetres = 34_500;
+        private const int ContactCentreZMillimetres = 500;
+        private const float StagedEngagementSeconds = 8.5f;
+        private const float ClashCaptureSeconds = 15f;
+
         private const int DisconnectAtSeconds = 20;
         private const float SteadyWindowStartSeconds = 16f;
         private const float SteadyWindowEndSeconds = 19f;
@@ -48,7 +74,7 @@ namespace GlobalFront.Tests.PlayMode
         private const float ReconnectTimeoutSeconds = 20f;
 
         private static readonly CombatStats PlaytestStats =
-            new CombatStats(PlaytestMaxHealth, damage: 16, rangeMm: 7000, cooldownTicks: 10);
+            new CombatStats(PlaytestMaxHealth, PlaytestDamage, rangeMm: 7000, cooldownTicks: 10);
 
         private readonly List<RemoteSliceSession> _sessions = new List<RemoteSliceSession>();
         private GameObject _serverObject;
@@ -213,29 +239,30 @@ namespace GlobalFront.Tests.PlayMode
             yield return null;
             yield return PlaytestScreenshotCapture.Capture("01_spawn_and_fog.png");
 
-            // The bot drags a box over the first 100 friendly units. The camera
-            // is moved to the selected block so all 100 project on screen.
-            AimCamera(new Vector3(-46f, 0f, 0f), 45f);
+            // The bot drags a box over the 100-unit block that leads toward the
+            // enemy. Selecting the rear block would leave the HUD showing a squad
+            // that never takes a shot, which is the defect this playtest has to
+            // disprove; the front block is the one that meets the enemy line.
+            AimCamera(new Vector3(-16f, 0f, 0f), 45f);
             yield return null;
-            var selectedEntities = SelectBlock(sessionA, entityIds, 0, SelectedUnits);
+            var selectedEntities = SelectBlock(
+                sessionA, entityIds, 0, SelectedUnits);
             yield return null;
             yield return PlaytestScreenshotCapture.Capture("02_box_selection.png");
+            AssertHudColumnsDoNotOverlap(_sliceRunner.SelectionHud);
 
+            // The selected squad marches onto the enemy front block's centre and
+            // the enemy line holds position. The move clears the squad's automatic
+            // acquisition, which is what the server's ExecuteMove promises; the
+            // stationary enemy keeps its auto-acquire, so the squad walks into
+            // distributed return fire and its HUD health has to fall.
             var moveA = SubmitMove(
                 sessionA, playerA, sequence: 1, selectedEntities,
-                new WorldPointMm(0, 0));
+                new WorldPointMm(ContactCentreXMillimetres, ContactCentreZMillimetres));
             Assert.That(moveA, Is.EqualTo(MatchCommandRejection.None),
                 "the selected 100 units must pass the client's move pre-flight");
 
-            var selectedB = new EntityId[SelectedUnits];
-            Array.Copy(entityIds, CombatUnitsPerPlayer, selectedB, 0, SelectedUnits);
-            var moveB = SubmitMove(
-                sessionB, playerB, sequence: 1, selectedB,
-                new WorldPointMm(0, 0));
-            Assert.That(moveB, Is.EqualTo(MatchCommandRejection.None),
-                "the opposing bot must be able to march its 100 units");
-
-            AimCamera(new Vector3(0f, 0f, 0f), 55f);
+            AimCamera(new Vector3(25f, 0f, 0f), 55f);
             yield return null;
 
             var fpsDeltas = new List<float>(512);
@@ -261,10 +288,10 @@ namespace GlobalFront.Tests.PlayMode
             var scopedBlocks = 0L;
             var frameGcBytes = 0L;
             var runnerSuspended = false;
-            var scopedWarmed = false;
+            var transportWarmed = false;
             var combatCaptured = false;
-            var attackSubmitted = false;
-            var enemyTarget = default(EntityId);
+            var engagementStaged = false;
+            var selectedSquadHealthAtClash = -1;
 
             while (stopwatch.Elapsed.TotalSeconds < DisconnectAtSeconds)
             {
@@ -295,21 +322,45 @@ namespace GlobalFront.Tests.PlayMode
                     sessionB.Pump(sessionB.Clock.NowMs);
                     scopedRecorder.enabled = false;
                     scopedRecorder.CollectFromAllThreads();
-                    scopedBlocks += scopedRecorder.sampleBlockCount;
+                    var frameBlocks = scopedRecorder.sampleBlockCount;
+                    if (frameBlocks > 0)
+                    {
+                        Debug.Log($"[PlaytestGC] t={elapsed:F2}s blocks={frameBlocks}");
+                    }
+
+                    scopedBlocks += frameBlocks;
                     frameGcBytes += frameGcRecorder.LastValue;
                 }
                 else
                 {
-                    if (!scopedWarmed &&
-                        elapsed >= SteadyWindowStartSeconds - 0.5f &&
+                    if (elapsed >= SteadyWindowStartSeconds - 0.8f &&
                         elapsed < SteadyWindowStartSeconds)
                     {
                         // Warm the manual pump path outside the measured
-                        // window: the first call after presentation is
-                        // disabled can initialize a one-time code path.
-                        scopedWarmed = true;
-                        _sliceRunner.enabled = false;
-                        runnerSuspended = true;
+                        // window: one pump is not enough, because a delta that
+                        // arrives after the presentation is disabled can still
+                        // take a one-time decode/feedback path. Pump this way
+                        // for the last 0.8 s before the window opens.
+                        if (!runnerSuspended)
+                        {
+                            _sliceRunner.enabled = false;
+                            runnerSuspended = true;
+                        }
+
+                        if (!transportWarmed)
+                        {
+                            // Populate LiteNetLib's packet pool before the
+                            // window: its first sends allocate, and a ping
+                            // cadence that lands in the window would otherwise
+                            // be measured as a network-path allocation.
+                            transportWarmed = true;
+                            for (var ping = 0; ping < 24; ping++)
+                            {
+                                sessionA.Endpoint.TrySendPing(sessionA.Clock.NowMs);
+                                sessionB.Endpoint.TrySendPing(sessionB.Clock.NowMs);
+                            }
+                        }
+
                         sessionA.Pump(sessionA.Clock.NowMs);
                         sessionB.Pump(sessionB.Clock.NowMs);
                     }
@@ -325,19 +376,32 @@ namespace GlobalFront.Tests.PlayMode
                     }
                 }
 
-                if (!combatCaptured && elapsed >= 14f &&
-                    TryFindCombat(sessionA, playerA, out enemyTarget, out _))
+                if (!engagementStaged && elapsed >= StagedEngagementSeconds)
                 {
+                    engagementStaged = true;
+                    StageDistributedEngagement(sessionB, playerB, entityIds, selectedEntities);
+                }
+
+                if (!combatCaptured && elapsed >= ClashCaptureSeconds)
+                {
+                    var healthPercent = _sliceRunner.SelectionHudModel.HealthPercent;
+                    Assert.That(
+                        _sliceRunner.Selection.SelectedCount,
+                        Is.EqualTo(SelectedUnits),
+                        "the clash must show the whole selected squad, not a pruned remnant");
+                    Assert.That(
+                        healthPercent,
+                        Is.LessThan(100),
+                        "the selected squad is in direct fire contact, so its HUD health must be below 100%");
+                    Assert.That(healthPercent, Is.GreaterThan(0), "the selected squad must still be alive");
+                    Assert.That(
+                        _sliceRunner.SelectionHud.DisplayedHealth,
+                        Is.Not.EqualTo("100%"),
+                        "the panel must print the damaged value the model holds");
+                    selectedSquadHealthAtClash = healthPercent;
                     combatCaptured = true;
                     yield return PlaytestScreenshotCapture.Capture("03_clash_combat.png");
                     continue;
-                }
-
-                if (!attackSubmitted && elapsed >= 8f &&
-                    TryFindCombat(sessionA, playerA, out enemyTarget, out _))
-                {
-                    attackSubmitted = true;
-                    SubmitAttack(sessionA, playerA, selectedEntities, enemyTarget);
                 }
 
                 yield return null;
@@ -428,6 +492,37 @@ namespace GlobalFront.Tests.PlayMode
                 yield return null;
             }
 
+            // The keyframe released every pooled view; the repair runs on the first
+            // presentation frame that rebinds them. Read the rings back rather than
+            // trusting the screenshot to show them.
+            yield return null;
+            var selection = _sliceRunner.Selection;
+            Assert.That(
+                selection.SelectedCount,
+                Is.EqualTo(SelectedUnits),
+                "the selection must survive the keyframe rebuild");
+            var ringedViews = 0;
+            for (var index = 0; index < selection.SelectedCount; index++)
+            {
+                var slot = selection.GetSelectedSlot(index);
+                var entity = selection.GetSelectedEntity(index);
+                if (_sliceRunner.Binder.TryGetView(slot, out var view) &&
+                    view.EntityValue == entity.Value &&
+                    view.IsSelected)
+                {
+                    ringedViews++;
+                }
+            }
+
+            Assert.That(
+                ringedViews,
+                Is.EqualTo(selection.SelectedCount),
+                "every selected unit must have its selection ring back after the keyframe resync");
+            Assert.That(
+                _sliceRunner.SelectionHud.DisplayedCount,
+                Is.EqualTo("100"),
+                "the panel must still report the squad it is drawing rings for");
+
             yield return PlaytestScreenshotCapture.Capture("05_reconnected_and_resumed.png");
 
             var metrics = BuildMetrics(
@@ -439,7 +534,7 @@ namespace GlobalFront.Tests.PlayMode
                 CombatUnitsPerPlayer + 1,
                 countdownSeconds,
                 disconnectWallSeconds,
-                attackSubmitted,
+                selectedSquadHealthAtClash,
                 _server.TransportHost.Metrics);
             WriteMetrics(metrics);
 
@@ -501,8 +596,8 @@ namespace GlobalFront.Tests.PlayMode
         private static MatchConfig BuildMatchConfig(PlayerId playerA, PlayerId playerB)
         {
             var units = new List<UnitSpawnSpec>(CombatUnitsPerPlayer * 2 + 2);
-            AddArmy(units, playerA, selectedStartX: -55_000, reserveStartX: -25_000);
-            AddArmy(units, playerB, selectedStartX: 25_000, reserveStartX: 55_000);
+            AddArmy(units, playerA, frontStartX: -25_000, rearStartX: -65_000, autoAcquire: true);
+            AddArmy(units, playerB, frontStartX: 25_000, rearStartX: 65_000, autoAcquire: false);
             units.Add(new UnitSpawnSpec(
                 playerA, new WorldPointMm(-90_000, 0), 1, false, UnitKinds.BaseStructure));
             units.Add(new UnitSpawnSpec(
@@ -513,12 +608,16 @@ namespace GlobalFront.Tests.PlayMode
         private static void AddArmy(
             List<UnitSpawnSpec> units,
             PlayerId owner,
-            int selectedStartX,
-            int reserveStartX)
+            int frontStartX,
+            int rearStartX,
+            bool autoAcquire)
         {
             for (var block = 0; block < 2; block++)
             {
-                var startX = block == 0 ? selectedStartX : reserveStartX;
+                // Twenty-two metres of air between a front block's trailing edge and
+                // the rear block keeps the rear outside the 18 m auto-acquire radius,
+                // so the clash stays a clean 100 vs 100 instead of both blocks joining.
+                var startX = block == 0 ? frontStartX : rearStartX;
                 for (var index = 0; index < 100; index++)
                 {
                     var column = index % 10;
@@ -528,7 +627,7 @@ namespace GlobalFront.Tests.PlayMode
                         owner,
                         new WorldPointMm(startX + column * 2_000, -9_000 + row * 2_000),
                         350,
-                        true,
+                        autoAcquire,
                         kind));
                 }
             }
@@ -606,58 +705,117 @@ namespace GlobalFront.Tests.PlayMode
                 new FormationSpec(10, 2_000, CardinalFacing.North));
         }
 
-        private void SubmitAttack(
-            RemoteSliceSession session,
-            PlayerId player,
-            EntityId[] attackers,
-            EntityId target)
+        /// <summary>
+        /// Opens the staged engagement: the selected squad has arrived on the
+        /// enemy grid, and every defender is given its own nearest attacker as an
+        /// explicit target. One attack order naming a single target for a hundred
+        /// attackers would focus-fire one unit at a time — a handful of casualties
+        /// and the rest of the squad at 100%, which is the HUD reading this
+        /// playtest exists to disprove. Per-unit orders keep the exchange 1:1, so
+        /// the squad's mean health falls honestly.
+        /// </summary>
+        private void StageDistributedEngagement(
+            RemoteSliceSession sessionB,
+            PlayerId playerB,
+            EntityId[] entityIds,
+            EntityId[] attackers)
         {
-            if (!target.IsValid)
+            var host = _server.Host;
+            Assert.That(host, Is.Not.Null);
+            var session = sessionB.Endpoint.Session;
+            Assert.That(session.IsValid, Is.True, "the second client must carry a server session id");
+
+            var accepted = 0;
+            for (var index = 0; index < SelectedUnits; index++)
             {
-                return;
-            }
+                var defender = entityIds[CombatUnitsPerPlayer + index];
+                Assert.That(
+                    sessionB.World.TryGet(defender, out var defenderState),
+                    Is.True,
+                    "every defender must be present in the second client's world");
 
-            var header = new CommandHeader(
-                player,
-                sequence: 2,
-                _server.Host.CurrentTick + 2,
-                GameCommandType.Attack);
-            session.CommandChannel.TrySubmitAttack(header, attackers, target);
-        }
-
-        private static bool TryFindCombat(
-            RemoteSliceSession session,
-            PlayerId player,
-            out EntityId enemy,
-            out bool sawDamage)
-        {
-            enemy = default;
-            sawDamage = false;
-            var sawEnemy = false;
-            var world = session.World;
-            for (var slot = 0; slot < world.Capacity; slot++)
-            {
-                if (!world.TryGetSlotState(slot, out var state) || !state.IsLive)
+                var target = default(EntityId);
+                var bestDistance = long.MaxValue;
+                for (var candidateIndex = 0; candidateIndex < attackers.Length; candidateIndex++)
                 {
-                    continue;
-                }
-
-                if (state.Owner != player)
-                {
-                    sawEnemy = true;
-                    if (!enemy.IsValid)
+                    var candidate = attackers[candidateIndex];
+                    if (!sessionB.World.TryGet(candidate, out var candidateState))
                     {
-                        enemy = state.Entity;
+                        continue;
+                    }
+
+                    var deltaX = (long)candidateState.PosX - defenderState.PosX;
+                    var deltaZ = (long)candidateState.PosZ - defenderState.PosZ;
+                    var distance = deltaX * deltaX + deltaZ * deltaZ;
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        target = candidate;
                     }
                 }
 
-                if (state.Health < PlaytestMaxHealth)
-                {
-                    sawDamage = true;
-                }
+                Assert.That(target.IsValid, Is.True, "every defender must see at least one attacker");
+
+                var header = new CommandHeader(
+                    playerB,
+                    (uint)(index + 1),
+                    host.CurrentTick + 2,
+                    GameCommandType.Attack);
+                var result = host.TrySessionAttack(session, header, new[] { defender }, target);
+                Assert.That(
+                    result.IsAccepted,
+                    Is.True,
+                    $"defender {index} was refused: session {result.Session}, command {result.Command}");
+                accepted++;
             }
 
-            return sawEnemy && sawDamage;
+            Assert.That(accepted, Is.EqualTo(SelectedUnits));
+        }
+
+        /// <summary>
+        /// The labels and values share one column in the panel, and "Base structure"
+        /// is the longest label. Measured against the live font rather than trusted
+        /// from the layout constants, because the failure the player saw was glyphs
+        /// on top of each other, not rects.
+        /// </summary>
+        private static void AssertHudColumnsDoNotOverlap(SelectionHudPresenter hud)
+        {
+            Assert.That(hud, Is.Not.Null);
+            Assert.That(hud.PanelTransform, Is.Not.Null);
+            var labels = new[]
+            {
+                "Selected", "Scout", "Tank", "Structure", "Health", "Order", "Result", "Issued", "Refused",
+            };
+
+            var measured = 0;
+            for (var index = 0; index < labels.Length; index++)
+            {
+                var label = RowText(hud, "Label", labels[index]);
+                var value = RowText(hud, "Value", labels[index]);
+                Assert.That(
+                    label.preferredWidth,
+                    Is.GreaterThan(0f),
+                    $"the {labels[index]} label must be measurable text");
+                measured++;
+
+                var labelEnd = label.rectTransform.anchoredPosition.x + label.preferredWidth;
+                Assert.That(
+                    labelEnd,
+                    Is.LessThanOrEqualTo(value.rectTransform.anchoredPosition.x),
+                    $"the {labels[index]} label ends at {labelEnd:0.#} px, past the " +
+                    $"{value.rectTransform.anchoredPosition.x:0.#} px value column");
+            }
+
+            Assert.That(measured, Is.EqualTo(labels.Length));
+        }
+
+        private static Text RowText(SelectionHudPresenter hud, string column, string label)
+        {
+            var found = hud.PanelTransform.Find(column + " " + label);
+            Assert.That(found, Is.Not.Null, $"the inspector has no {column.ToLower()} for {label}");
+            var text = found.GetComponent<Text>();
+            Assert.That(text, Is.Not.Null);
+            return text;
         }
 
         private static PlaytestMetrics BuildMetrics(
@@ -669,7 +827,7 @@ namespace GlobalFront.Tests.PlayMode
             int visibleUnits,
             int countdownSeconds,
             float disconnectWallSeconds,
-            bool attackSubmitted,
+            int selectedSquadHealthAtClash,
             TransportMetrics serverMetrics)
         {
             var sum = 0f;
@@ -719,7 +877,7 @@ namespace GlobalFront.Tests.PlayMode
                 countdownSeconds = 5,
                 countdownObservedSeconds = countdownSeconds,
                 disconnectAtSeconds = disconnectWallSeconds,
-                attackOrderSubmitted = attackSubmitted,
+                selectedSquadHealthPercentAtClash = selectedSquadHealthAtClash,
                 clientMessagesSent = clientMetrics.MessagesSent,
                 clientMessagesReceived = clientMetrics.MessagesReceived,
                 clientBytesSent = clientMetrics.BytesSent,
@@ -792,7 +950,7 @@ namespace GlobalFront.Tests.PlayMode
             public int countdownSeconds;
             public int countdownObservedSeconds;
             public float disconnectAtSeconds;
-            public bool attackOrderSubmitted;
+            public int selectedSquadHealthPercentAtClash;
             public long clientMessagesSent;
             public long clientMessagesReceived;
             public long clientBytesSent;

@@ -530,6 +530,7 @@ namespace GlobalFront.Client.Presentation
         private bool _createVisuals;
         private bool _autoStartRealTime = true;
         private bool _remotePoolWarmed;
+        private bool _selectionResyncPending;
         private int _unitCount;
 
         /// <summary>
@@ -903,6 +904,14 @@ namespace GlobalFront.Client.Presentation
             _cameraController.ManualUpdate(deltaTimeSeconds);
             _binder.Render(deltaTimeSeconds);
 
+            // Only now can the rings be restored: the keyframe handler released every
+            // view, and this Render is the first call that rebinds them from the pool.
+            if (_selectionResyncPending)
+            {
+                _selectionResyncPending = false;
+                _selection?.ResyncSelectionViews();
+            }
+
             // Commands land on the next tick, the same contract the legacy
             // controller keeps (ADR-007), and both pointer paths read it here.
             // A dedicated client is behind the server by its RTT and applies
@@ -1130,6 +1139,7 @@ namespace GlobalFront.Client.Presentation
             {
                 _receiver.KeyframeInstalled -= _binder.HandleResync;
                 _receiver.KeyframeInstalled -= HandleRemoteKeyframeInstalled;
+                _receiver.KeyframeInstalled -= HandleSelectionResyncRequested;
             }
 
             _binder?.Detach();
@@ -1190,6 +1200,7 @@ namespace GlobalFront.Client.Presentation
             _enemyAliveCount = 0;
             _lastCapturedTick = 0;
             _remotePoolWarmed = false;
+            _selectionResyncPending = false;
             _clockSeconds = 0.0;
             _createVisuals = false;
             _autoStartRealTime = true;
@@ -1388,6 +1399,17 @@ namespace GlobalFront.Client.Presentation
 
             _remotePoolWarmed = true;
             WarmReplicatedPool();
+        }
+
+        /// <summary>
+        /// Arms the selection repair for the next presentation frame. The keyframe
+        /// event runs while <see cref="UnitViewBinder.HandleResync" /> has just
+        /// released every view, so the flags cannot be restored here — there is
+        /// nothing bound to restore them on until the next <c>Render</c>.
+        /// </summary>
+        private void HandleSelectionResyncRequested(ulong tick)
+        {
+            _selectionResyncPending = true;
         }
 
         private void HandleRemoteConnected()
@@ -1592,6 +1614,7 @@ namespace GlobalFront.Client.Presentation
             {
                 _receiver.KeyframeInstalled += _binder.HandleResync;
                 _receiver.KeyframeInstalled += HandleRemoteKeyframeInstalled;
+                _receiver.KeyframeInstalled += HandleSelectionResyncRequested;
             }
 
             _overlayBatcher = new UnitOverlayBatcher(

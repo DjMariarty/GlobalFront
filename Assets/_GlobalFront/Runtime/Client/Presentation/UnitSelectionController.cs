@@ -344,6 +344,30 @@ namespace GlobalFront.Client.Presentation
         }
 
         /// <summary>
+        /// Re-applies the selection flag to the currently bound views that present the
+        /// selected entities.
+        ///
+        /// A keyframe wipes the replicated table and releases every view back to the
+        /// pool (OD-42), and a pooled view is rebound with the flag cleared. The
+        /// controller keeps the entity ids across that rebuild, so without this the HUD
+        /// still reports the squad while the battlefield has lost every ring. The
+        /// identity check is the same one the prune uses: a recycled slot presenting a
+        /// stranger is never switched on. Allocation-free and idempotent.
+        /// </summary>
+        public void ResyncSelectionViews()
+        {
+            for (var index = 0; index < _selectedCount; index++)
+            {
+                var entity = _selectedEntities[index];
+                var slot = _selectedSlots[index];
+                if (_binder.TryGetView(slot, out var view) && view.EntityValue == entity)
+                {
+                    view.SetSelected(true);
+                }
+            }
+        }
+
+        /// <summary>
         /// Replaces the selection with the single unit under the pointer, or clears it
         /// when the pointer is on nothing selectable.
         /// </summary>

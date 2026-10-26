@@ -129,6 +129,7 @@ namespace GlobalFront.Server.Transport
         {
             _clock = clock;
             _isServer = isServer;
+            TransportBufferPool.Warm();
         }
 
         /// <summary>Creates the server-side carrier (call StartServer/StartServer(port)).</summary>
@@ -475,6 +476,8 @@ namespace GlobalFront.Server.Transport
             // LiteNetLib keeps its own timers; nothing to advance here.
         }
 
+        public void ReturnEventBuffer(byte[] buffer) => TransportBufferPool.Return(buffer);
+
         public bool TryDequeueEvent(out TransportEvent transportEvent)
         {
             lock (_eventGate)
@@ -647,17 +650,30 @@ namespace GlobalFront.Server.Transport
                 return;
             }
 
-            var bytes = reader.GetRemainingBytes();
+            // The event queue crosses from the receive worker to the host
+            // thread, so the reader's storage cannot be retained. Copy into a
+            // pooled buffer instead of GetRemainingBytes' fresh array, and hand
+            // it back through ReturnEventBuffer once handled; the event's
+            // Length carries the logical size.
+            var controlSegment = reader.GetRemainingBytesSegment();
+            var controlLength = controlSegment.Count;
+            var bytes = TransportBufferPool.Rent(controlLength);
+            if (controlLength > 0)
+            {
+                System.Buffer.BlockCopy(
+                    controlSegment.Array, controlSegment.Offset, bytes, 0, controlLength);
+            }
+
             reader.Recycle();
 
-            if (!limiter.TryConsume(bytes.Length, _clock.NowMs))
+            if (!limiter.TryConsume(controlLength, _clock.NowMs))
             {
                 _metrics.DroppedRateLimited++;
                 return;
             }
 
             _metrics.DatagramsReceived++;
-            _metrics.BytesReceived += bytes.Length;
+            _metrics.BytesReceived += controlLength;
 
             EnqueueEvent(new TransportEvent
             {
@@ -665,7 +681,7 @@ namespace GlobalFront.Server.Transport
                 ConnectionId = connectionId,
                 Channel = TransportChannel.Control,
                 Data = bytes,
-                Length = bytes.Length
+                Length = controlLength
             });
         }
 
@@ -675,7 +691,7 @@ namespace GlobalFront.Server.Transport
         /// reassembled logical snapshot is delivered upward (one message,
         /// however many fragments it took). <paramref name="data"/> is the
         /// reader's pooled storage and must not be retained: ownership ends
-        /// at the event queue, which receives an exact-size owned array.
+        /// at the event queue, which receives an owned buffered copy.
         /// </summary>
         private void HandleSnapshotReceive(int connectionId, byte[] data, int offset, int length)
         {
@@ -711,6 +727,7 @@ namespace GlobalFront.Server.Transport
             var payloadLength = length - PeerSnapshotState.PrefixBytes;
 
             byte[] message = null;
+            var messageLength = 0;
             lock (_peerGate)
             {
                 // Hard stale-drop: a strictly newer snapshot was already
@@ -726,9 +743,13 @@ namespace GlobalFront.Server.Transport
                 if (fragmentCount == 1)
                 {
                     // TransportEvent.Data is owned by the consumer after
-                    // TryDequeueEvent, so the payload must be an exact-size
-                    // copy. This is the single allocation of the path.
-                    message = new byte[payloadLength];
+                    // TryDequeueEvent, so the payload must be an owned copy.
+                    // The pool keeps the buffer in circulation instead of
+                    // allocating per snapshot; the event's Length is the
+                    // logical payload size, which may be smaller than the
+                    // rented bucket.
+                    message = TransportBufferPool.Rent(payloadLength);
+                    messageLength = payloadLength;
                     System.Array.Copy(data, payloadOffset, message, 0, payloadLength);
                 }
                 else
@@ -744,14 +765,15 @@ namespace GlobalFront.Server.Transport
                     }
 
                     state.SeqByMessageId[messageId] = sequence;
-                    message = state.Assembler.AddFragment(
+                    message = state.Assembler.AddFragmentPooled(
                         messageId,
                         fragmentIndex,
                         fragmentCount,
                         data,
                         payloadOffset,
                         payloadLength,
-                        _clock.NowMs);
+                        _clock.NowMs,
+                        out messageLength);
                     if (message != null)
                     {
                         state.SeqByMessageId.Remove(messageId);
@@ -802,7 +824,7 @@ namespace GlobalFront.Server.Transport
                     ConnectionId = connectionId,
                     Channel = TransportChannel.Snapshot,
                     Data = message,
-                    Length = message.Length
+                    Length = messageLength
                 });
             }
         }

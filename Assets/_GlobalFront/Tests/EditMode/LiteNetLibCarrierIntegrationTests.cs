@@ -687,9 +687,9 @@ namespace GlobalFront.Tests.EditMode
             handle(connectionId, seed, 0, seed.Length);
             DrainEvents(carrier);
 
-            // N-02: fragment slices are pooled. A completion's only
-            // remaining allocation is the assembled message handed to the
-            // event queue; the slice comes from ArrayPool.
+            // N-02: fragment slices and the assembled message are pooled. A
+            // completion allocates at most the assembled message handed to the
+            // event queue, and that buffer may come from the carrier's pool.
             var baseline = CountCurrentThreadGcAllocations(
                 () =>
                 {
@@ -703,9 +703,9 @@ namespace GlobalFront.Tests.EditMode
 
             Assert.That(baseline, Is.EqualTo(1),
                 "control: the assembled payload must be visible as one GC.Alloc sample");
-            Assert.That(measured, Is.EqualTo(1),
-                "fragment slices must be pooled; the completion allocates only the assembled message");
-            Assert.That(measured - baseline, Is.EqualTo(0),
+            Assert.That(measured, Is.LessThanOrEqualTo(1),
+                "fragment slices must be pooled; the completion allocates at most the assembled message");
+            Assert.That(measured - baseline, Is.LessThanOrEqualTo(0),
                 "the latest-wins stale scan must reuse PeerSnapshotState.StaleIdsScratch");
             carrier.Dispose();
         }
@@ -746,11 +746,13 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
-        public void SingleFragmentSnapshotReceive_OwnsExactlyOnePayloadCopy()
+        public void SingleFragmentSnapshotReceive_OwnsAtMostOnePayloadCopyPerMessage()
         {
             // D-4/P1-1: a single-fragment snapshot must hand the event queue
             // one owned payload array and nothing more. The receive scratch
-            // is only valid until reader.Recycle().
+            // is only valid until reader.Recycle(); the owned array may come
+            // from the carrier's pool, so the steady-state count is at most
+            // one per message and can be zero.
             var carrier = LiteNetLibCarrier.CreateServer(new SystemTransportClock());
             var handle = BindSnapshotHandler(carrier);
             const int connectionId = 777;
@@ -787,12 +789,38 @@ namespace GlobalFront.Tests.EditMode
                     handle(connectionId, measuredA, 0, measuredA.Length);
                     handle(connectionId, measuredB, 0, measuredB.Length);
                 });
-            DrainEvents(carrier);
+            var deliveredA = default(byte[]);
+            var deliveredB = default(byte[]);
+            while (carrier.TryDequeueEvent(out var transportEvent))
+            {
+                if (transportEvent.Type != TransportEventType.Message)
+                {
+                    continue;
+                }
+
+                if (deliveredA == null)
+                {
+                    deliveredA = transportEvent.Data;
+                }
+                else
+                {
+                    deliveredB = transportEvent.Data;
+                }
+            }
 
             Assert.That(baseline, Is.EqualTo(2),
                 "control: the owned payloads must be visible as two GC.Alloc samples");
-            Assert.That(measured - baseline, Is.EqualTo(0),
-                "single-fragment receive must allocate exactly one owned payload per message");
+            Assert.That(measured - baseline, Is.LessThanOrEqualTo(0),
+                "single-fragment receive must allocate at most one owned payload per message");
+            Assert.That(deliveredA, Is.Not.Null);
+            Assert.That(deliveredB, Is.Not.Null);
+            Assert.That(ReferenceEquals(deliveredA, deliveredB), Is.False,
+                "two queued messages must not share one owned buffer");
+            Assert.That(ReferenceEquals(deliveredA, measuredA), Is.False,
+                "the delivered payload must not be the caller's scratch");
+            Assert.That(ReferenceEquals(deliveredB, measuredB), Is.False);
+            carrier.ReturnEventBuffer(deliveredA);
+            carrier.ReturnEventBuffer(deliveredB);
             carrier.Dispose();
         }
 
@@ -869,8 +897,11 @@ namespace GlobalFront.Tests.EditMode
 
         private static void DrainEvents(LiteNetLibCarrier carrier)
         {
-            while (carrier.TryDequeueEvent(out _))
+            while (carrier.TryDequeueEvent(out var transportEvent))
             {
+                // Same ownership hand-off the endpoint and host perform:
+                // the payload goes back to the carrier's pool once handled.
+                carrier.ReturnEventBuffer(transportEvent.Data);
             }
         }
 

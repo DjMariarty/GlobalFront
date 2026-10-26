@@ -529,6 +529,54 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             Assert.That(BuildOverlay().SelectionRingCount, Is.EqualTo(0));
         }
 
+        /// <summary>
+        /// A keyframe releases every view and the pool hands them back with the
+        /// selection flag cleared. The controller still holds the ids, so the repair
+        /// is what puts the rings back on the units the HUD still reports.
+        /// </summary>
+        [Test]
+        public void ResyncSelectionViews_RestoresRingsAfterAPoolRebind()
+        {
+            Spawn(1, Ax, RowZ);
+            Spawn(2, Bx, RowZ);
+            _selection.AddSelected(new EntityId(1), SlotOf(1));
+            _selection.AddSelected(new EntityId(2), SlotOf(2));
+            Assert.That(BuildOverlay().SelectionRingCount, Is.EqualTo(2));
+
+            // What Bind does to a view the pool just handed back.
+            ViewOf(1).SetSelected(false);
+            ViewOf(2).SetSelected(false);
+            Assert.That(BuildOverlay().SelectionRingCount, Is.EqualTo(0));
+
+            _selection.ResyncSelectionViews();
+
+            Assert.That(ViewOf(1).IsSelected, Is.True);
+            Assert.That(ViewOf(2).IsSelected, Is.True);
+            Assert.That(BuildOverlay().SelectionRingCount, Is.EqualTo(2));
+        }
+
+        /// <summary>
+        /// The repair runs without the prune having decided anything yet, so it has to
+        /// apply the same slot-identity rule: a recycled slot is a stranger, and a
+        /// stranger must not be switched on just because its index is still selected.
+        /// </summary>
+        [Test]
+        public void ResyncSelectionViews_DoesNotSwitchOnAStrangerInARecycledSlot()
+        {
+            var slot = Spawn(1, Ax, RowZ);
+            _selection.AddSelected(new EntityId(1), slot);
+
+            Assert.That(
+                _world.ApplyRemove(new DeltaRemoveRecord(new EntityId(1), DeltaRemoveCause.Destroyed)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+            Assert.That(Spawn(50, Bx, RowZ), Is.EqualTo(slot), "the freed slot was recycled");
+
+            _selection.ResyncSelectionViews();
+
+            Assert.That(ViewAt(slot).IsSelected, Is.False, "the slot presents entity 50, not the selected entity 1");
+            Assert.That(BuildOverlay().SelectionRingCount, Is.EqualTo(0));
+        }
+
         [Test]
         public void UnitRemovedFromTheWorld_IsPrunedWithoutThrowing()
         {

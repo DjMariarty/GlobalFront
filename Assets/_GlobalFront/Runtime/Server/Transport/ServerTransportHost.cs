@@ -127,6 +127,10 @@ namespace GlobalFront.Server.Transport
                     // strand the remaining events in the carrier queue.
                     _carrier.Metrics.DroppedMalformed++;
                 }
+                finally
+                {
+                    _carrier.ReturnEventBuffer(transportEvent.Data);
+                }
             }
             DrainPendingAcks();
         }

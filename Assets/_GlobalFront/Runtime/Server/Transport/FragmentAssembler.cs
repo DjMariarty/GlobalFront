@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Collections.Generic;
 
 namespace GlobalFront.Server.Transport
@@ -55,6 +54,14 @@ namespace GlobalFront.Server.Transport
     /// </summary>
     public sealed class FragmentAssembler
     {
+        /// <summary>
+        /// Slots a pooled group carries without growing. Snapshots are a few
+        /// kilobytes against 1171-byte fragments, so a handful is the norm; the
+        /// capacity exists to keep the per-fragment bookkeeping out of the
+        /// steady-state GC path as fragment counts vary.
+        /// </summary>
+        private const int InitialFragmentCapacity = 16;
+
         private sealed class Group
         {
             public ushort MessageId;
@@ -63,8 +70,8 @@ namespace GlobalFront.Server.Transport
             public int TotalBytes;
             public long StartedAtMs;
             public long LastActivityMs;
-            public byte[][] Fragments;
-            public int[] FragmentLengths;
+            public byte[][] Fragments = new byte[InitialFragmentCapacity][];
+            public int[] FragmentLengths = new int[InitialFragmentCapacity];
         }
 
         private readonly List<Group> _groups = new List<Group>();
@@ -98,8 +105,57 @@ namespace GlobalFront.Server.Transport
             byte[] data,
             int offset,
             int length,
-            long nowMs)
+            long nowMs) =>
+            AddFragmentCore(
+                messageId,
+                fragmentIndex,
+                fragmentCount,
+                data,
+                offset,
+                length,
+                nowMs,
+                pooledMessage: false,
+                out _);
+
+        /// <summary>
+        /// <see cref="AddFragment"/> for the transport receive path: the
+        /// assembled message is rented from <see cref="TransportBufferPool"/>
+        /// and must be returned by the event consumer, and
+        /// <paramref name="messageLength"/> carries the logical size because the
+        /// rented buffer may be larger.
+        /// </summary>
+        public byte[] AddFragmentPooled(
+            ushort messageId,
+            ushort fragmentIndex,
+            ushort fragmentCount,
+            byte[] data,
+            int offset,
+            int length,
+            long nowMs,
+            out int messageLength) =>
+            AddFragmentCore(
+                messageId,
+                fragmentIndex,
+                fragmentCount,
+                data,
+                offset,
+                length,
+                nowMs,
+                pooledMessage: true,
+                out messageLength);
+
+        private byte[] AddFragmentCore(
+            ushort messageId,
+            ushort fragmentIndex,
+            ushort fragmentCount,
+            byte[] data,
+            int offset,
+            int length,
+            long nowMs,
+            bool pooledMessage,
+            out int messageLength)
         {
+            messageLength = 0;
             Expire(nowMs);
 
             if (fragmentCount <= 1 ||
@@ -155,7 +211,7 @@ namespace GlobalFront.Server.Transport
                 return null;
             }
 
-            var slice = ArrayPool<byte>.Shared.Rent(length);
+            var slice = TransportBufferPool.Rent(length);
             System.Array.Copy(data, offset, slice, 0, length);
             group.Fragments[fragmentIndex] = slice;
             group.FragmentLengths[fragmentIndex] = length;
@@ -176,7 +232,10 @@ namespace GlobalFront.Server.Transport
             }
 
             _groups.Remove(group);
-            var message = new byte[group.TotalBytes];
+            var message = pooledMessage
+                ? TransportBufferPool.Rent(group.TotalBytes)
+                : new byte[group.TotalBytes];
+            messageLength = group.TotalBytes;
             var writeOffset = 0;
             for (var index = 0; index < group.FragmentCount; index++)
             {
@@ -286,37 +345,32 @@ namespace GlobalFront.Server.Transport
             group.TotalBytes = 0;
             group.StartedAtMs = nowMs;
             group.LastActivityMs = nowMs;
-            group.Fragments = ArrayPool<byte[]>.Shared.Rent(fragmentCount);
-            System.Array.Clear(group.Fragments, 0, group.Fragments.Length);
-            group.FragmentLengths = ArrayPool<int>.Shared.Rent(fragmentCount);
+            if (group.Fragments.Length < fragmentCount)
+            {
+                group.Fragments = new byte[fragmentCount][];
+                group.FragmentLengths = new int[fragmentCount];
+            }
+
+            System.Array.Clear(group.Fragments, 0, fragmentCount);
             return group;
         }
 
         private void ReleaseGroup(Group group)
         {
             var fragments = group.Fragments;
-            if (fragments != null)
+            for (var index = 0; index < group.FragmentCount && index < fragments.Length; index++)
             {
-                for (var index = 0; index < fragments.Length; index++)
+                var slice = fragments[index];
+                if (slice != null)
                 {
-                    var slice = fragments[index];
-                    if (slice != null)
-                    {
-                        fragments[index] = null;
-                        ArrayPool<byte>.Shared.Return(slice);
-                    }
+                    fragments[index] = null;
+                    TransportBufferPool.Return(slice);
                 }
-
-                ArrayPool<byte[]>.Shared.Return(fragments);
-                group.Fragments = null;
             }
 
-            if (group.FragmentLengths != null)
-            {
-                ArrayPool<int>.Shared.Return(group.FragmentLengths);
-                group.FragmentLengths = null;
-            }
-
+            // The arrays stay with the pooled Group: a snapshot's fragment
+            // count is the same shape on the next message, and handing them
+            // back to ArrayPool would make the worker's next rent allocate.
             group.MessageId = 0;
             group.FragmentCount = 0;
             group.ReceivedCount = 0;

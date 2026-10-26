@@ -41,6 +41,15 @@ namespace GlobalFront.Client.UI
         public const float RowPitchPixels = 22f;
 
         /// <summary>
+        /// Left edge of the value column, in panel pixels. One column for every row:
+        /// per-row offsets put "Selected"'s count on top of the word and printed the
+        /// Structure count inside its own label. The longest archetype name, "Base
+        /// structure", measures about 111 px at the panel's 16 px font — 112 left a
+        /// one-pixel gap, so the column starts at 124.
+        /// </summary>
+        public const float ValueColumnX = 124f;
+
+        /// <summary>
         /// Gap between the panel's top edge and the first row's, in pixels. Nine rows at
         /// <see cref="RowPitchPixels"/> leave ten over in the default panel, and all of
         /// them go here: a panel that grows a tenth row pushes it past the bottom edge,
@@ -163,29 +172,29 @@ namespace GlobalFront.Client.UI
             _panelRect.localScale = Vector3.one;
 
             var row = 0;
-            _countValue = CreateRow(_panelRect, "Selected", row++, 64f).value;
+            _countValue = CreateRow(_panelRect, "Selected", row++, ValueColumnX).value;
 
             // The archetype rows are laid out for every kind the wire can carry, using
             // the kind's own name as a placeholder, because the panel is built before a
             // catalog has necessarily been chosen. Configure replaces the labels with
             // the display names the catalog actually resolves.
-            var scoutRow = CreateRow(_panelRect, "Scout", row++, 48f);
+            var scoutRow = CreateRow(_panelRect, "Scout", row++, ValueColumnX);
             _kindLabels[UnitKinds.Scout] = scoutRow.label;
             _kindValues[UnitKinds.Scout] = scoutRow.value;
 
-            var tankRow = CreateRow(_panelRect, "Tank", row++, 48f);
+            var tankRow = CreateRow(_panelRect, "Tank", row++, ValueColumnX);
             _kindLabels[UnitKinds.Tank] = tankRow.label;
             _kindValues[UnitKinds.Tank] = tankRow.value;
 
-            var structureRow = CreateRow(_panelRect, "Structure", row++, 48f);
+            var structureRow = CreateRow(_panelRect, "Structure", row++, ValueColumnX);
             _kindLabels[UnitKinds.BaseStructure] = structureRow.label;
             _kindValues[UnitKinds.BaseStructure] = structureRow.value;
 
-            _healthValue = CreateRow(_panelRect, "Health", row++, 160f).value;
-            _commandValue = CreateRow(_panelRect, "Order", row++, 88f).value;
-            _rejectionValue = CreateRow(_panelRect, "Result", row++, 128f).value;
-            _issuedValue = CreateRow(_panelRect, "Issued", row++, 64f).value;
-            _refusedValue = CreateRow(_panelRect, "Refused", row++, 88f).value;
+            _healthValue = CreateRow(_panelRect, "Health", row++, ValueColumnX).value;
+            _commandValue = CreateRow(_panelRect, "Order", row++, ValueColumnX).value;
+            _rejectionValue = CreateRow(_panelRect, "Result", row++, ValueColumnX).value;
+            _issuedValue = CreateRow(_panelRect, "Issued", row++, ValueColumnX).value;
+            _refusedValue = CreateRow(_panelRect, "Refused", row++, ValueColumnX).value;
 
             ResetCache();
             return true;

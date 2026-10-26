@@ -179,7 +179,14 @@ namespace GlobalFront.Server.Transport
             _carrier.Pump(nowMs);
             while (_carrier.TryDequeueEvent(out var transportEvent))
             {
-                HandleEvent(transportEvent);
+                try
+                {
+                    HandleEvent(transportEvent);
+                }
+                finally
+                {
+                    _carrier.ReturnEventBuffer(transportEvent.Data);
+                }
             }
 
             // Abort a reconnect socket whose connect/handshake never

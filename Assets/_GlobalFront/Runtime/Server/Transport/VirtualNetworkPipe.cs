@@ -73,6 +73,14 @@ namespace GlobalFront.Server.Transport
         /// <summary>Dequeues the next event; host thread only.</summary>
         bool TryDequeueEvent(out TransportEvent transportEvent);
 
+        /// <summary>
+        /// Returns <see cref="TransportEvent.Data"/> once the consumer has
+        /// finished handling the event. Carriers that hand out arrays they did
+        /// not allocate ignore it; this keeps a pooling carrier's buffers in
+        /// circulation instead of leaving one GC object per message.
+        /// </summary>
+        void ReturnEventBuffer(byte[] buffer) { }
+
         /// <summary>Current event queue depth (bounded).</summary>
         int EventQueueDepth { get; }
     }

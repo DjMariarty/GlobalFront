@@ -4,6 +4,7 @@
   "references": [
     "GlobalFront.Core",
     "GlobalFront.Server",
+    "GlobalFront.ServerHost",
     "Unity.InputSystem",
     "Unity.RenderPipelines.Core.Runtime",
     "Unity.RenderPipelines.Universal.Runtime",

@@ -2840,6 +2840,15 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                     label.rectTransform.anchoredPosition.y,
                     Is.EqualTo(y),
                     $"the {labels[index]} label and its value are on different lines");
+
+                Assert.That(
+                    value.rectTransform.anchoredPosition.x,
+                    Is.EqualTo(SelectionHudPresenter.ValueColumnX),
+                    $"the {labels[index]} value is not in the panel's one value column");
+                Assert.That(
+                    label.rectTransform.anchoredPosition.x,
+                    Is.LessThan(SelectionHudPresenter.ValueColumnX),
+                    $"the {labels[index]} label starts at or past the value column");
             }
         }
 
