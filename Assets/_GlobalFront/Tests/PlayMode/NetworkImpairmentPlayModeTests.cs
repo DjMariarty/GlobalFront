@@ -413,36 +413,26 @@ namespace GlobalFront.Tests.PlayMode
                 "the other client must keep streaming through the recovery");
 
             // OD-18/OD-20: the host stays paused while the client counts down.
-            // The frame loop owns the countdown; it is advanced by real elapsed
-            // time exactly as TacticalVerticalSliceRunner.Update does, never by
-            // a one-shot 5-second jump. The wire signal is the only resume path.
+            // RemoteSliceSession.Pump owns the countdown clock; PumpClients
+            // advances it with real elapsed time. The wire signal is the only
+            // resume path.
             Assert.That(_server.Host.IsPaused, Is.True,
                 "the dedicated host must remain paused during the client countdown");
 
-            var lastCountdownMs = session.Clock.NowMs;
             var sawCountdown = false;
             yield return WaitFor(
                 () =>
                 {
                     PumpClients();
-                    var nowMs = session.Clock.NowMs;
-                    var deltaSeconds = (nowMs - lastCountdownMs) / 1000f;
-                    lastCountdownMs = nowMs;
-                    if (deltaSeconds > 0.25f)
-                    {
-                        deltaSeconds = 0.25f;
-                    }
-
                     if (session.ReconnectCoordinator.State == ClientReconnectState.Countdown)
                     {
                         sawCountdown = true;
                     }
 
-                    session.AdvanceReconnectCountdown(deltaSeconds);
                     return sawCountdown && !_server.Host.IsPaused;
                 },
                 ReconnectFsmTimeoutSeconds,
-                "the dedicated host must auto-resume after the frame-driven " +
+                "the dedicated host must auto-resume after the session-pump " +
                 "OD-20 countdown and C0 ClientReadyToResume signal");
 
             Assert.That(sawCountdown, Is.True,

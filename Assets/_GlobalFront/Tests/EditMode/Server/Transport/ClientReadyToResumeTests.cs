@@ -304,7 +304,7 @@ namespace GlobalFront.Tests.EditMode.Server.Transport
         }
 
         [Test]
-        public void Session_AdvanceReconnectCountdown_TicksFrameTime()
+        public void Session_PumpTicksCountdownByElapsedTime()
         {
             var established = CreateEstablishedSession(failFirstReadySend: false);
             try
@@ -313,19 +313,27 @@ namespace GlobalFront.Tests.EditMode.Server.Transport
                 var coordinator = established.Session.ReconnectCoordinator;
                 var remaining = coordinator.CountdownRemainingSeconds;
 
-                established.Session.AdvanceReconnectCountdown(0f);
-                established.Session.AdvanceReconnectCountdown(-1f);
-                established.Session.AdvanceReconnectCountdown(float.NaN);
-                established.Session.AdvanceReconnectCountdown(float.PositiveInfinity);
+                // The first Countdown pump only anchors the session clock.
+                established.Pump(5);
                 Assert.That(coordinator.CountdownRemainingSeconds, Is.EqualTo(remaining),
-                    "non-finite and non-positive deltas must not move the countdown");
+                    "the first Countdown pump must not move the countdown");
 
-                established.Session.AdvanceReconnectCountdown(2f);
+                for (var index = 0; index < 20; index++)
+                {
+                    established.Pump(100);
+                }
+
                 Assert.That(coordinator.CountdownRemainingSeconds,
-                    Is.EqualTo(remaining - 2f).Within(0.0001f));
+                    Is.EqualTo(remaining - 2f).Within(0.001f),
+                    "Pump must advance the countdown by the elapsed session time");
 
-                established.Session.AdvanceReconnectCountdown(3f);
-                Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Connected));
+                for (var index = 0; index < 30; index++)
+                {
+                    established.Pump(100);
+                }
+
+                Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Connected),
+                    "five seconds of session pumps must finish the countdown");
             }
             finally
             {
@@ -343,8 +351,13 @@ namespace GlobalFront.Tests.EditMode.Server.Transport
                 established.Rig.ServerTransport.ClientReadyToResumeReceived += _ => received++;
                 DriveToCountdown(established.Session);
 
-                established.Session.AdvanceReconnectCountdown(
-                    ClientReconnectCoordinator.DefaultCountdownSeconds);
+                // Anchor the clock, then let five seconds of real session
+                // pumps complete the countdown.
+                established.Pump(5);
+                for (var index = 0; index < 50; index++)
+                {
+                    established.Pump(100);
+                }
 
                 Assert.That(established.Carrier.ReadySendAttempts, Is.EqualTo(1));
                 Assert.That(established.Carrier.FailedReadySends, Is.EqualTo(1));

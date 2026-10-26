@@ -1246,10 +1246,7 @@ namespace GlobalFront.Client.Presentation
 
                 _clockSeconds = _remoteSession.Clock.NowMs / 1000.0;
 
-                // The dedicated client owns the frame clock: the OD-20
-                // countdown must elapse from real Update time, not from a
-                // game-layer manual jump.
-                _remoteSession.AdvanceReconnectCountdown(Time.unscaledDeltaTime);
+                // RemoteSliceSession.Pump owns the OD-20 countdown clock.
                 PumpNetwork(_remoteSession.Clock.NowMs);
                 StepPresentationFrame(Time.unscaledDeltaTime, Time.unscaledTimeAsDouble);
                 return;

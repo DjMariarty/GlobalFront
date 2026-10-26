@@ -51,6 +51,7 @@ namespace GlobalFront.Client
         private long _lastReconnectAttemptMs;
         private bool _hasReconnectAttempt;
         private bool _readyToResumePending;
+        private long _lastCountdownPumpMs;
 
         /// <summary>
         /// Builds a session over the supplied carrier and clock. Both are
@@ -212,6 +213,7 @@ namespace GlobalFront.Client
             Endpoint.Pump(nowMs);
             _bridge.Pump(nowMs);
             TryAutoReconnect(nowMs);
+            TickReconnectCountdown(nowMs);
             TryFlushReadyToResume();
 
             if (Endpoint.State != ClientTransportState.Established)
@@ -231,21 +233,6 @@ namespace GlobalFront.Client
             }
         }
 
-        /// <summary>
-        /// Advances the client-local OD-20 countdown from the owning frame
-        /// loop. The dedicated client calls this once per Update with real
-        /// elapsed time; a manual-testing slice may step it directly.
-        /// </summary>
-        public void AdvanceReconnectCountdown(float deltaSeconds)
-        {
-            if (_disposed || !(deltaSeconds > 0f) || float.IsInfinity(deltaSeconds))
-            {
-                return;
-            }
-
-            ReconnectCoordinator.AdvanceCountdown(deltaSeconds, out _);
-        }
-
         public void Dispose()
         {
             if (_disposed)
@@ -255,6 +242,7 @@ namespace GlobalFront.Client
 
             _disposed = true;
             _readyToResumePending = false;
+            _lastCountdownPumpMs = 0;
             Endpoint.PongReceived -= _onPong;
             Endpoint.Attached -= _onAttached;
             Endpoint.Lost -= _onLost;
@@ -285,6 +273,7 @@ namespace GlobalFront.Client
             // A signal owed to the old socket is moot: the next reconnect
             // cycle installs a new keyframe and raises a fresh ReadyToResume.
             _readyToResumePending = false;
+            _lastCountdownPumpMs = 0;
             _hasReconnectAttempt = false;
             ReconnectAttemptCount = 0;
             ReconnectCoordinator.OnTransportDisconnected(reason);
@@ -333,9 +322,35 @@ namespace GlobalFront.Client
         private void OnCoordinatorReadyToResume()
         {
             // The countdown is client-local; the server learns about its
-            // completion only through this authoritative C0 signal.
+            // completion only through the authoritative C0 signal. Pump owns
+            // the send path so one frame can never attempt it twice.
             _readyToResumePending = true;
-            TryFlushReadyToResume();
+        }
+
+        private void TickReconnectCountdown(long nowMs)
+        {
+            if (ReconnectCoordinator.State != ClientReconnectState.Countdown)
+            {
+                _lastCountdownPumpMs = 0;
+                return;
+            }
+
+            if (_lastCountdownPumpMs == 0)
+            {
+                _lastCountdownPumpMs = nowMs;
+                return;
+            }
+
+            var elapsedMs = nowMs - _lastCountdownPumpMs;
+            _lastCountdownPumpMs = nowMs;
+            if (elapsedMs <= 0)
+            {
+                return;
+            }
+
+            // The session owns the OD-20 clock: no presentation or test layer
+            // may advance this countdown a second time.
+            ReconnectCoordinator.AdvanceCountdown(elapsedMs / 1000f, out _);
         }
 
         private void TryFlushReadyToResume()

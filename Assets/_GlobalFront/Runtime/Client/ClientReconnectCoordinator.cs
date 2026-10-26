@@ -40,6 +40,10 @@ namespace GlobalFront.Client
     {
         public const float DefaultCountdownSeconds = 5.0f;
 
+        // Frame-by-frame float subtraction (e.g. 50 x 0.1 s) can leave a
+        // positive residue around 1e-6, so a strict "<= 0" never completes.
+        private const float CompletionEpsilonSeconds = 0.0005f;
+
         private readonly ClientReplicationReceiver _replicationReceiver;
 
         public SessionId SessionId { get; private set; }
@@ -196,7 +200,7 @@ namespace GlobalFront.Client
             if (State == ClientReconnectState.Countdown)
             {
                 CountdownRemainingSeconds -= deltaSeconds;
-                if (CountdownRemainingSeconds <= 0f)
+                if (CountdownRemainingSeconds <= CompletionEpsilonSeconds)
                 {
                     CountdownRemainingSeconds = 0f;
                     SetState(ClientReconnectState.Connected);
