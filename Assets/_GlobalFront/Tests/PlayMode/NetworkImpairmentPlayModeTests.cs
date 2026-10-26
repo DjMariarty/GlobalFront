@@ -41,8 +41,21 @@ namespace GlobalFront.Tests.PlayMode
         private const float HandshakeTimeoutSeconds = 25f;
         private const float BaselineTimeoutSeconds = 25f;
         private const float DeliveryTimeoutSeconds = 20f;
+
+        // Replicated snapshots ride the Sequenced channel: a lost one is not
+        // retransmitted, it is superseded by the next paced snapshot. Under a
+        // loaded editor that pacing plus 5% loss can push delivery past the
+        // command-ack budget, so delta waits get their own, wider margin.
+        private const float DeltaDeliveryTimeoutSeconds = 30f;
+
         private const float RttWitnessTimeoutSeconds = 10f;
         private const float ReconnectFsmTimeoutSeconds = 10f;
+
+        // 5000 mm of move at 350 mm/tick arrives after 15 ticks. Twenty gives
+        // the command tick and the last partial step; past that the unit is
+        // stationary, so later snapshots carry the same position and the
+        // authority comparison below stays exact.
+        private const int PostCommandTicks = 20;
 
         private const int LossPercent = 5;
         private const int ReconnectLossPercent = 4;
@@ -222,25 +235,35 @@ namespace GlobalFront.Tests.PlayMode
                 $"the authoritative move was rejected: {acknowledgements[0].Session}/" +
                 $"{acknowledgements[0].Command}");
 
-            for (var index = 0; index < 3; index++)
+            for (var index = 0; index < PostCommandTicks; index++)
             {
                 _server.Host.TickOnce();
             }
 
             var targetTick = _server.Host.CurrentTick;
 
+            // The server has no real-time tick driver in this fixture. Keep
+            // ticking while the delta is in flight, or a single lost snapshot
+            // would have no successor to deliver the move: the unit is already
+            // at its destination, so these extra ticks change no position.
             yield return WaitFor(
                 () =>
                 {
                     PumpClients();
-                    return sessionA.Receiver.LastAppliedTick >= targetTick &&
+                    if (sessionA.Receiver.LastAppliedTick >= targetTick &&
                         sessionB.Receiver.LastAppliedTick >= targetTick &&
                         sessionA.World.TryGet(entityA, out var movedA) &&
                         movedA.Position != start.Position &&
                         sessionB.World.TryGet(entityA, out var movedB) &&
-                        movedB.Position != start.Position;
+                        movedB.Position != start.Position)
+                    {
+                        return true;
+                    }
+
+                    _server.Host.TickOnce();
+                    return false;
                 },
-                DeliveryTimeoutSeconds,
+                DeltaDeliveryTimeoutSeconds,
                 "both clients must receive the delta carrying the move");
 
             Assert.That(_server.Host.Server.TryGetUnit(entityA, out var serverUnit), Is.True);
@@ -472,22 +495,31 @@ namespace GlobalFront.Tests.PlayMode
                 $"the post-reconnect move was rejected: {acknowledgements[0].Session}/" +
                 $"{acknowledgements[0].Command}");
 
-            for (var index = 0; index < 3; index++)
+            for (var index = 0; index < PostCommandTicks; index++)
             {
                 _server.Host.TickOnce();
             }
 
             var targetTick = _server.Host.CurrentTick;
 
+            // Same tick-source rule as the pre-reconnect delta: the unit is
+            // already stationary, and a superseding snapshot is what recovers
+            // a lost one.
             yield return WaitFor(
                 () =>
                 {
                     PumpClients();
-                    return session.Receiver.LastAppliedTick >= targetTick &&
+                    if (session.Receiver.LastAppliedTick >= targetTick &&
                         session.World.TryGet(entity, out var moved) &&
-                        moved.Position != restored.Position;
+                        moved.Position != restored.Position)
+                    {
+                        return true;
+                    }
+
+                    _server.Host.TickOnce();
+                    return false;
                 },
-                DeliveryTimeoutSeconds,
+                DeltaDeliveryTimeoutSeconds,
                 () => "the rebound session must receive post-reconnect deltas; " +
                     $"paused={_server.Host.IsPaused}, tick={_server.Host.CurrentTick}, " +
                     $"target={targetTick}, applied={session.Receiver.LastAppliedTick}, " +
@@ -729,7 +761,7 @@ namespace GlobalFront.Tests.PlayMode
                     return session.Receiver.LastAppliedTick >= resumeTarget &&
                         session.Receiver.State == ReplicationReceiverState.Streaming;
                 },
-                DeliveryTimeoutSeconds,
+                DeltaDeliveryTimeoutSeconds,
                 "replication must resume after the loss rate is restored to 5%");
         }
 
