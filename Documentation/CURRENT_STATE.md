@@ -30,7 +30,7 @@
 - **Шаг 4.6.2 (Impairment Harness & Presets, Wi-Fi 1% / WAN 5% + Burst):** [COMPLETE / COMMITTED `1b38f05`]. Пресеты `Lan`/`Wifi`/`Wan`, детерминированная burst-модель потерь, телеметрия `SentCount`/`DroppedCount`/`DeliveredCount`. 5 новых EditMode-тестов. Гейт: EditMode **1316/1316**, PlayMode **17/17**.
 - **Шаг 4.6.3 (Parity under Loss/Latency on 400 Units, OD-40 / OD-43):** [COMPLETE / COMMITTED `4d15ace`]. Паритет 400 юнитов под 1% и 5% потерями (120 тиков боя, zero desyncs, `ChecksumMismatchCount == 0`, `AssertWorldsMatch`), keyframe-rebase после 150-тикового обрыва. 3 новых EditMode-теста. Гейт: EditMode **1319/1319**, PlayMode **17/17**.
 - **Шаг 4.6.4 (Live UDP PlayMode Harness & Reconnect Path B):** [COMPLETE / COMMITTED `1eeb3d2`, `491811c`, `3eca5de`]. Сборка LiteNetLib с `SIMULATE_NETWORK`; 2 live PlayMode-теста на реальных UDP-сокетах под 5% и 4% потерями; C0 Opcode 14 `ClientReadyToResume` авто-возобновление сервера по окончании countdown. Гейт: EditMode **1332/1332**, PlayMode **21/21**.
-- **Шаг 4.6.5 (5-Minute 400-Unit Playtest, Full HD Visual Evidence, Polish & Zero-GC Transport):** [COMPLETE / COMMITTED `666f89f`, `828c55d`, `ff344a9`, `366e444`].
+- **Шаг 4.6.5 (5-Minute 400-Unit Playtest, Full HD Visual Evidence, Polish & Zero-GC Transport):** [COMPLETE / COMMITTED `666f89f`, `828c55d`, `ff344a9`, `366e444`, `1bac832`].
   - Step 1: Pump-owned countdown ticker с epsilon threshold и single-attempt flush.
   - Step 2: `TacticalPauseOverlay` интегрирован с `NetworkHudPresenter` и presentation loop.
   - Step 3: Синтетический 400-юнитный PlayMode-тест (`SyntheticPlaytestPlayModeTests`), 1080p capture harness (`PlaytestScreenshotCapture`), прогрев пула при первом keyframe.
@@ -39,13 +39,14 @@
     2. Единый столбец значений HUD (`ValueColumnX = 124f`), исключающий наложения текста.
     3. Честный HP в бою: спавн 100 HP (согласован с `UnitCatalog`), встречный бой лоб в лоб с уроном (`03_clash_combat.png` — 74% HP, `05_reconnected_and_resumed.png` — 50% HP).
     4. Интерактивная точка входа `GlobalFront/Playtest/Launch 400-Unit Dedicated Match` (`InteractivePlaytestBootstrap.cs`).
-    5. Архитектурный Zero-GC фикс транспорта: `TransportBufferPool.cs`, возврат буферов после обработки событий, пул ассемблера фрагментов — **0 блоков / 0 байт GC.Alloc** под непрерывным боем 402 юнитов!
+    5. Архитектурный Zero-GC фикс транспорта: `TransportBufferPool.cs`, возврат буферов после обработки событий, пул ассемблера фрагментов — **0 блоков / 0 байт GC.Alloc** под непрерывным боем 402 юнитов.
+    6. Стабилизация `NetworkImpairmentPlayModeTests.cs` (`1bac832`): пошаговая откачка тиков сервера во время ожидания дельт при 5% потерь пакетов, устранившая таймауты под нагрузкой полного пакета тестов.
   - Гейт: EditMode **1334/1334**, PlayMode **22/22** (всего **1356/1356 passed**).
   - Артефакты: 6 скриншотов 1080p (`Artifacts/Playtest/01_spawn_and_fog.png` .. `06_interactive_menu.png`), `playtest_metrics.json`.
 
 ## Last Commit
 
-`366e444` (`feat(playtest): polish synthetic playtest, selection rings resync, HUD layout, and interactive bootstrap`)
+`1bac832` (`fix(tests): advance manual server ticks while awaiting deltas under UDP packet loss`)
 
 ## Tests
 
@@ -103,7 +104,8 @@
 - **[CLOSED for dedicated / PARTIAL for slice] (Phase 4.4.1 runner residual)**: `DedicatedServerRunner` теперь устанавливает включённый `FogOfWarReplicationFilter` (`step454`); `TacticalVerticalSliceRunner` подключает фильтр, но держит его выключенным в локальном loopback: армии демо спавнятся в 80 м при радиусе обзора 20 м.
 - **[CLOSED] (Phase 4.5.1 reconnect loop residual)**: `ClientTransportEndpoint.Reconnect` + `RemoteSliceSession.TryReconnect` создают заменяющий сокет и отправляют C0-запрос с кэшированным секретом; токен приходит в `ReconnectResponse` и усыновляется endpoint'ом. Авто-ретрай каждые 500 мс в `Pump`, таймаут 2000 мс.
 - **[CLOSED] (Phase 4.5.3 reconnect token residual)**: `ReconnectResponse.Token` (байты 21..28) доносит токен ребинда до `ClientTransportEndpoint`, который назначает его carrier'у.
-- **[CLOSED] (Phase 4.6.4 / 4.6.5 polish)**: Polish Sprint закрыл resync колец выделения (`ResyncSelectionViews()`), единый 124px столбец значений HUD, боевую убыль HP (74% и 50%), интерактивную точку входа `GlobalFront/Playtest/Launch 400-Unit Dedicated Match` и Zero-GC буферный пул транспорта (`TransportBufferPool.cs`).
+- **[CLOSED] (Phase 4.6.4 / 4.6.5 polish)**: Polish Sprint закрыл resync колец выделения (`ResyncSelectionViews()`), единый 124px столбец значений HUD, боевую убыль HP (74% и 50%), интерактивную точку входа `GlobalFront/Playtest/Launch 400-Unit Dedicated Match`, Zero-GC буферный пул транспорта (`TransportBufferPool.cs`) и стабилизацию таймаутов `NetworkImpairmentPlayModeTests.cs`.
+- **[P2 Informational] (Full-Suite LiteNetLib GC residual)**: при прогоне полного пакета из 22 PlayMode-тестов в редакторе периодически фиксируются 2–8 блоков GC.Alloc в Recorder; контрольный эксперимент доказал, что TransportBufferPool и ReturnEventBuffer не аллоцируют (`poolMisses = 0`), а остаток исходит из внутреннего send/ARQ пути стороннего LiteNetLib под нагрузкой фоновых потоков редактора. В изолированном запуске — стабильно 0 blocks / 0 bytes.
 - **[OPEN] (Phase 4.4.2 lead ceiling residual)**: `CalculateLeadTicks` реализован точно по формуле брифа и не клампится. При RTT выше ~4.5 с (`1 + 12 render + 2 + ceil(RTT/100ms) > 60`) `RequestedTick` выйдет за `AcceptedFutureTicks` и сервер ответит `HeaderRejected`; для LAN/обычного интернета запас велик (RTT 100 мс → lead ≈ 8 тиков).
 
 ## Important Constraints

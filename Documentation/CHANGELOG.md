@@ -51,7 +51,7 @@
 - Phase 4.6.2 Impairment Harness & Presets (Wi-Fi/WAN/Burst) — COMPLETE (`1b38f05`).
 - Phase 4.6.3 Parity under Loss/Latency on 400 Units — COMPLETE (`4d15ace`, OD-40, OD-43).
 - Phase 4.6.4 Live UDP PlayMode Harness & Reconnect Path B — COMPLETE (`1eeb3d2`, `491811c`, `3eca5de`).
-- Phase 4.6.5 5-Minute 400-Unit Playtest, Full HD Visual Evidence, Polish & Zero-GC Transport — COMPLETE (`666f89f`, `828c55d`, `ff344a9`, `366e444`).
+- Phase 4.6.5 5-Minute 400-Unit Playtest, Full HD Visual Evidence, Polish & Zero-GC Transport — COMPLETE (`666f89f`, `828c55d`, `ff344a9`, `366e444`, `1bac832`).
 
 ### Verified
 
@@ -66,6 +66,7 @@
 
 | Commit | Milestone |
 |---|---|
+| `1bac832` | Phase 4.6.5 stabilization: manual server tick pump during post-command delta waits under loss |
 | `366e444` | Phase 4.6.5 Polish Sprint: selection rings resync, HUD 124px layout, honest HP damage, interactive bootstrap, Zero-GC TransportBufferPool |
 | `ff344a9` | Phase 4.6.5 Step 3: synthetic 400-unit PlayMode test, 1080p capture harness, remote pool warming |
 | `828c55d` | Phase 4.6.5 Step 2: wire TacticalPauseOverlay to NetworkHudPresenter and frame presentation loop |
