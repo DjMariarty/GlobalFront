@@ -71,3 +71,8 @@ crashlytics-build.properties
 !/Artifacts/TestResults/.gitkeep
 /PlayModeTestResults*.xml
 /ProjectSettings/Packages/
+
+# Provenance audit tool: version the source even though *.csproj is ignored globally
+!/Artifacts/Tools/LiteNetLibProvenance/LiteNetLibProvenance.csproj
+/Artifacts/Tools/LiteNetLibProvenance/bin/
+/Artifacts/Tools/LiteNetLibProvenance/obj/

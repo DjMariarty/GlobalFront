@@ -4,11 +4,13 @@ using GlobalFront.Client;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Reconnect;
 using GlobalFront.Server;
+using GlobalFront.Server.Replication;
 using GlobalFront.Server.Sessions;
 using GlobalFront.Server.Transport;
 using GlobalFront.Tests.EditMode;
 using NUnit.Framework;
 using UnityEngine.TestTools.Constraints;
+using CoreReconnectResult = GlobalFront.Core.Reconnect.ReconnectResult;
 using Is = NUnit.Framework.Is;
 using ServerReconnectResult = GlobalFront.Server.Sessions.ReconnectResult;
 
@@ -235,8 +237,10 @@ namespace GlobalFront.Tests.EditMode.Server.Transport
         public void Host_KeepsPauseWhileAnotherSessionIsInGrace()
         {
             var host = new ServerHost(20);
-            var match = host.CreateSessionMatch(2);
+            var transport = new ResumeTransport();
+            host.AttachReplication(transport);
 
+            var match = host.CreateSessionMatch(2);
             var sessionA = host.CreateSession(host.CreateConnectionHandle());
             var sessionB = host.CreateSession(host.CreateConnectionHandle());
             Assert.That(host.TryJoinMatch(sessionA, match, out _), Is.EqualTo(JoinResult.Assigned));
@@ -246,18 +250,287 @@ namespace GlobalFront.Tests.EditMode.Server.Transport
             Assert.That(host.IsPaused, Is.True,
                 "a lost session must pause the host");
 
+            transport.Reattach(sessionA);
+            Assert.That(host.AwaitingResumeCount, Is.EqualTo(1),
+                "a reattached session must be marked as awaiting resume");
             host.OnClientReadyToResume(sessionA);
             Assert.That(host.IsPaused, Is.True,
                 "an early signal must not strand the session still in grace");
+            Assert.That(host.AwaitingResumeCount, Is.Zero,
+                "the signal is consumed even though the pause remains");
 
             var rebound = host.CreateConnectionHandle();
             Assert.That(
                 host.TryReconnectSession(sessionB, rebound, 1, out _),
                 Is.EqualTo(ServerReconnectResult.Reconnected));
 
+            transport.Reattach(sessionA);
+            transport.Reattach(sessionB);
             host.OnClientReadyToResume(sessionA);
+            Assert.That(host.IsPaused, Is.True,
+                "B must still signal before the pause lifts");
+            host.OnClientReadyToResume(sessionB);
             Assert.That(host.IsPaused, Is.False,
-                "once no session is in grace the bound signal must resume the host");
+                "grace is empty and every reattached session has signaled");
+        }
+
+        [Test]
+        public void Host_ReadyFromSessionWithoutReattach_DoesNotResume()
+        {
+            var host = new ServerHost(20);
+            host.AttachReplication(new ResumeTransport());
+            host.Pause();
+
+            host.OnClientReadyToResume(new SessionId(Guid.NewGuid()));
+            Assert.That(host.IsPaused, Is.True,
+                "an unsolicited ready signal must not resume the host");
+        }
+
+        [Test]
+        public void Host_DetachClearsAwaitingResume()
+        {
+            var host = new ServerHost(20);
+            var transport = new ResumeTransport();
+            host.AttachReplication(transport);
+            host.Pause();
+
+            var session = new SessionId(Guid.NewGuid());
+            transport.Reattach(session);
+            Assert.That(host.AwaitingResumeCount, Is.EqualTo(1));
+
+            transport.Detach(session, TransportDisconnectReason.TransportLost);
+            Assert.That(host.AwaitingResumeCount, Is.Zero,
+                "a detached session must not keep the resume latched");
+        }
+
+        [Test]
+        public void Session_AdvanceReconnectCountdown_TicksFrameTime()
+        {
+            var established = CreateEstablishedSession(failFirstReadySend: false);
+            try
+            {
+                DriveToCountdown(established.Session);
+                var coordinator = established.Session.ReconnectCoordinator;
+                var remaining = coordinator.CountdownRemainingSeconds;
+
+                established.Session.AdvanceReconnectCountdown(0f);
+                established.Session.AdvanceReconnectCountdown(-1f);
+                established.Session.AdvanceReconnectCountdown(float.NaN);
+                established.Session.AdvanceReconnectCountdown(float.PositiveInfinity);
+                Assert.That(coordinator.CountdownRemainingSeconds, Is.EqualTo(remaining),
+                    "non-finite and non-positive deltas must not move the countdown");
+
+                established.Session.AdvanceReconnectCountdown(2f);
+                Assert.That(coordinator.CountdownRemainingSeconds,
+                    Is.EqualTo(remaining - 2f).Within(0.0001f));
+
+                established.Session.AdvanceReconnectCountdown(3f);
+                Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Connected));
+            }
+            finally
+            {
+                established.Session.Dispose();
+            }
+        }
+
+        [Test]
+        public void Session_ReadySignalRetriesAfterFailedSend()
+        {
+            var established = CreateEstablishedSession(failFirstReadySend: true);
+            try
+            {
+                var received = 0;
+                established.Rig.ServerTransport.ClientReadyToResumeReceived += _ => received++;
+                DriveToCountdown(established.Session);
+
+                established.Session.AdvanceReconnectCountdown(
+                    ClientReconnectCoordinator.DefaultCountdownSeconds);
+
+                Assert.That(established.Carrier.ReadySendAttempts, Is.EqualTo(1));
+                Assert.That(established.Carrier.FailedReadySends, Is.EqualTo(1));
+                Assert.That(established.Session.HasPendingReadyToResume, Is.True,
+                    "a failed local send must keep the resume obligation latched");
+                Assert.That(received, Is.Zero);
+
+                established.Pump(5);
+                established.Pump(5);
+
+                Assert.That(established.Carrier.ReadySendAttempts, Is.EqualTo(2),
+                    "the next frame must retry the failed send");
+                Assert.That(established.Session.HasPendingReadyToResume, Is.False);
+                Assert.That(received, Is.EqualTo(1),
+                    "the retried frame must reach the host exactly once");
+
+                established.Pump(5);
+                Assert.That(received, Is.EqualTo(1),
+                    "a completed send must not repeat the signal");
+            }
+            finally
+            {
+                established.Session.Dispose();
+            }
+        }
+
+        private sealed class ResumeTransport : IReplicationTransport
+        {
+            public event Action<SessionId, MatchId, PlayerId> SessionAttached
+            {
+                add { }
+                remove { }
+            }
+
+            public event Action<SessionId, MatchId, PlayerId> SessionReattached;
+
+            public event Action<SessionId> PostSessionReattached
+            {
+                add { }
+                remove { }
+            }
+
+            public event Action<SessionId, TransportDisconnectReason> SessionDetached;
+
+            public event Action<ReplicationFeedbackMessage> FeedbackReceived
+            {
+                add { }
+                remove { }
+            }
+
+            public bool SendToSession(
+                SessionId session, ulong envelopeTick, byte[] buffer, int length) => true;
+
+            public void Reattach(SessionId session) =>
+                SessionReattached?.Invoke(session, default, default);
+
+            public void Detach(SessionId session, TransportDisconnectReason reason) =>
+                SessionDetached?.Invoke(session, reason);
+        }
+
+        private sealed class EstablishedSession
+        {
+            public TransportTestSupport.Rig Rig;
+            public RemoteSliceSession Session;
+            public FailFirstReadySendCarrier Carrier;
+
+            public void Pump(long milliseconds = 5)
+            {
+                Rig.Pump(milliseconds);
+                Session.Pump(Rig.Clock.NowMs);
+            }
+        }
+
+        private sealed class FailFirstReadySendCarrier : INetworkCarrier
+        {
+            private readonly INetworkCarrier _inner;
+
+            public bool FailReadySend;
+            public int ReadySendAttempts;
+            public int FailedReadySends;
+
+            public FailFirstReadySendCarrier(INetworkCarrier inner)
+            {
+                _inner = inner;
+            }
+
+            public TransportMetrics Metrics => _inner.Metrics;
+
+            public ITransportClock Clock => _inner.Clock;
+
+            public int EventQueueDepth => _inner.EventQueueDepth;
+
+            public void StartServer() => _inner.StartServer();
+
+            public int ConnectToServer(string host, int port) =>
+                _inner.ConnectToServer(host, port);
+
+            public bool Send(
+                int connectionId,
+                TransportChannel channel,
+                byte[] data,
+                int offset,
+                int length)
+            {
+                if (data != null &&
+                    offset >= 0 &&
+                    offset < data.Length &&
+                    length == ClientReadyToResumeCodec.SizeBytes &&
+                    data[offset] == ClientReadyToResumeCodec.Opcode)
+                {
+                    ReadySendAttempts++;
+                    if (FailReadySend)
+                    {
+                        FailReadySend = false;
+                        FailedReadySends++;
+                        return false;
+                    }
+                }
+
+                return _inner.Send(connectionId, channel, data, offset, length);
+            }
+
+            public void CloseConnection(int connectionId, TransportDisconnectReason reason) =>
+                _inner.CloseConnection(connectionId, reason);
+
+            public void AssignSessionToken(int connectionId, ulong token) =>
+                _inner.AssignSessionToken(connectionId, token);
+
+            public void Shutdown(TransportDisconnectReason reason) => _inner.Shutdown(reason);
+
+            public void Pump(long nowMs) => _inner.Pump(nowMs);
+
+            public bool TryDequeueEvent(out TransportEvent transportEvent) =>
+                _inner.TryDequeueEvent(out transportEvent);
+
+            public void Dispose() => _inner.Dispose();
+        }
+
+        private static EstablishedSession CreateEstablishedSession(bool failFirstReadySend)
+        {
+            var rig = TransportTestSupport.CreateRig(new ImpairmentProfile());
+            var address = rig.Pipe.CreateEndpoint();
+            var inner = OwnDatagramCarrier.CreateClient(
+                rig.Pipe,
+                address,
+                TransportTestSupport.ServerAddressOf(rig),
+                rig.Clock);
+            var carrier = new FailFirstReadySendCarrier(inner)
+            {
+                FailReadySend = failFirstReadySend,
+            };
+            var session = new RemoteSliceSession(carrier, rig.Clock);
+            session.Connect("virtual", 0);
+
+            for (var elapsed = 0L; elapsed < 5000; elapsed += 5)
+            {
+                rig.Pump(5);
+                session.Pump(rig.Clock.NowMs);
+                if (session.ReconnectCoordinator.State == ClientReconnectState.Connected)
+                {
+                    return new EstablishedSession
+                    {
+                        Rig = rig,
+                        Session = session,
+                        Carrier = carrier,
+                    };
+                }
+            }
+
+            session.Dispose();
+            Assert.Fail("the handshake did not establish");
+            return null;
+        }
+
+        private static void DriveToCountdown(RemoteSliceSession session)
+        {
+            var coordinator = session.ReconnectCoordinator;
+            coordinator.OnTransportDisconnected(TransportDisconnectReason.TransportLost);
+            coordinator.OnReconnectResponse(new ReconnectResponse(
+                CoreReconnectResult.Accepted,
+                session.Endpoint.Player,
+                session.Endpoint.Match,
+                0,
+                0));
+            coordinator.OnKeyframeInstalled();
+            Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Countdown));
         }
 
         private static void PumpBoth(

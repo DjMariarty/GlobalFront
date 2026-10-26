@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
@@ -62,6 +63,11 @@ namespace GlobalFront.Server
         /// </summary>
         private MatchId _activeSessionMatch;
 
+        // Sessions accepted by SessionReattached during the current pause.
+        // The host lifts the pause only after every one of them has sent
+        // ClientReadyToResume and no session remains in reconnect grace.
+        private readonly HashSet<SessionId> _awaitingResume = new HashSet<SessionId>();
+
         // Pause bookkeeping is whole nanoseconds rather than a double: the
         // architecture gate forbids floating-point instance fields in the
         // server assembly, and this value only elapses the disconnect grace
@@ -118,6 +124,7 @@ namespace GlobalFront.Server
             _tickDriver.TickDue += OnDriverTickDue;
             _sessions.SessionDisconnected += (session, tick) =>
             {
+                _awaitingResume.Remove(session);
                 if (AutoPauseOnDisconnect)
                 {
                     Pause();
@@ -187,6 +194,9 @@ namespace GlobalFront.Server
 
         /// <summary>The session-managed match started by this host, if any.</summary>
         public MatchId ActiveSessionMatch => _activeSessionMatch;
+
+        /// <summary>Sessions that must still signal readiness before the pause lifts.</summary>
+        public int AwaitingResumeCount => _awaitingResume.Count;
 
         public ulong CurrentTick => _server.CurrentTick;
 
@@ -314,6 +324,7 @@ namespace GlobalFront.Server
         /// <summary>Resumes tick calculation after tactical pause (OD-18/OD-20/P2-1).</summary>
         public void Resume()
         {
+            _awaitingResume.Clear();
             _pausedAccumulatorNanoseconds = 0;
             _pausedGraceTicks = 0;
             _tickDriver.Resume();
@@ -322,18 +333,21 @@ namespace GlobalFront.Server
 
         /// <summary>
         /// Lifts the tactical pause after a bound client's post-reconnect
-        /// countdown completed (OD-20). The pause stays while any session of
-        /// the active match is still inside its reconnect grace window, so a
-        /// single early signal cannot strand another reconnecting player.
+        /// countdown completed (OD-20). Only a session marked by
+        /// <c>SessionReattached</c> may complete a resume; the pause stays
+        /// while any session of the active match is still inside its grace
+        /// window or another reattached session has not signaled yet.
         /// </summary>
         public void OnClientReadyToResume(SessionId session)
         {
-            if (!session.IsValid)
+            if (!session.IsValid || !_awaitingResume.Remove(session))
             {
                 return;
             }
 
-            if (IsPaused && !_sessions.HasDisconnectedSessionsInGrace(_activeSessionMatch))
+            if (IsPaused &&
+                _awaitingResume.Count == 0 &&
+                !_sessions.HasDisconnectedSessionsInGrace(_activeSessionMatch))
             {
                 Resume();
             }
@@ -384,11 +398,13 @@ namespace GlobalFront.Server
 
         private void OnSessionGraceExpired(SessionId session)
         {
+            _awaitingResume.Remove(session);
             CheckAutoResumeAfterSessionChange();
         }
 
         private void OnSessionClosed(SessionId session)
         {
+            _awaitingResume.Remove(session);
             CheckAutoResumeAfterSessionChange();
         }
 
@@ -505,8 +521,10 @@ namespace GlobalFront.Server
             }
 
             TickCompleted += emitter.OnTickCompleted;
+            transport.SessionReattached += OnSessionReattached;
             transport.SessionDetached += (session, reason) =>
             {
+                _awaitingResume.Remove(session);
                 if (reason != GlobalFront.Server.Transport.TransportDisconnectReason.ClientRequested && AutoPauseOnDisconnect)
                 {
                     Pause();
@@ -515,6 +533,14 @@ namespace GlobalFront.Server
                 CheckAutoResumeAfterSessionChange();
             };
             return emitter;
+        }
+
+        private void OnSessionReattached(SessionId session, MatchId match, PlayerId player)
+        {
+            if (IsPaused)
+            {
+                _awaitingResume.Add(session);
+            }
         }
 
         public MatchCommandRejection TryEnqueueMove(
@@ -569,6 +595,7 @@ namespace GlobalFront.Server
             }
 
             _activeSessionMatch = match;
+            _awaitingResume.Clear();
             return true;
         }
 

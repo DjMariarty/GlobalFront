@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using GlobalFront.Client;
+using GlobalFront.Client.Presentation;
 using GlobalFront.Client.Replication;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Combat;
@@ -60,6 +61,8 @@ namespace GlobalFront.Tests.PlayMode
         private int _savedTargetFrameRate;
         private int _disconnectEvents;
         private bool _receiverFailed;
+        private GameObject _sliceRoot;
+        private TacticalVerticalSliceRunner _sliceRunner;
 
         [SetUp]
         public void SetUp()
@@ -72,6 +75,18 @@ namespace GlobalFront.Tests.PlayMode
         [TearDown]
         public void TearDown()
         {
+            if (_sliceRunner != null)
+            {
+                _sliceRunner.Shutdown();
+                _sliceRunner = null;
+            }
+
+            if (_sliceRoot != null)
+            {
+                Object.Destroy(_sliceRoot);
+                _sliceRoot = null;
+            }
+
             for (var index = 0; index < _sessions.Count; index++)
             {
                 _sessions[index]?.Dispose();
@@ -398,28 +413,43 @@ namespace GlobalFront.Tests.PlayMode
                 "the other client must keep streaming through the recovery");
 
             // OD-18/OD-20: the host stays paused while the client counts down.
-            // Countdown completion is published to the server as a C0
-            // ClientReadyToResume signal; no game-layer Resume call is allowed
-            // to make this pass.
+            // The frame loop owns the countdown; it is advanced by real elapsed
+            // time exactly as TacticalVerticalSliceRunner.Update does, never by
+            // a one-shot 5-second jump. The wire signal is the only resume path.
             Assert.That(_server.Host.IsPaused, Is.True,
                 "the dedicated host must remain paused during the client countdown");
-            session.ReconnectCoordinator.AdvanceCountdown(
-                ClientReconnectCoordinator.DefaultCountdownSeconds, out var readyToResume);
-            Assert.That(readyToResume, Is.True,
-                "the client countdown must complete after five seconds");
-            Assert.That(session.ReconnectCoordinator.State,
-                Is.EqualTo(ClientReconnectState.Connected),
-                "the coordinator must return to Connected after the countdown");
 
+            var lastCountdownMs = session.Clock.NowMs;
+            var sawCountdown = false;
             yield return WaitFor(
                 () =>
                 {
                     PumpClients();
-                    return !_server.Host.IsPaused;
+                    var nowMs = session.Clock.NowMs;
+                    var deltaSeconds = (nowMs - lastCountdownMs) / 1000f;
+                    lastCountdownMs = nowMs;
+                    if (deltaSeconds > 0.25f)
+                    {
+                        deltaSeconds = 0.25f;
+                    }
+
+                    if (session.ReconnectCoordinator.State == ClientReconnectState.Countdown)
+                    {
+                        sawCountdown = true;
+                    }
+
+                    session.AdvanceReconnectCountdown(deltaSeconds);
+                    return sawCountdown && !_server.Host.IsPaused;
                 },
                 ReconnectFsmTimeoutSeconds,
-                "the dedicated host must lift the pause after the client's " +
-                "C0 ClientReadyToResume signal");
+                "the dedicated host must auto-resume after the frame-driven " +
+                "OD-20 countdown and C0 ClientReadyToResume signal");
+
+            Assert.That(sawCountdown, Is.True,
+                "the coordinator must pass through the Countdown state");
+            Assert.That(session.ReconnectCoordinator.State,
+                Is.EqualTo(ClientReconnectState.Connected),
+                "the coordinator must return to Connected after the countdown");
             Assert.That(_server.Host.IsPaused, Is.False,
                 "the runtime resume protocol must unpause the dedicated host");
 
@@ -482,6 +512,52 @@ namespace GlobalFront.Tests.PlayMode
             Assert.That(session.World.TryGet(entity, out var mirrored), Is.True);
             Assert.That(mirrored.Position, Is.EqualTo(serverUnit.Position),
                 "the recovered mirror must agree with authority");
+        }
+
+        [UnityTest]
+        public IEnumerator LiveUDP_DedicatedSliceRunner_AdvancesCountdownFromUpdate()
+        {
+            StartServer(packetLoss: false, 0, latency: false);
+            var session = CreateClient(packetLoss: false, 0, latency: false);
+            session.Connect("127.0.0.1", _serverPort);
+
+            yield return WaitFor(
+                () =>
+                {
+                    PumpClients();
+                    return session.IsConnected;
+                },
+                HandshakeTimeoutSeconds,
+                "the dedicated client must complete the handshake before the slice runner starts");
+
+            _sliceRoot = new GameObject("NetworkImpairmentPlayModeTests_Slice");
+            _sliceRunner = _sliceRoot.AddComponent<TacticalVerticalSliceRunner>();
+            _sliceRunner.InitializeDedicatedClient(
+                session, createVisuals: false, autoStartRealTime: true);
+
+            var coordinator = session.ReconnectCoordinator;
+            coordinator.OnTransportDisconnected(TransportDisconnectReason.TransportLost);
+            coordinator.OnReconnectResponse(new ReconnectResponse(
+                ReconnectResult.Accepted,
+                session.Endpoint.Player,
+                session.Endpoint.Match,
+                0,
+                0));
+            coordinator.OnKeyframeInstalled();
+            Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Countdown));
+
+            var initial = coordinator.CountdownRemainingSeconds;
+            var deadline = Time.realtimeSinceStartup + 1f;
+            while (coordinator.CountdownRemainingSeconds >= initial &&
+                   Time.realtimeSinceStartup < deadline)
+            {
+                yield return null;
+            }
+
+            Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Countdown),
+                "the observation window must not consume the whole countdown");
+            Assert.That(coordinator.CountdownRemainingSeconds, Is.LessThan(initial),
+                "TacticalVerticalSliceRunner.Update must advance the OD-20 countdown");
         }
 
         /// <summary>

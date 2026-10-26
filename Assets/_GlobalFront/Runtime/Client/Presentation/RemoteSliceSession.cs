@@ -50,6 +50,7 @@ namespace GlobalFront.Client
         private bool _disposed;
         private long _lastReconnectAttemptMs;
         private bool _hasReconnectAttempt;
+        private bool _readyToResumePending;
 
         /// <summary>
         /// Builds a session over the supplied carrier and clock. Both are
@@ -141,6 +142,12 @@ namespace GlobalFront.Client
         /// <summary>Automatic attempts made in the current loss episode.</summary>
         public int ReconnectAttemptCount { get; private set; }
 
+        /// <summary>
+        /// True while a completed reconnect countdown still owes the server a
+        /// ClientReadyToResume signal. Cleared once a send is accepted.
+        /// </summary>
+        public bool HasPendingReadyToResume => _readyToResumePending;
+
         public event Action<int> RttUpdated;
 
         public event Action Connected;
@@ -205,6 +212,7 @@ namespace GlobalFront.Client
             Endpoint.Pump(nowMs);
             _bridge.Pump(nowMs);
             TryAutoReconnect(nowMs);
+            TryFlushReadyToResume();
 
             if (Endpoint.State != ClientTransportState.Established)
             {
@@ -223,6 +231,21 @@ namespace GlobalFront.Client
             }
         }
 
+        /// <summary>
+        /// Advances the client-local OD-20 countdown from the owning frame
+        /// loop. The dedicated client calls this once per Update with real
+        /// elapsed time; a manual-testing slice may step it directly.
+        /// </summary>
+        public void AdvanceReconnectCountdown(float deltaSeconds)
+        {
+            if (_disposed || !(deltaSeconds > 0f) || float.IsInfinity(deltaSeconds))
+            {
+                return;
+            }
+
+            ReconnectCoordinator.AdvanceCountdown(deltaSeconds, out _);
+        }
+
         public void Dispose()
         {
             if (_disposed)
@@ -231,6 +254,7 @@ namespace GlobalFront.Client
             }
 
             _disposed = true;
+            _readyToResumePending = false;
             Endpoint.PongReceived -= _onPong;
             Endpoint.Attached -= _onAttached;
             Endpoint.Lost -= _onLost;
@@ -258,6 +282,9 @@ namespace GlobalFront.Client
 
         private void OnLost(TransportDisconnectReason reason)
         {
+            // A signal owed to the old socket is moot: the next reconnect
+            // cycle installs a new keyframe and raises a fresh ReadyToResume.
+            _readyToResumePending = false;
             _hasReconnectAttempt = false;
             ReconnectAttemptCount = 0;
             ReconnectCoordinator.OnTransportDisconnected(reason);
@@ -307,7 +334,24 @@ namespace GlobalFront.Client
         {
             // The countdown is client-local; the server learns about its
             // completion only through this authoritative C0 signal.
-            Endpoint.TrySendReadyToResume();
+            _readyToResumePending = true;
+            TryFlushReadyToResume();
+        }
+
+        private void TryFlushReadyToResume()
+        {
+            if (!_readyToResumePending)
+            {
+                return;
+            }
+
+            // A local send can fail (queue/connection race). The reliable
+            // channel only guarantees delivery once the frame is queued, so
+            // keep the obligation and retry on the next frame until accepted.
+            if (Endpoint.TrySendReadyToResume())
+            {
+                _readyToResumePending = false;
+            }
         }
 
         private void OnDenied(ConnectDenyReason reason)

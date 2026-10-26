@@ -145,4 +145,14 @@ sha256sum LiteNetLib/bin/Release/netstandard2.0/LiteNetLib.dll
 
 The audit probe used Mono.Cecil (shipped with Unity) to enumerate public
 members and hash the IL instruction streams of the shipped, official and
-rebuilt binaries.
+rebuilt binaries. A runnable copy lives in
+`Artifacts/Tools/LiteNetLibProvenance`; from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File `
+  Artifacts\Tools\LiteNetLibProvenance\verify.ps1
+```
+
+It verifies the pinned size, SHA-256, 611-member API count, API hash and IL
+hash, and can compare the artifact against another DLL with
+`-Compare <path>`.

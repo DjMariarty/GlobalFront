@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AssemblyName>LiteNetLibProvenance</AssemblyName>
+    <RootNamespace>LiteNetLibProvenance</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(MonoCecilPath)' == ''">
+    <MonoCecilPath>C:\Program Files\Unity\Hub\Editor\6000.6.2f1\Editor\Data\il2cpp\build\deploy\Mono.Cecil.dll</MonoCecilPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Mono.Cecil">
+      <HintPath>$(MonoCecilPath)</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
