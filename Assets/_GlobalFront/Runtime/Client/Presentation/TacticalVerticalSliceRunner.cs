@@ -1129,6 +1129,7 @@ namespace GlobalFront.Client.Presentation
             if (_receiver != null && _binder != null)
             {
                 _receiver.KeyframeInstalled -= _binder.HandleResync;
+                _receiver.KeyframeInstalled -= HandleRemoteKeyframeInstalled;
             }
 
             _binder?.Detach();
@@ -1369,9 +1370,28 @@ namespace GlobalFront.Client.Presentation
             return renderDelayTicks + oneWayTicks + 2ul;
         }
 
-        private void HandleRemoteConnected()
+        /// <summary>
+        /// Warms the view pool on the first baseline of a dedicated client.
+        /// The bootstrap attaches the runner before the handshake, so the
+        /// initialization-time roster is empty; without this the 400-unit
+        /// visuals would instantiate lazily on the keyframe.
+        /// </summary>
+        private void HandleRemoteKeyframeInstalled(ulong tick)
         {
-            var endpoint = _remoteSession.Endpoint;
+            if (NetworkMode != SliceNetworkMode.DedicatedClient ||
+                _remotePoolWarmed ||
+                _world == null ||
+                _world.LiveCount == 0)
+            {
+                return;
+            }
+
+            _remotePoolWarmed = true;
+            WarmReplicatedPool();
+        }
+
+        private void HandleRemoteConnected()
+        {            var endpoint = _remoteSession.Endpoint;
             _localSession = endpoint.Session;
             _match = endpoint.Match;
             _localPlayer = endpoint.Player;
@@ -1571,6 +1591,7 @@ namespace GlobalFront.Client.Presentation
             if (_receiver != null)
             {
                 _receiver.KeyframeInstalled += _binder.HandleResync;
+                _receiver.KeyframeInstalled += HandleRemoteKeyframeInstalled;
             }
 
             _overlayBatcher = new UnitOverlayBatcher(
