@@ -77,6 +77,11 @@ namespace GlobalFront.Tests.PlayMode
 
             _serverObject = new GameObject("NetworkedClientPlayModeTests_Server");
             _server = _serverObject.AddComponent<DedicatedServerRunner>();
+
+            // This harness marks the match itself with the two-unit roster the
+            // assertions are written against; production auto-start would
+            // replace it with the default armies.
+            _server.AutoStartMatch = false;
             _server.Initialize(0);
 
             // Deterministic authority: the test is the only tick source.

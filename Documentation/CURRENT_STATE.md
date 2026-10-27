@@ -4,17 +4,20 @@
 
 ## Current Phase
 
-**Phase 1, 2, 3 и 4 — [100% COMPLETED / AUDITED: ZERO DEFECTS] • Milestone M1 (Multiplayer Prototype) ACHIEVED**
+**Phases 1–3 — [COMPLETED / CERTIFIED] • Phase 4 / Milestone M1 (1v1 Dedicated Server Prototype) — [REMEDIATION DELIVERED, PENDING COORDINATOR REVIEW]** (изменения не закоммичены поверх `5beb1d1`)
 
 ## Current Task
 
-**Milestone M1 Acceptance & Verification Package • Transition to Milestone M2 (Phase 5 Faction Asymmetry & Gameplay Depth)**
+**M1 remediation (Blocks 1–6) complete • 1351 EditMode + 22 PlayMode green • next: independent review & commit; then Milestone M2 (2v2 + Phase 5)**
+
+- **M1 remediation 2026-10-27 (на базе `5beb1d1`, без коммита):** Grand Audit M1 (`Artifacts/Audit-Phase4-M1-5beb1d1.md`, `Artifacts/GrandAudit-Phase4-M1-5beb1d1-R2.md`, `-R3.md`) вынес REJECT. Закрыты: corpse vision (`FogOfWarReplicationFilter` исключает `CurrentHealth <= 0`), утечка координат через `MoveTarget` преследователя (заморозка на last-known), status-oracle в отказах атаки (`TargetInFogOfWar` до проверок существования/жизни), автоматический старт 1v1 (`DedicatedServerRunner`: lobby → ростер → `TryStartSessionMatch`), повторяемый `InvalidState`, дедлайн `_awaitingResume` (400 paused ticks), запрет преждевременного resume, фильтрация поколений `ConnectionId`, возврат пуловых буферов на всех путях сброса (+ Rent/Return accounting), resync колец по `EntityId` и удержание selection через пустое зеркало. 17 новых EditMode-тестов, 15 bite-прогонов.
+- **Scope M1 зафиксирован как 1v1** (OD-48 в `DECISIONS.md`); 2v2 официально перенесён в Milestone M2 / Phase 5.
 
 - **Phase 1 (Simulation Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Спринты hardening 1.1–1.5.1 закрыли concurrency, reentrancy, friendly-fire и snapshot allocations (`5b16a05`..`349a074`).
 - **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / P0/P1 = 0 CERTIFIED]. Шаги 2.1–2.8 + спринты hardening 2.1–2.5 (`5c94e07`..`4cb8ffa`). Сертификация Phase 2.0 на `4cb8ffa` подтвердила **P0/P1 = 0**: это строгий состязательный ре-аудит, выполненный Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); сам отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели привлекались только на промежуточных этапах ревью и авторами сертификата не являются. Уязвимость N-01 / D-10 / A-01 полностью ликвидирована на 3 независимых слоях. Все оставшиеся замечания (F-1..F-11, F-13..F-15, N-02..N-04) закрыты в Hardening Phase 3.7.1 — см. блоки ниже.
 - **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Шаги 3.1–3.7 (ADR-012, OD-23..OD-29). Сквозной вертикальный срез на 400 юнитах (`3414ba6` / `cb01ea2`). Замер OD-28: **0.623 ms/frame** — это CPU-пайплайн симуляции и презентации (headless EditMode, 400 юнитов, гард 8.0 ms), а не полный кадр с физическим GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров.
 - **Hardening Phase 3.7.1 (закрытие Grand Audit):** [100% COMPLETED]. Блоки 1–4 (`934840d`..`3a112ad`) закрыли code-level замечания F-1..F-11, F-13..F-15 и N-02..N-04; блок 5 закрыл F-6 и F-10. 17 новых EditMode-тестов (1162 → 1179), bite-прогоны по каждому наблюдаемому дефекту.
-- **Phase 4 (Multiplayer Gameplay Integration):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. ADR-014 принят и закрыт (OD-35..OD-43, `DECISIONS.md`).
+- **Phase 4 (Multiplayer Gameplay Integration):** [M1 REMEDIATION DELIVERED / PENDING REVIEW]. ADR-014 принят (OD-35..OD-43); формат M1 зафиксирован как 1v1 (OD-48), 2v2 — Milestone M2. Grand Audit M1 вынес REJECT прежней сертификации; см. блок remediation в начале документа.
 - **Шаг 4.1 (Dedicated Server Core Relocation & Headless Runner):** [COMPLETE / COMMITTED `5f2f29e`]. `ServerHost` вынесен в `GlobalFront.Server` (engine-free), `LocalMatchHost` остался тонкой клиентской обёрткой с `BindReconnectCoordinator`; добавлена сборка `GlobalFront.ServerHost` с `DedicatedServerRunner` (цикл `Pump` → `AdvanceRealTime`, 120 FPS) и `DedicatedServerBootstrap` (`-port`, `-tickrate`, `-dedicatedServer` / `UNITY_SERVER`); в `FixedStepClock` добавлен кламп бэклога `MaxBacklogSeconds = 0.25` (OD-45).
 - **Шаг 4.2 (Client Remote Connection & Handshake):** [COMPLETE / COMMITTED `1760f17`]. `ClientTransportEndpoint` отправляет `Ping` и публикует `PongReceived`; `RemoteSliceSession` компонует endpoint, uplink, receiver/bridge, C1 command channel и RTT-контур (каденс 1 Гц, EWMA α = 0.125 по клиентским часам); `TacticalVerticalSliceRunner.InitializeDedicatedClient` работает без локального `_host` (тик — из `ClientReplicationReceiver`, команды — через `NetworkCommandChannel`, пул прогревается по полученному ростеру), RTT и сетевой статус выводятся в `NetworkHudPresenter`.
 - **Шаг 4.2.1 (Client Bootstrap CLI `-connect`):** [COMPLETE / COMMITTED `34e994e`]. `GlobalFrontRuntimeBootstrap` разбирает `-connect <host>[:<port>]` и `-connect=<host>[:<port>]` (порт по умолчанию 7777, диапазон 1..65535; отсутствие флага/пустой хост/невалидный порт → `false`). При наличии флага `Initialize()` не строит легаси-прототип, а вызывает `ActivateDedicatedClient`: снимает легаси-прототип и предыдущий срез, создаёт `RemoteSliceSession`, подключается и инициализирует раннер в `DedicatedClient`; сессией владеет бутстрап и освобождает её при замене среза. Гейт: EditMode **1219/1219**, PlayMode **17/17**; live PlayMode-проверка с реальным UDP-сервером: `Established`, RTT 28–29 ms, HUD-слот `Connected`.
@@ -30,7 +33,7 @@
 - **Шаг 4.6.2 (Impairment Harness & Presets, Wi-Fi 1% / WAN 5% + Burst):** [COMPLETE / COMMITTED `1b38f05`]. Пресеты `Lan`/`Wifi`/`Wan`, детерминированная burst-модель потерь, телеметрия `SentCount`/`DroppedCount`/`DeliveredCount`. 5 новых EditMode-тестов. Гейт: EditMode **1316/1316**, PlayMode **17/17**.
 - **Шаг 4.6.3 (Parity under Loss/Latency on 400 Units, OD-40 / OD-43):** [COMPLETE / COMMITTED `4d15ace`]. Паритет 400 юнитов под 1% и 5% потерями (120 тиков боя, zero desyncs, `ChecksumMismatchCount == 0`, `AssertWorldsMatch`), keyframe-rebase после 150-тикового обрыва. 3 новых EditMode-теста. Гейт: EditMode **1319/1319**, PlayMode **17/17**.
 - **Шаг 4.6.4 (Live UDP PlayMode Harness & Reconnect Path B):** [COMPLETE / COMMITTED `1eeb3d2`, `491811c`, `3eca5de`]. Сборка LiteNetLib с `SIMULATE_NETWORK`; 2 live PlayMode-теста на реальных UDP-сокетах под 5% и 4% потерями; C0 Opcode 14 `ClientReadyToResume` авто-возобновление сервера по окончании countdown. Гейт: EditMode **1332/1332**, PlayMode **21/21**.
-- **Шаг 4.6.5 (5-Minute 400-Unit Playtest, Full HD Visual Evidence, Polish & Zero-GC Transport):** [COMPLETE / COMMITTED `666f89f`, `828c55d`, `ff344a9`, `366e444`, `1bac832`, `156d898`].
+- **Шаг 4.6.5 (Synthetic 400-Unit Playtest, Full HD Visual Evidence, Polish & Zero-GC Transport):** [COMPLETE / COMMITTED `666f89f`, `828c55d`, `ff344a9`, `366e444`, `1bac832`, `156d898`].
   - Step 1: Pump-owned countdown ticker с epsilon threshold и single-attempt flush.
   - Step 2: `TacticalPauseOverlay` интегрирован с `NetworkHudPresenter` и presentation loop.
   - Step 3: Синтетический 400-юнитный PlayMode-тест (`SyntheticPlaytestPlayModeTests`), 1080p capture harness (`PlaytestScreenshotCapture`), прогрев пула при первом keyframe.
@@ -39,24 +42,25 @@
     2. Единый столбец значений HUD (`ValueColumnX = 124f`), исключающий наложения текста.
     3. Честный HP в бою: спавн 100 HP (согласован с `UnitCatalog`), встречный бой лоб в лоб с уроном (`03_clash_combat.png` — 74% HP, `05_reconnected_and_resumed.png` — 50% HP).
     4. Интерактивная точка входа `GlobalFront/Playtest/Launch 400-Unit Dedicated Match` (`InteractivePlaytestBootstrap.cs`).
-    5. Архитектурный Zero-GC фикс транспорта: `TransportBufferPool.cs`, возврат буферов после обработки событий, пул ассемблера фрагментов — **0 блоков / 0 байт GC.Alloc** под непрерывным боем 402 юнитов.
+    5. Архитектурный Zero-GC фикс транспорта: `TransportBufferPool.cs`, возврат буферов после обработки событий, пул ассемблера фрагментов. M1 remediation добавил учёт `RentCount`/`ReturnCount` и закрыл потери на rate-limit, queue overflow, teardown и shutdown.
     6. Стабилизация `NetworkImpairmentPlayModeTests.cs` (`1bac832`): пошаговая откачка тиков сервера во время ожидания дельт при 5% потерь пакетов, устранившая таймауты под нагрузкой полного пакета тестов.
     7. Диагностика аллокационных стек-трейсов (`156d898`, `Artifacts/Playtest/gc_alloc_callstacks.txt`): доказано отсутствие аллокаций в `GlobalFront.*` и `LiteNetLib.*`; подтверждено, что периодические блоки вызваны внутренними механизмами `UnityEngine.TestRunner` (`LogScope`), Editor и URP/IMGUI.
-  - Гейт: EditMode **1334/1334**, PlayMode **22/22** (всего **1356/1356 passed**).
+  - Гейт: EditMode **1334/1334**, PlayMode **22/22** (всего **1356/1356 passed**) на момент шага 4.6.5; после M1 remediation 2026-10-27 — **1351 EditMode + 22 PlayMode**.
+  - Сценарий синтетического плейтеста длится **≈26.1–26.3 s** (спавн, бой, разрыв на 20-й секунде, реконнект, возобновление), а не «5 минут»; FPS-окно — 3 s.
+  - Zero-GC контракт: измеряется только клиентский транспорт и пайплайны репликации при отключённой презентации (3-секундное окно) — 0 блоков GC.Alloc. Полный кадр с URP/Editor аллоцирует мегабайты и в контракт не входит; поле `gcAllocBytes` в метриках — sentinel по числу blocks, а не байты.
   - Артефакты: 6 скриншотов 1080p (`Artifacts/Playtest/01_spawn_and_fog.png` .. `06_interactive_menu.png`), `playtest_metrics.json`, `gc_alloc_callstacks.txt`.
 
 ## Last Commit
 
-`156d898` (`docs(playtest): record allocation callstack diagnostic proving 0 B GC on game network path`)
+`5beb1d1` (`docs(current_state): record allocation callstack artifact and close GC residual as test-runner LogScope artifact`). M1 remediation 2026-10-27 идёт поверх него **без коммита** — на ревью Координатору.
 
 ## Tests
 
-- EditMode: **1334/1334 passed** (100% green, 0 failed, 0 skipped, 2026-10-26; gate: `Artifacts/TestResults/step465-polish-editmode.xml`)
-- PlayMode: **22/22 passed** (100% green, 0 failed, 0 skipped, 2026-10-26; единый прогон полного suite; gate: `Artifacts/TestResults/step465-polish-playmode.xml`)
-- Всего: **1356 автоматизированных тестов** (1334 EditMode + 22 PlayMode)
-- Zero-GC сетевого цикла и симуляции под нагрузкой боя: **0 блоков / 0 байт GC.Alloc** steady-state
+- EditMode: **1351/1351 passed** (100% green, 0 failed, 0 skipped, 2026-10-27; gate: `Artifacts/TestResults/m1-remediation-editmode-postbite.xml`)
+- PlayMode: **22/22 passed** (100% green, 0 failed, 0 skipped, 2026-10-27; gate: `Artifacts/TestResults/m1-remediation-playmode.xml`)
+- Всего: **1373 автоматизированных теста** (1351 EditMode + 22 PlayMode)
+- Zero-GC (scoped): 0 блоков GC.Alloc в клиентском транспорте и пайплайнах репликации при отключённой презентации; полный кадр не входит в контракт
 - 6 визуальных артефактов Full HD 1080p в `Artifacts/Playtest/`
-- Компиляция: 0 warnings / 0 errors
 - Unity: `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
 
 ## Completed Milestones
@@ -88,26 +92,28 @@
   - Phase 3.6 Minimap & Tactical HUD — COMPLETE (`2a754db`)
   - Phase 3.7 Vertical Slice Integration, 400-Unit Benchmark & Multi-Frame Suite — COMPLETE (`3414ba6`, `cb01ea2`)
 - **Hardening Phase 3.7.1 — Grand Audit remediation — COMPLETE (`934840d`..`3a112ad`)**
-- **Milestone M1 Multiplayer Prototype — COMPLETE (Phase 4.0, ADR-014, OD-35..OD-43)**
-  - Шаги 4.1–4.6.5 полностью реализованы, сертифицированы и проверены на 1356 тестах (100% green).
-  - Сквозной dedicated-матч на 402 юнита, FoW, реальные UDP-сокеты, живой реконнект в разгаре боя, авто-возобновление C0 Opcode 14, 0 B GC.Alloc steady-state, 6 скриншотов Full HD 1080p.
+- **Milestone M1 Multiplayer Prototype — [1v1 SCOPE, REMEDIATION DELIVERED / PENDING REVIEW] (Phase 4.0, ADR-014, OD-35..OD-43, OD-48)**
+  - Шаги 4.1–4.6.5 реализованы; M1 remediation 2026-10-27 закрыл блоки 1–5 задания и обновил документацию (блок 6).
+  - Сквозной dedicated-матч на 402 юнита, FoW, реальные UDP-сокеты, живой реконнект в разгаре боя, авто-возобновление C0 Opcode 14, 6 скриншотов Full HD 1080p.
+  - Заявляемый формат M1 — **1v1 Dedicated Server Prototype**; 2v2 — Milestone M2.
 
 ## Next Step
 
-**Phase 4 (Multiplayer Gameplay Integration) — [100% COMPLETED / AUDITED: ZERO DEFECTS] • Milestone M1 (Multiplayer Prototype) ACHIEVED**.
-Следующий шаг — формальное закрытие Milestone M1 Owner Review Gate и переход к Milestone M2 (Phase 5 Faction Asymmetry & Strategic Combat).
+**Независимое ревью и коммит M1 remediation Координатором.** После приёмки — Milestone M2: 2v2 composition (ex-P1-02) и Phase 5 Faction Asymmetry & Strategic Combat.
 
 ## Backlog
 
+- **[OPEN — M2] 2v2 composition:** `DedicatedServerRunner` создаёт `ServerHost(tickRate)` с `SkirmishCombatRelation`; `Team2v2CombatRelation` и `SetPlayerTeam` не подключены runtime-композицией. Официально вынесено в Milestone M2 (OD-48).
+- **[OPEN — audit residuals, не входили в M1 remediation]:** P2-02 (receive может воскресить state закрытого connection), P2-05 (новый disconnect во время паузы наследует остаток старого grace), P2-08 (countdown не реплицируется всем клиентам), P2-10 (bootstrap-owned `RemoteSliceSession` не закрывается при уничтожении root), P2-11 (приёмочный E2E-сценарий не покрывает real-entry-point до outcome), P2-12 (GC-gate нестабилен и уже заявленного охвата), P3-01..P3-04.
+- **[OPEN] (Phase 4.4.2 lead ceiling residual)**: `CalculateLeadTicks` реализован точно по формуле брифа и не клампится. При RTT выше ~4.5 с (`1 + 12 render + 2 + ceil(RTT/100ms) > 60`) `RequestedTick` выйдет за `AcceptedFutureTicks` и сервер ответит `HeaderRejected`; для LAN/обычного интернета запас велик (RTT 100 мс → lead ≈ 8 тиков).
 - **[CLOSED] (Phase 4 FoW)**: per-client `StateChecksum` для отфильтрованного среза мира реализован в Шаге 4.3.2 (OD-40); глобальная чексумма остаётся только для режима без фильтра.
-- **[CLOSED] Backlog Phase 2.0 (N-02, N-03, N-04) и P3-пакет Grand Audit (F-1..F-11, F-13..F-15; ID F-12 в отчёте отсутствует)**: закрыты в Hardening Phase 3.7.1 (блоки 1–5). Открытых замечаний аудита нет.
+- **[CLOSED] Backlog Phase 2.0 (N-02, N-03, N-04) и P3-пакет Grand Audit (F-1..F-11, F-13..F-15; ID F-12 в отчёте отсутствует)**: закрыты в Hardening Phase 3.7.1 (блоки 1–5). Это не отменяет OPEN-замечаний Grand Audit M1, перечисленных выше.
 - **[CLOSED] (Phase 4.4.1 HUD residual)**: `TacticalHudText` теперь содержит `"Target in fog"` для `MatchCommandRejection.TargetInFogOfWar`; закрыто в Шаге 4.4.2.
 - **[CLOSED for dedicated / PARTIAL for slice] (Phase 4.4.1 runner residual)**: `DedicatedServerRunner` теперь устанавливает включённый `FogOfWarReplicationFilter` (`step454`); `TacticalVerticalSliceRunner` подключает фильтр, но держит его выключенным в локальном loopback: армии демо спавнятся в 80 м при радиусе обзора 20 м.
 - **[CLOSED] (Phase 4.5.1 reconnect loop residual)**: `ClientTransportEndpoint.Reconnect` + `RemoteSliceSession.TryReconnect` создают заменяющий сокет и отправляют C0-запрос с кэшированным секретом; токен приходит в `ReconnectResponse` и усыновляется endpoint'ом. Авто-ретрай каждые 500 мс в `Pump`, таймаут 2000 мс.
 - **[CLOSED] (Phase 4.5.3 reconnect token residual)**: `ReconnectResponse.Token` (байты 21..28) доносит токен ребинда до `ClientTransportEndpoint`, который назначает его carrier'у.
 - **[CLOSED] (Phase 4.6.4 / 4.6.5 polish)**: Polish Sprint закрыл resync колец выделения (`ResyncSelectionViews()`), единый 124px столбец значений HUD, боевую убыль HP (74% и 50%), интерактивную точку входа `GlobalFront/Playtest/Launch 400-Unit Dedicated Match`, Zero-GC буферный пул транспорта (`TransportBufferPool.cs`) и стабилизацию таймаутов `NetworkImpairmentPlayModeTests.cs`.
-- **[CLOSED / PROVEN HARNESS RESIDUAL] (Full-Suite LogScope GC residual)**: при прогоне полного пакета из 22 PlayMode-тестов в редакторе периодически фиксировались 1–8 блоков GC.Alloc в Recorder; прицельная диагностика аллокационных стек-трейсов (`Profiler.enableAllocationCallstacks`, артефакт `Artifacts/Playtest/gc_alloc_callstacks.txt`) доказала, что ни одна аллокация не принадлежит коду `GlobalFront.*` или `LiteNetLib.*`: все разрешённые стеки принадлежат `UnityEngine.TestRunner` (`LogScope.ProcessExpectedLogs`/`EvaluateLogScope`), Editor (`PlayModeView.RenderView`) и URP/IMGUI. Пул буферов транспорта полностью чист (`poolMisses = 0`). Это артефакт измерительной обвязки редактора/харнесса, а не игровой симуляции или транспорта.
-- **[OPEN] (Phase 4.4.2 lead ceiling residual)**: `CalculateLeadTicks` реализован точно по формуле брифа и не клампится. При RTT выше ~4.5 с (`1 + 12 render + 2 + ceil(RTT/100ms) > 60`) `RequestedTick` выйдет за `AcceptedFutureTicks` и сервер ответит `HeaderRejected`; для LAN/обычного интернета запас велик (RTT 100 мс → lead ≈ 8 тиков).
+- **[CLOSED / PROVEN HARNESS RESIDUAL] (Full-Suite LogScope GC residual)**: при прогоне полного пакета из 22 PlayMode-тестов в редакторе периодически фиксировались 1–8 блоков GC.Alloc в Recorder; прицельная диагностика аллокационных стек-трейсов (`Profiler.enableAllocationCallstacks`, артефакт `Artifacts/Playtest/gc_alloc_callstacks.txt`) доказала, что ни одна аллокация не принадлежит коду `GlobalFront.*` или `LiteNetLib.*`: все разрешённые стеки принадлежат `UnityEngine.TestRunner` (`LogScope.ProcessExpectedLogs`/`EvaluateLogScope`), Editor (`PlayModeView.RenderView`) и URP/IMGUI. Пул буферов транспорта полностью чист (`poolMisses = 0`). Это артефакт измерительной обвязки редактора/харнесса, а не игровой симуляции или транспорта. **Граница заявления:** scoped-окно измеряет только клиентский транспорт и пайплайны репликации при отключённой презентации; полный кадр с URP/Editor в контракт не входит.
 
 ## Important Constraints
 
@@ -116,7 +122,7 @@
 - Сетевой транспорт реализован по ADR-009 (OD-1 = LiteNetLib за контрактом `INetworkCarrier`) и сертифицирован.
 - **Headless transport pump (F-10):** `ServerTransportHost.Pump` имеет продакшн call-site в `DedicatedServerRunner.Update` (Phase 4, Шаг 4.1); вертикальный срез использует `LocalReplicationLoopback` по умолчанию и `DedicatedClient` через `RemoteSliceSession` (Шаг 4.2), запуск клиента — флагом `-connect <host>[:<port>]` (Шаг 4.2.1) или через меню `GlobalFront/Playtest/Launch 400-Unit Dedicated Match`.
 - Reconnect/resync реализованы и приняты (Phase 2.7, OD-18…OD-22, Step 4.6.4 C0 Opcode 14 `ClientReadyToResume`) с тактической паузой, 5-секундным countdown и авто-возобновлением.
-- Презентационный стек Phase 3 (OD-23..OD-29) доказал Zero-GC steady state и 0.623 ms/frame на 400 активных юнитах; сетевой транспорт под боем доказал **0 блоков / 0 байт GC.Alloc** через `TransportBufferPool`.
+- Презентационный стек Phase 3 (OD-23..OD-29) доказал Zero-GC steady state и 0.623 ms/frame на 400 активных юнитах; scoped-замер сетевого транспорта (клиент + пайплайны репликации, презентация отключена) даёт 0 блоков GC.Alloc, полный кадр в этот контракт не входит.
 - Product 1.0 включает пять основных фракций (NATO, Russia, China, GLA, USA); их gameplay/content будет развёрнут в последующих фазах.
 - Подфракции не входят в 1.0.
 - Не считать будущий roadmap фактом реализации.

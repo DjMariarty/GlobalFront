@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using GlobalFront.Core.Combat;
 using GlobalFront.Core.Model;
+using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
 using GlobalFront.Server;
 using GlobalFront.Server.Replication;
@@ -29,12 +32,32 @@ namespace GlobalFront.DedicatedServer
         /// </summary>
         public const int DedicatedServerTargetFramerate = 120;
 
+        /// <summary>
+        /// Players a 1v1 dedicated match waits for before spawning the armies
+        /// (Milestone M1 scope: 1v1 dedicated prototype; 2v2 is Milestone M2).
+        /// </summary>
+        public const int RequiredPlayersForStart = 2;
+
+        /// <summary>Units per player in the default 1v1 roster.</summary>
+        public const int UnitsPerArmy = 6;
+
+        // The two armies spawn far enough apart that neither starts in the
+        // other's sight radius; contact is a played-out event, not a freebie.
+        private const int ArmySeparationMm = 60_000;
+        private const int ArmyColumnSpacingMm = 2_000;
+
+        private static readonly CombatStats DefaultUnitStats =
+            new CombatStats(maximumHealth: 100, damage: 25, rangeMm: 7000, cooldownTicks: 10);
+
+        private readonly List<PlayerId> _joinedPlayers = new List<PlayerId>(SimulationConstants.MaxPlayers);
+
         private ServerHost _host;
         private INetworkCarrier _carrier;
         private ServerTransportHost _transportHost;
         private ITransportClock _clock;
         private MatchId _match;
         private long _lastPumpMs;
+        private long _firstJoinMs = -1;
 
         /// <summary>The hosted server core, or null before initialization / after shutdown.</summary>
         public ServerHost Host => _host;
@@ -47,6 +70,28 @@ namespace GlobalFront.DedicatedServer
 
         /// <summary>The auto-join match every handshake is attached to.</summary>
         public MatchId Match => _match;
+
+        /// <summary>
+        /// When true (the production default), the runner owns the match start:
+        /// once the lobby holds <see cref="RequiredPlayersForStart"/> players it
+        /// builds the base roster and starts the session match. A harness that
+        /// supplies its own roster and starts the match itself turns this off.
+        /// </summary>
+        public bool AutoStartMatch { get; set; } = true;
+
+        /// <summary>Players whose handshake completed in the current lobby.</summary>
+        public int JoinedPlayerCount => _joinedPlayers.Count;
+
+        /// <summary>True once the authoritative match has been started (units exist).</summary>
+        public bool IsMatchActive => _host != null && _host.ActiveSessionMatch.IsValid;
+
+        /// <summary>
+        /// Safety deadline measured from the first joined player. It lets the
+        /// lobby start even if the second join notification is delayed; with a
+        /// single player the match starts as a one-army skirmish rather than
+        /// waiting forever. Zero or negative disables the deadline.
+        /// </summary>
+        public long MatchStartTimeoutMs { get; set; } = 30_000;
 
         /// <summary>True between a successful <see cref="Initialize(int,int,int)"/> and <see cref="Shutdown"/>.</summary>
         public bool IsRunning => _host != null;
@@ -138,6 +183,7 @@ namespace GlobalFront.DedicatedServer
 
             _match = _host.CreateSessionMatch(maxPlayers);
             _transportHost.AutoJoinMatch = _match;
+            _transportHost.SessionAttached += OnSessionAttached;
 
             // The dedicated runner is the composition root that owns both the
             // authoritative host and the transport: a bound client's
@@ -181,6 +227,7 @@ namespace GlobalFront.DedicatedServer
             }
 
             _transportHost.Pump(nowMs, _host.Server.CurrentTick);
+            TryStartMatchWhenReady();
             _host.AdvanceRealTime(elapsedSeconds);
         }
 
@@ -198,6 +245,7 @@ namespace GlobalFront.DedicatedServer
 
             _host.StopRealTime();
             _transportHost.ClientReadyToResumeReceived -= _host.OnClientReadyToResume;
+            _transportHost.SessionAttached -= OnSessionAttached;
             _transportHost.Shutdown();
 
             _transportHost = null;
@@ -206,6 +254,112 @@ namespace GlobalFront.DedicatedServer
             _host = null;
             _match = default;
             _lastPumpMs = 0;
+            _firstJoinMs = -1;
+            _joinedPlayers.Clear();
+        }
+
+        /// <summary>
+        /// Records a completed handshake and starts the match as soon as the
+        /// lobby is complete. Without this the dedicated entry point accepted
+        /// clients into a <c>Forming</c> match with a zero-unit roster that
+        /// never began (audit P1-01).
+        /// </summary>
+        private void OnSessionAttached(SessionId session, MatchId match, PlayerId player)
+        {
+            if (_host == null ||
+                match != _match ||
+                !player.IsValid ||
+                _joinedPlayers.Contains(player))
+            {
+                return;
+            }
+
+            _joinedPlayers.Add(player);
+            if (_firstJoinMs < 0)
+            {
+                _firstJoinMs = _clock.NowMs;
+            }
+
+            TryStartMatchWhenReady();
+        }
+
+        /// <summary>
+        /// Builds the base 1v1 roster from the players currently in the lobby
+        /// and hands it to the authoritative start path. The deadline is a
+        /// safety net: the primary trigger is the second handshake.
+        /// </summary>
+        private bool TryStartMatchWhenReady()
+        {
+            if (_host == null ||
+                !AutoStartMatch ||
+                _joinedPlayers.Count == 0 ||
+                _host.ActiveSessionMatch.IsValid ||
+                _host.UnitCount > 0)
+            {
+                return false;
+            }
+
+            var enoughPlayers = _joinedPlayers.Count >= RequiredPlayersForStart;
+            var deadlinePassed = MatchStartTimeoutMs > 0 &&
+                _firstJoinMs >= 0 &&
+                _clock.NowMs - _firstJoinMs >= MatchStartTimeoutMs;
+            if (!enoughPlayers && !deadlinePassed)
+            {
+                return false;
+            }
+
+            var owners = _joinedPlayers.ToArray();
+            Array.Sort(owners, (left, right) => left.Value.CompareTo(right.Value));
+            return _host.TryStartSessionMatch(_match, BuildDefaultMatchConfig(owners), out _);
+        }
+
+        /// <summary>
+        /// Symmetric 1v1 roster: one small army per joined player, spawned on
+        /// opposite sides of the map. Production composition code — the roster
+        /// is authoritative server state, never a test/backdoor hand-off.
+        /// </summary>
+        public static MatchConfig BuildDefaultMatchConfig(IReadOnlyList<PlayerId> owners)
+        {
+            if (owners == null)
+            {
+                throw new ArgumentNullException(nameof(owners));
+            }
+
+            if (owners.Count == 0)
+            {
+                throw new ArgumentException("at least one player is required", nameof(owners));
+            }
+
+            var units = new UnitSpawnSpec[owners.Count * UnitsPerArmy];
+            var count = 0;
+            for (var playerIndex = 0; playerIndex < owners.Count; playerIndex++)
+            {
+                if (!owners[playerIndex].IsValid)
+                {
+                    throw new ArgumentException("owner must be valid", nameof(owners));
+                }
+
+                var side = playerIndex % 2 == 0 ? -1 : 1;
+                var baseX = side * ArmySeparationMm * (1 + (playerIndex / 2));
+                for (var unitIndex = 0; unitIndex < UnitsPerArmy; unitIndex++)
+                {
+                    var kind = unitIndex == 0
+                        ? UnitKinds.BaseStructure
+                        : (unitIndex & 1) == 0 ? UnitKinds.Tank : UnitKinds.Scout;
+                    var column = unitIndex / 2;
+                    var row = unitIndex % 2;
+                    units[count++] = new UnitSpawnSpec(
+                        owners[playerIndex],
+                        new WorldPointMm(
+                            baseX + (side * column * ArmyColumnSpacingMm),
+                            -ArmyColumnSpacingMm / 2 + (row * ArmyColumnSpacingMm)),
+                        speedMmPerTick: 350,
+                        autoAcquireEnemies: true,
+                        kind);
+                }
+            }
+
+            return new MatchConfig(DefaultUnitStats, units);
         }
 
         private void OnDestroy() => Shutdown();

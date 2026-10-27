@@ -26,6 +26,22 @@ namespace GlobalFront.Server.Transport
         private static readonly Stack<byte[]>[] Buckets = CreateBuckets();
         private static readonly object Gate = new object();
         private static bool _warmed;
+        private static long _rentCount;
+        private static long _returnCount;
+
+        /// <summary>
+        /// Buffers handed out by <see cref="Rent"/>. Monotonic diagnostics: the
+        /// difference to <see cref="ReturnCount"/> is what the transport is
+        /// still holding, and it must come back to its baseline on every
+        /// terminal path (rate-limit drop, queue overflow, teardown).
+        /// </summary>
+        public static long RentCount => System.Threading.Interlocked.Read(ref _rentCount);
+
+        /// <summary>Buffers handed back through <see cref="Return"/>.</summary>
+        public static long ReturnCount => System.Threading.Interlocked.Read(ref _returnCount);
+
+        /// <summary>Rented buffers the pool has not seen returned.</summary>
+        public static long OutstandingCount => RentCount - ReturnCount;
 
         public static void Warm()
         {
@@ -63,6 +79,7 @@ namespace GlobalFront.Server.Transport
             var shift = BucketShift(length);
             lock (Gate)
             {
+                System.Threading.Interlocked.Increment(ref _rentCount);
                 var bucket = Buckets[shift - MinBucketShift];
                 if (bucket.Count > 0)
                 {
@@ -89,6 +106,10 @@ namespace GlobalFront.Server.Transport
 
             lock (Gate)
             {
+                // Counted even when the bucket is full: the buffer is released
+                // to the GC either way, and only the Rent/Return balance
+                // describes whether a caller dropped a buffer on the floor.
+                System.Threading.Interlocked.Increment(ref _returnCount);
                 var bucket = Buckets[shift - MinBucketShift];
                 if (bucket.Count < BuffersPerBucket)
                 {

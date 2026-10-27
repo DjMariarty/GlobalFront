@@ -22,6 +22,44 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
     public sealed class ReconnectRetryPolicyTests
     {
         [Test]
+        public void Session_LateDisconnectFromPreviousSocket_DoesNotResetCurrentAttempt()
+        {
+            var clock = new VirtualTransportClock();
+            var carrier = new ScriptedCarrier(clock);
+            var session = new RemoteSliceSession(carrier, clock);
+
+            try
+            {
+                session.ReconnectRetryIntervalMs = 500;
+                session.Endpoint.ConnectTimeoutMs = 5_000;
+
+                BeginLostSession(session, carrier, 0);
+                Assert.That(session.ReconnectAttemptCount, Is.EqualTo(1));
+                Assert.That(session.Endpoint.State, Is.EqualTo(ClientTransportState.Connecting));
+                Assert.That(carrier.ConnectionsOpened, Is.EqualTo(2),
+                    "the retry policy opened the replacement socket");
+
+                // The carrier queue still holds the teardown notice of socket 1.
+                // It arrives now, while socket 2 is the active generation.
+                carrier.EnqueueStaleDisconnected(1, TransportDisconnectReason.Timeout);
+
+                session.Pump(600);
+
+                Assert.That(carrier.ConnectionsOpened, Is.EqualTo(2),
+                    "a stale event from the previous socket must not abort the current attempt " +
+                    "and open yet another connection (P2-04)");
+                Assert.That(session.Endpoint.State, Is.EqualTo(ClientTransportState.Connecting),
+                    "socket 2 must stay the active generation");
+                Assert.That(session.ReconnectAttemptCount, Is.EqualTo(1),
+                    "the stale event must not look like a fresh loss");
+            }
+            finally
+            {
+                session.Dispose();
+            }
+        }
+
+        [Test]
         public void Session_AutoRetriesReconnect_AtConfiguredInterval()
         {
             var clock = new VirtualTransportClock();
@@ -182,6 +220,7 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             private readonly ITransportClock _clock;
             private readonly Queue<TransportEvent> _events = new Queue<TransportEvent>();
             private int _nextConnection = 1;
+            private int _currentConnection = 1;
 
             public ScriptedCarrier(ITransportClock clock)
             {
@@ -201,7 +240,8 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             public int ConnectToServer(string host, int port)
             {
                 ConnectionsOpened++;
-                return _nextConnection++;
+                _currentConnection = _nextConnection++;
+                return _currentConnection;
             }
 
             public bool Send(int connectionId, TransportChannel channel, byte[] data, int offset, int length) =>
@@ -241,7 +281,16 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             }
 
             public void EnqueueDisconnected() =>
-                EnqueueDisconnected(1, TransportDisconnectReason.TransportLost);
+                EnqueueDisconnected(_currentConnection, TransportDisconnectReason.TransportLost);
+
+            /// <summary>
+            /// Queues a teardown notice that belongs to an older socket, exactly
+            /// like a carrier whose worker observed the close after the retry
+            /// policy had already opened the next generation.
+            /// </summary>
+            public void EnqueueStaleDisconnected(
+                int connectionId, TransportDisconnectReason reason) =>
+                EnqueueDisconnected(connectionId, reason);
 
             public void EnqueueResponse(ReconnectResponse response)
             {
@@ -250,7 +299,7 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
                 _events.Enqueue(new TransportEvent
                 {
                     Type = TransportEventType.Message,
-                    ConnectionId = 1,
+                    ConnectionId = _currentConnection,
                     Channel = TransportChannel.Control,
                     Data = buffer,
                     Length = written

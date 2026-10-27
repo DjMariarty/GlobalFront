@@ -45,6 +45,15 @@ namespace GlobalFront.Server
         /// </summary>
         public const int DefaultDisconnectGraceTicks = 4000;
 
+        /// <summary>
+        /// Default deadline for a reattached session to send its
+        /// <c>ClientReadyToResume</c> signal, in paused ticks (20 seconds at
+        /// the 20 Hz contract). A client whose baseline resync failed never
+        /// sends the signal, so without this the pause would last until the
+        /// process ends (audit P1-05, Block 3.2).
+        /// </summary>
+        public const int DefaultResumeReadyTimeoutTicks = 400;
+
         private const double NanosecondsPerSecond = 1_000_000_000.0;
 
         // Well below long.MaxValue/1e9: the conversion must saturate rather
@@ -63,10 +72,18 @@ namespace GlobalFront.Server
         /// </summary>
         private MatchId _activeSessionMatch;
 
-        // Sessions accepted by SessionReattached during the current pause.
-        // The host lifts the pause only after every one of them has sent
-        // ClientReadyToResume and no session remains in reconnect grace.
-        private readonly HashSet<SessionId> _awaitingResume = new HashSet<SessionId>();
+        // Sessions accepted by SessionReattached during the current pause, with
+        // the paused-tick value at which they were admitted. The host lifts the
+        // pause only after every one of them has sent ClientReadyToResume and
+        // no session remains in reconnect grace; a session that stays silent
+        // past ResumeReadyTimeoutTicks is force-closed and the pause continues
+        // for whoever is left.
+        private readonly Dictionary<SessionId, ulong> _awaitingResume =
+            new Dictionary<SessionId, ulong>();
+
+        // Snapshot of the waiters whose deadline elapsed, reused so the expiry
+        // scan never allocates on the paused tick path.
+        private readonly List<SessionId> _expiredResumeWaiters = new List<SessionId>();
 
         // Pause bookkeeping is whole nanoseconds rather than a double: the
         // architecture gate forbids floating-point instance fields in the
@@ -198,6 +215,12 @@ namespace GlobalFront.Server
         /// <summary>Sessions that must still signal readiness before the pause lifts.</summary>
         public int AwaitingResumeCount => _awaitingResume.Count;
 
+        /// <summary>
+        /// Paused-tick deadline for a reattached session to signal
+        /// <c>ClientReadyToResume</c>. Zero or negative disables the deadline.
+        /// </summary>
+        public int ResumeReadyTimeoutTicks { get; set; } = DefaultResumeReadyTimeoutTicks;
+
         public ulong CurrentTick => _server.CurrentTick;
 
         public BattleOutcome Outcome => _server.Outcome;
@@ -303,10 +326,44 @@ namespace GlobalFront.Server
         {
             _pausedGraceTicks += ticks;
             _sessions.OnTickCompleted(_server.CurrentTick + _pausedGraceTicks);
+            ExpireOverdueResumeWaiters();
             if (!_isAdvancingRealTime)
             {
                 PauseTicksAdvanced?.Invoke(ticks);
             }
+        }
+
+        /// <summary>
+        /// Force-closes reattached sessions that have not signalled readiness
+        /// within <see cref="ResumeReadyTimeoutTicks"/> of paused time. Each
+        /// close runs through <see cref="SessionManager.CloseSession"/>, so the
+        /// normal session-closed path decides whether the pause can lift for
+        /// the remaining participants.
+        /// </summary>
+        private void ExpireOverdueResumeWaiters()
+        {
+            if (!IsPaused || _awaitingResume.Count == 0 || ResumeReadyTimeoutTicks <= 0)
+            {
+                return;
+            }
+
+            _expiredResumeWaiters.Clear();
+            foreach (var pair in _awaitingResume)
+            {
+                if (_pausedGraceTicks >= pair.Value + (ulong)ResumeReadyTimeoutTicks)
+                {
+                    _expiredResumeWaiters.Add(pair.Key);
+                }
+            }
+
+            for (var index = 0; index < _expiredResumeWaiters.Count; index++)
+            {
+                var session = _expiredResumeWaiters[index];
+                _awaitingResume.Remove(session);
+                _sessions.CloseSession(session);
+            }
+
+            _expiredResumeWaiters.Clear();
         }
 
         /// <summary>
@@ -410,7 +467,13 @@ namespace GlobalFront.Server
 
         private void CheckAutoResumeAfterSessionChange()
         {
-            if (IsPaused && !_sessions.HasDisconnectedSessionsInGrace(_activeSessionMatch))
+            // A session closing or losing its grace is not, by itself, the last
+            // obligation: another reattached session may still owe its ready
+            // signal. Resuming on the count alone used to lift the pause before
+            // that client had resynced (audit P2-06, Block 3.3).
+            if (IsPaused &&
+                _awaitingResume.Count == 0 &&
+                !_sessions.HasDisconnectedSessionsInGrace(_activeSessionMatch))
             {
                 Resume();
             }
@@ -539,7 +602,9 @@ namespace GlobalFront.Server
         {
             if (IsPaused)
             {
-                _awaitingResume.Add(session);
+                // The deadline runs on the same paused tick clock as the
+                // disconnect grace, so a stalled resync cannot pin the match.
+                _awaitingResume[session] = _pausedGraceTicks;
             }
         }
 

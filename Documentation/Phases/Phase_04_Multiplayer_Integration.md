@@ -1,10 +1,10 @@
 # Phase 04 — Multiplayer Gameplay Integration
 
-> Status: **100% COMPLETED / AUDITED: ZERO DEFECTS** • Milestone M1 (Multiplayer Prototype) ACHIEVED (Commit `366e444`, 1356 tests passed)
+> Status: **M1 REMEDIATION DELIVERED — PENDING COORDINATOR REVIEW** • Scope fixed to **1v1 Dedicated Server Prototype** (base `5beb1d1`, changes uncommitted, 1351 EditMode + 22 PlayMode green)
 
 ## Goal
 
-Интегрировать сетевой фундамент Phase 2 (`ICommandChannel`, delta snapshots, reconnect/resync, `SessionManager`) с RTS gameplay и презентационным стеком Phase 3, получив первый настоящий multiplayer RTS prototype (1v1, 2v2).
+Интегрировать сетевой фундамент Phase 2 (`ICommandChannel`, delta snapshots, reconnect/resync, `SessionManager`) с RTS gameplay и презентационным стеком Phase 3, получив первый настоящий multiplayer RTS prototype. Формат Milestone M1 — **1v1 Dedicated Server Prototype**; режим 2v2 официально перенесён в Milestone M2 (Phase 5), см. OD-48 в `DECISIONS.md`.
 
 ## Dependencies
 
@@ -18,10 +18,11 @@
 - соединение `TacticalVerticalSliceRunner` с реальным сетевым транспортом (`INetworkCarrier` / LiteNetLib 1.3.5) вместо `LocalReplicationLoopback` — [COMPLETE, Step 4.2];
 - сетевая передача команд выделения и перемещения через `NetworkCommandChannel` — [COMPLETE, Step 4.2 / 4.4.2];
 - сетевая репликация дельт и ключевых кадров 400 юнитов по реальной сети (UDP loopback и LAN/remote) — [COMPLETE, Step 4.3.2 / 4.6.3 / 4.6.4];
-- реконнект и ресинк клиента прямо посреди активного RTS-боя с тактической паузой и 5-секундным countdown — [COMPLETE, Step 4.5.1–4.5.3 / 4.6.4 / 4.6.5];
-- networked Fog of War (OD-16 / OD-39) с расчетом `StateChecksum` per-client — [COMPLETE, Step 4.3.1 / 4.3.2];
+- реконнект и ресинк клиента прямо посреди активного RTS-боя с тактической паузой и 5-секундным countdown — [COMPLETE, Step 4.5.1–4.5.3 / 4.6.4 / 4.6.5, M1 remediation 3.1–3.4];
+- networked Fog of War (OD-16 / OD-39) с расчетом `StateChecksum` per-client — [COMPLETE, Step 4.3.1 / 4.3.2, M1 remediation 1.1–1.3];
 - authoritative validation команд и ownership — [COMPLETE, Step 4.4.1];
-- 1v1 и 2v2 сценарии с реальным `MatchServer` — [COMPLETE, Step 4.6.4 / 4.6.5].
+- автоматический запуск 1v1 dedicated-матча с серверным ростером — [COMPLETE, M1 remediation Block 2];
+- 1v1 сценарий с реальным `MatchServer` — [COMPLETE]; 2v2 сценарий — [DEFERRED → Milestone M2 / Phase 5].
 
 ## Key Systems
 
@@ -29,31 +30,39 @@
 - gameplay snapshot replication (`ServerReplicationEmitter` → `LiteNetLibCarrier` → `ClientReplicationReceiver` → `UnitViewTickBuffer`);
 - reconnect/resync с активным gameplay state (`ClientReconnectCoordinator`, `SessionManager`, tactical pause, `TacticalPauseOverlay`, `ResyncSelectionViews()`);
 - Fog of War visibility boundary (`BitMask1024`, `VisibilityEngine`, `VisibilityHistoryRing`, `FogOfWarReplicationFilter`);
-- multiplayer diagnostics и desync detection (`TransportBufferPool`, per-client FNV-1a checksums, 0 B GC.Alloc).
+- multiplayer diagnostics и desync detection (`TransportBufferPool` accounting, per-client FNV-1a checksums);
+- dedicated match composition (`DedicatedServerRunner`: lobby → server-owned 1v1 roster → `TryStartSessionMatch`).
 
 ## Milestones
 
 - первый end-to-end multiplayer RTS prototype на 400 юнитов — [COMPLETE];
-- Milestone M1 Multiplayer Prototype после принятия Phase 4 — [ACHIEVED].
+- Milestone M1 (1v1 Dedicated Server Prototype) — [REMEDIATED, PENDING REVIEW];
+- Milestone M2 (2v2 + Phase 5 Faction Asymmetry) — [PLANNED].
 
 ## Acceptance Criteria
 
 - [x] два клиента могут завершить утверждённый gameplay loop через real server (Dedicated / ServerHost);
+- [x] dedicated-сервер сам формирует ростер и стартует 1v1-матч по подключению двух игроков (M1 remediation 2.1);
 - [x] команды выбора, движения, атаки и остановки валидируются сервером;
+- [x] отказы атаки не раскрывают статус скрытой цели (M1 remediation 1.3);
+- [x] трупы не дают обзора, преследование скрытой цели не передаёт её новые координаты (M1 remediation 1.1–1.2);
 - [x] дельта-снапшоты и ключевые кадры доставляются по реальной сети с контролем пропускной способности;
 - [x] отключение и повторное подключение (reconnect/resync) клиента восстанавливает идентичное состояние боя без десинхронизации;
-- [x] нулевые дефекты P0/P1 по итогам независимого аудита.
+- [x] реконнект ограничен по времени: временный `InvalidState` повторяется, ожидание ready имеет дедлайн (M1 remediation 3.1–3.2);
+- [x] пул транспортных буферов сбалансирован на всех путях сброса (M1 remediation Block 4);
+- [ ] 2v2 (командный режим) — перенесено в Milestone M2.
 
 ## Tests
 
-- end-to-end 1v1 / 2v2 сетевые тесты (real UDP LiteNetLib);
+- end-to-end 1v1 сетевые тесты (real UDP LiteNetLib); 2v2 harness остаётся в репозитории, но M1 его не заявляет;
 - authoritative validation и ownership tests;
 - gameplay snapshot/reconnect tests под эмулированными сетевыми потерями (1–5% packet loss);
 - latency/jitter/disconnect сценарии;
 - deterministic and desync regression tests;
-- Zero-GC валидация сетевого цикла (**0 блоков / 0 байт GC.Alloc** под боем 402 юнитов);
-- Итог: **1356 автоматизированных тестов (1334 EditMode + 22 PlayMode), 100% green**.
+- 17 новых регрессионных тестов M1 remediation (FoW anti-cheat, dedicated auto-start, reconnect FSM, buffer accounting, selection resync);
+- Zero-GC: замер **ограничен** клиентским транспортом и пайплайнами репликации при отключённой презентации (3-секундное окно) — **0 блоков GC.Alloc**; полный кадр с URP/Editor аллоцирует мегабайты и в этот контракт не входит;
+- Итог: **1373 автоматизированных теста (1351 EditMode + 22 PlayMode), 100% green** на 2026-10-27.
 
 ## Definition of Done
 
-Настоящий authoritative 1v1/2v2 RTS prototype работает end-to-end по сети с реальными юнитами, combat, snapshots, reconnect и presentation; тесты green (EditMode + PlayMode); Milestone M1 принят.
+Настоящий authoritative **1v1** RTS prototype работает end-to-end по сети с реальными юнитами, combat, snapshots, reconnect и presentation; тесты green (EditMode + PlayMode); 2v2 вынесен в Milestone M2; Milestone M1 ожидает независимого ревью.

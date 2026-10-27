@@ -597,6 +597,20 @@ namespace GlobalFront.Server
                 }
             }
 
+            // Phase 4 (OD-41): Anti-maphack gate, and deliberately the FIRST
+            // thing that inspects the target (audit P2-09). Existence and
+            // liveness are themselves information: answering UnknownEntity or
+            // EntityNotAlive for a target the commander cannot see turns the
+            // command channel into a status oracle. Every target outside the
+            // player's view — missing, dead, or alive — gets the same refusal.
+            // A null or disabled filter keeps the historical passthrough
+            // behaviour, so pre-replication hosts are unaffected.
+            if (_visibilityFilter != null && _visibilityFilter.IsEnabled &&
+                !_visibilityFilter.IsVisible(CurrentTick, header.Player, target))
+            {
+                return MatchCommandRejection.TargetInFogOfWar;
+            }
+
             if (!_units.TryGetValue(target, out var targetRecord))
             {
                 return MatchCommandRejection.UnknownEntity;
@@ -615,16 +629,6 @@ namespace GlobalFront.Server
             if (!_combatRelation.AreEnemies(header.Player, targetRecord.Combat.Owner))
             {
                 return MatchCommandRejection.FriendlyTarget;
-            }
-
-            // Phase 4 (OD-41): Anti-maphack gate. An order against a target currently
-            // hidden in the fog of war for this player is refused before entering the
-            // schedule. A null or disabled filter keeps the historical passthrough
-            // behaviour, so pre-replication hosts are unaffected.
-            if (_visibilityFilter != null && _visibilityFilter.IsEnabled &&
-                !_visibilityFilter.IsVisible(CurrentTick, header.Player, target))
-            {
-                return MatchCommandRejection.TargetInFogOfWar;
             }
 
             Schedule(new ScheduledCommand { Header = header, Attack = command }, header.RequestedTick);
@@ -975,6 +979,13 @@ namespace GlobalFront.Server
         /// every unit sees the same snapshot of enemy locations. Units with a
         /// valid attack target pursue it (chase when out of range, stop when in
         /// range), overriding any prior move command.
+        ///
+        /// A pursuit over a target the owner can no longer see does not write
+        /// the target's live position into <c>MoveTarget</c> (audit P1-04):
+        /// that field is part of the owner's own replicated record, so it
+        /// would hand the player fresh coordinates of a hidden unit every
+        /// tick. The chase freezes on the last known position instead, which
+        /// is exactly the <c>MoveTarget</c> the previous tick already wrote.
         /// </summary>
         private void MoveUnits()
         {
@@ -1000,7 +1011,18 @@ namespace GlobalFront.Server
                         targetRecord.Combat.Entity,
                         out var targetStart))
                 {
-                    if (CombatMath.IsWithinRange(
+                    if (!IsVisibleToOwner(unit.Combat.Owner, targetRecord.Combat.Entity))
+                    {
+                        // Hidden target: keep the last known point. With no
+                        // pending move target there is nothing to chase, so the
+                        // unit simply holds position until the target is seen
+                        // again.
+                        if (!unit.HasMoveTarget)
+                        {
+                            continue;
+                        }
+                    }
+                    else if (CombatMath.IsWithinRange(
                             unit.Position,
                             targetStart,
                             unit.Combat.Stats.RangeMm))
@@ -1029,6 +1051,26 @@ namespace GlobalFront.Server
                     unit.HasMoveTarget = false;
                 }
             }
+        }
+
+        /// <summary>
+        /// True when <paramref name="owner"/> may know where
+        /// <paramref name="entity"/> is. Without an active filter the match is
+        /// in passthrough mode and every position is known.
+        ///
+        /// Visibility masks are recorded when a tick completes, so while tick
+        /// N is being simulated the freshest view of the world is the mask of
+        /// tick N-1 — the last position the owner was allowed to learn.
+        /// </summary>
+        private bool IsVisibleToOwner(PlayerId owner, EntityId entity)
+        {
+            if (_visibilityFilter == null || !_visibilityFilter.IsEnabled)
+            {
+                return true;
+            }
+
+            var lastCompletedTick = CurrentTick > 0 ? CurrentTick - 1 : 0;
+            return _visibilityFilter.IsVisible(lastCompletedTick, owner, entity);
         }
 
         /// <summary>

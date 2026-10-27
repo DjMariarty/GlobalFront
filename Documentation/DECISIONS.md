@@ -540,12 +540,26 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 #### [OD-43] Multi-Leg Network Harness with Impairment
 - Шаг 4.6 переиспользует существующий детерминированный `ImpairmentProfile` (100 мс задержка, 5% потерь пакетов, джиттер переупорядочивания) для сквозных тестов 1v1 и 2v2 без флакающих тестов.
 
-### Verification Criteria (100% Achieved & Verified)
+#### [OD-48] Milestone M1 Scope & Evidence Boundaries
+*Status:* ACCEPTED (2026-10-27, по итогам Grand Audit M1 R3)
+- **Формат M1 фиксируется как 1v1 Dedicated Server Prototype.** Режим 2v2 официально переносится в Milestone M2 (Phase 5). Причина: runtime-композиция команд (`Team2v2CombatRelation`, `SetPlayerTeam`) и командная победа не подключены; Grand Audit R3 (P1-02) показал, что четыре сокета не доказывают 2v2. Harness `Match2v2PlaytestScenarioTests` остаётся в репозитории как задел M2 и не входит в приёмку M1.
+- **Автоматический старт 1v1 — часть production-контракта:** `DedicatedServerRunner` по двум завершённым рукопожатиям формирует серверный ростер (`UnitsPerArmy × 2`) и вызывает `TryStartSessionMatch`; тестовые харнессы, владеющие своим ростером, отключают это через `AutoStartMatch = false`.
+- **Плейтест не является «5-минутным»:** `SyntheticPlaytestPlayModeTests` измеряет **≈26.1–26.3 s** сценария (спавн 402 юнитов, бой, разрыв на 20-й секунде, реконнект, возобновление); FPS-окно — 3 s, это не performance soak.
+- **Zero-GC контракт ограничен:** замер покрывает клиентский транспорт и пайплайны репликации при отключённой презентации (3 s, 0 блоков GC.Alloc). Полный кадр с URP/Editor аллоцирует мегабайты и в контракт не входит; поле `gcAllocBytes` в `playtest_metrics.json` — sentinel по числу blocks (`0` или `-1`), а не независимое измерение байт.
+- **Не заявлять «ZERO DEFECTS / M1 ACHIEVED» без нового независимого прохода.** Документы описывают remediation как DELIVERED / PENDING REVIEW; остаточные замечания R3 (P2-02, P2-05, P2-08, P2-10..P2-12, P3) перечислены в `CURRENT_STATE.md`.
+
+### Verification Criteria (historical, superseded by the M1 audit)
 - Сквозные тесты Dedicated Server + 2 Remote Clients на 400 юнитах без десинков (`ChecksumMismatchCount == 0` доказан в `ReplicationParityUnderImpairmentTests` и `SyntheticPlaytestPlayModeTests`).
-- Полное отсутствие аллокаций памяти (`Is.Not.AllocatingGCMemory()`) на серверном тике и клиентском цикле рендеринга; Zero-GC транспорт под непрерывным боем (`TransportBufferPool.cs`: 0 blocks / 0 bytes GC.Alloc).
+- Полное отсутствие аллокаций памяти (`Is.Not.AllocatingGCMemory()`) на серверном тике и клиентском цикле рендеринга; Zero-GC транспорт под непрерывным боем (`TransportBufferPool.cs`).
 - Успешный реконнект в разгаре боя на 400 юнитах с сохранением 100% консистентности мира (5-секундный countdown, C0 Opcode 14 авто-возобновление, восстановление колец `ResyncSelectionViews()`).
-- 1356 автоматизированных тестов (1334 EditMode + 22 PlayMode), 100% green.
 - 6 визуальных артефактов Full HD 1080p в `Artifacts/Playtest/`.
+- **Эти формулировки от 2026-10-21 не выдержали независимую проверку** (Grand Audit M1 R1–R3, 2026-10-27): 2v2 не подключён, «5-Minute» = ≈26 s, scoped GC-окно уже заявленного. См. OD-48 и `PROJECT_STATUS.md`.
+
+### M1 Remediation Verification (2026-10-27, uncommitted on `5beb1d1`)
+- Закрыты замечания задания: P1-03 (corpse vision), P1-04 (утечка `MoveTarget`), P2-09 (status oracle), P1-01 (dedicated 1v1 auto-start), P2-03 (retryable `InvalidState`), P1-05 (дедлайн `_awaitingResume`), P2-06 (преждевременный resume), P2-04 (поколения соединений), P2-01 (возврат буферов + Rent/Return accounting), P2-07 (resync по `EntityId` и удержание через пустое зеркало).
+- 17 новых EditMode-тестов; каждый наблюдаемый дефект подтверждён bite-прогоном (15 revert-проверок: 3 FoW, dedicated, 3 reconnect, generation, 4 buffer, 3 selection).
+- Гейт: **1351/1351 EditMode** (`Artifacts/TestResults/m1-remediation-editmode-postbite.xml`) + **22/22 PlayMode** (`Artifacts/TestResults/m1-remediation-playmode.xml`), 2026-10-27.
+- P1-02 (2v2) не исправлялся — вынесен в M2 (OD-48). Остальные P2/P3 R3 остаются открытыми и перечислены в `CURRENT_STATE.md`.
 
 ## Open Decision Queue
 

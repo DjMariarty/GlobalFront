@@ -394,6 +394,15 @@ namespace GlobalFront.Client.Replication
 
         public bool Contains(EntityId entity) => TryFindSlot(entity, out _);
 
+        /// <summary>
+        /// Current slot of an entity, or false with <paramref name="slot"/> set
+        /// to -1. A keyframe rebases the table and compacts its slots, so this
+        /// is the only authoritative entity→slot mapping a presentation
+        /// consumer may trust after a resync (audit P2-07).
+        /// </summary>
+        public bool TryGetSlot(EntityId entity, out int slot) =>
+            TryFindSlot(entity, out slot);
+
         public bool TryGet(EntityId entity, out ClientUnitState state)
         {
             if (!TryFindSlot(entity, out var slot))

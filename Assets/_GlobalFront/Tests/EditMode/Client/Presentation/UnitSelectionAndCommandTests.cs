@@ -577,6 +577,107 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             Assert.That(BuildOverlay().SelectionRingCount, Is.EqualTo(0));
         }
 
+        /// <summary>
+        /// Audit P2-07: a keyframe rebases the table and compacts its slots, so the
+        /// selected entity can come back in a different slot. The repair must follow
+        /// the identity through the world's entity index instead of trusting the
+        /// cached slot, or the ring disappears while the unit is still selected.
+        /// </summary>
+        [Test]
+        public void ResyncSelectionViews_FollowsTheEntityWhenKeyframeCompactsSlots()
+        {
+            Spawn(1, Ax, RowZ);
+            Spawn(2, Bx, RowZ);
+            var oldSlot = SlotOf(2);
+            Assert.That(oldSlot, Is.Not.Zero, "the fixture needs entity 2 in a non-zero slot");
+            _selection.AddSelected(new EntityId(2), oldSlot);
+            Assert.That(BuildOverlay().SelectionRingCount, Is.EqualTo(1));
+
+            // The keyframe baseline: empty table, then entities in a new order, so
+            // entity 2 lands in the slot entity 1 used to occupy.
+            _world.Reset();
+            Assert.That(_world.ApplyAdd(Add(2, Local, Bx, RowZ, UnitKinds.Scout)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+            Assert.That(_world.ApplyAdd(Add(1, Local, Ax, RowZ, UnitKinds.Scout)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+            BindFrame();
+
+            var newSlot = SlotOf(2);
+            Assert.That(newSlot, Is.Not.EqualTo(oldSlot),
+                "the compacted baseline moved the selected entity to another slot");
+
+            _selection.ResyncSelectionViews();
+
+            Assert.That(ViewAt(newSlot).IsSelected, Is.True,
+                "the ring must follow the entity id, not the cached slot index");
+            Assert.That(_selection.GetSelectedSlot(0), Is.EqualTo(newSlot),
+                "the controller must repair its cached slot for later commands");
+            Assert.That(
+                BuildOverlay().SelectionRingCount, Is.EqualTo(1));
+            Assert.That(
+                _selection.PruneStaleSelection(), Is.Zero,
+                "the repaired entry must survive the prune");
+            Assert.That(BuildOverlay().SelectionRingCount, Is.EqualTo(1));
+        }
+
+        /// <summary>
+        /// Audit P2-07, the other half: the receiver resets the mirror on the C0
+        /// Accepted frame and the C2 keyframe may land a frame later. A prune that
+        /// runs on the empty window must keep the identity, then resolve it against
+        /// the new baseline.
+        /// </summary>
+        [Test]
+        public void Prune_HoldsSelectionAcrossTheEmptyMirrorBeforeTheKeyframe()
+        {
+            var slot = Spawn(1, Ax, RowZ);
+            _selection.AddSelected(new EntityId(1), slot);
+
+            _world.Reset();
+            Assert.That(_world.LiveCount, Is.Zero);
+
+            Assert.That(
+                _selection.PruneStaleSelection(), Is.Zero,
+                "an empty mirror after a reset is not evidence that the unit died");
+            Assert.That(_selection.SelectedCount, Is.EqualTo(1));
+            Assert.That(
+                _selection.PruneStaleSelection(), Is.Zero,
+                "the hold must survive more than one empty frame");
+
+            Assert.That(_world.ApplyAdd(Add(1, Local, Ax, RowZ, UnitKinds.Scout)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+            BindFrame();
+
+            _selection.ResyncSelectionViews();
+            Assert.That(
+                _selection.PruneStaleSelection(), Is.Zero,
+                "once the baseline is back, the selection is resolved normally");
+            Assert.That(ViewOf(1).IsSelected, Is.True);
+            Assert.That(BuildOverlay().SelectionRingCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void Prune_RefreshesASlotThatCompactedWithoutAResync()
+        {
+            Spawn(1, Ax, RowZ);
+            Spawn(2, Bx, RowZ);
+            var oldSlot = SlotOf(2);
+            _selection.AddSelected(new EntityId(2), oldSlot);
+            ViewOf(2).SetSelected(false);
+
+            _world.Reset();
+            Assert.That(_world.ApplyAdd(Add(2, Local, Bx, RowZ, UnitKinds.Scout)),
+                Is.EqualTo(ClientWorldApplyResult.Ok));
+            BindFrame();
+            var newSlot = SlotOf(2);
+            Assert.That(newSlot, Is.Not.EqualTo(oldSlot));
+
+            Assert.That(
+                _selection.PruneStaleSelection(), Is.Zero,
+                "the prune itself must follow the entity into its new slot");
+            Assert.That(_selection.GetSelectedSlot(0), Is.EqualTo(newSlot));
+            Assert.That(ViewAt(newSlot).IsSelected, Is.True);
+        }
+
         [Test]
         public void UnitRemovedFromTheWorld_IsPrunedWithoutThrowing()
         {

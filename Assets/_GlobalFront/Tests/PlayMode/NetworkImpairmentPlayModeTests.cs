@@ -369,16 +369,10 @@ namespace GlobalFront.Tests.PlayMode
             _serverCarrier.CloseConnection(
                 serverConnectionId, TransportDisconnectReason.TransportLost);
 
-            // Wait for the server to observe the loss before the client is
-            // allowed to retry; a rebind that arrives while the server still
-            // considers the session Connected is answered with InvalidState,
-            // which is terminal for the coordinator.
-            yield return WaitFor(
-                () => _server.Host.TryGetSession(sessionId, out var record) &&
-                    record.State == SessionState.Disconnected,
-                ReconnectFsmTimeoutSeconds,
-                "the server must move the lost session into reconnect grace");
-
+            // Deliberately no wait for the server to observe the loss: on an
+            // asymmetric break the retry can reach the server while it still
+            // considers the session Connected, and the resulting InvalidState
+            // must be retried instead of terminating the coordinator (P2-03).
             // Dropping the client endpoint locally makes the coordinator
             // observe the loss deterministically; its next Pump runs the
             // automatic retry policy.
@@ -769,6 +763,11 @@ namespace GlobalFront.Tests.PlayMode
         {
             _serverObject = new GameObject("NetworkImpairmentPlayModeTests_Server");
             _server = _serverObject.AddComponent<DedicatedServerRunner>();
+
+            // This harness marks the match itself with the two-unit roster the
+            // assertions are written against; production auto-start would
+            // replace it with the default armies.
+            _server.AutoStartMatch = false;
             _server.Initialize(0);
 
             // Deterministic authority: the test is the only tick source.

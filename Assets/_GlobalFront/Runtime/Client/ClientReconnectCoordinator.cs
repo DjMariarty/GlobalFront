@@ -145,6 +145,18 @@ namespace GlobalFront.Client
 
         /// <summary>
         /// Processes authoritative C0 ReconnectResponse from the server.
+        ///
+        /// Only a refusal that can never succeed ends the reconnection:
+        /// <see cref="ReconnectResult.InvalidSecret"/>,
+        /// <see cref="ReconnectResult.SessionNotFound"/>,
+        /// <see cref="ReconnectResult.GraceExpired"/> and
+        /// <see cref="ReconnectResult.MatchFinished"/>.
+        /// <see cref="ReconnectResult.InvalidState"/> is transient — it means
+        /// the server still considers the old socket alive, which is what an
+        /// asymmetric break looks like from the reconnecting side — so the
+        /// coordinator stays in <see cref="ClientReconnectState.Reconnecting"/>
+        /// and lets the retry policy try again after the backoff (audit P2-03,
+        /// Block 3.1).
         /// </summary>
         public void OnReconnectResponse(in ReconnectResponse response)
         {
@@ -166,6 +178,11 @@ namespace GlobalFront.Client
                 _replicationReceiver?.PrepareForResync(response.ActiveKeyframeSeq);
                 ResyncStarted?.Invoke(response.ActiveKeyframeSeq);
                 SetState(ClientReconnectState.Resyncing);
+            }
+            else if (response.Result == ReconnectResult.InvalidState)
+            {
+                // Retryable: no state change. Reconnecting keeps TryBuildReconnectRequest
+                // armed and RemoteSliceSession's retry policy running.
             }
             else
             {

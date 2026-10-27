@@ -1,4 +1,7 @@
 using System;
+using GlobalFront.Client;
+using GlobalFront.Core.Model;
+using GlobalFront.Core.Simulation;
 using GlobalFront.DedicatedServer;
 using GlobalFront.Server;
 using GlobalFront.Server.Transport;
@@ -128,6 +131,115 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void TwoClients_AutoStartOneVersusOne_WithSpawnedArmies()
+        {
+            var savedTargetFrameRate = Application.targetFrameRate;
+            var pipe = new VirtualNetworkPipe(new ImpairmentProfile());
+            var clock = new VirtualTransportClock();
+            var serverAddress = pipe.CreateEndpoint();
+            var serverCarrier = OwnDatagramCarrier.CreateServer(pipe, serverAddress, clock);
+            var runnerObject = new GameObject("DedicatedServerRunner_AutoStart");
+            DedicatedServerRunner runner = null;
+            RemoteSliceSession first = null;
+            RemoteSliceSession second = null;
+
+            try
+            {
+                runner = runnerObject.AddComponent<DedicatedServerRunner>();
+                runner.Initialize(serverCarrier, clock);
+                Assert.That(runner.IsMatchActive, Is.False,
+                    "a dedicated server must not start a 1v1 before anyone joins");
+
+                first = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+                second = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+
+                first.Connect("virtual", 0);
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => first.IsConnected,
+                    "the first client must complete the handshake",
+                    first);
+                Assert.That(runner.JoinedPlayerCount, Is.EqualTo(1));
+                Assert.That(
+                    runner.IsMatchActive, Is.False,
+                    "one player cannot cover the two-army 1v1 roster");
+                Assert.That(runner.Host.UnitCount, Is.Zero);
+
+                second.Connect("virtual", 0);
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => second.IsConnected && runner.IsMatchActive,
+                    "the second handshake must start the match automatically",
+                    first,
+                    second);
+
+                Assert.That(
+                    runner.Host.ActiveSessionMatch, Is.EqualTo(runner.Match),
+                    "the forming match must transition to the running match");
+                Assert.That(runner.JoinedPlayerCount, Is.EqualTo(2));
+                Assert.That(
+                    runner.Host.UnitCount,
+                    Is.EqualTo(DedicatedServerRunner.UnitsPerArmy * 2),
+                    "both armies must spawn from the server-owned roster");
+
+                var snapshots = new ServerUnitSnapshot[SimulationConstants.MaxUnitsPerMatch];
+                var count = runner.Host.CopySnapshots(snapshots);
+                Assert.That(count, Is.EqualTo(DedicatedServerRunner.UnitsPerArmy * 2));
+                var owners = new System.Collections.Generic.HashSet<ulong>();
+                for (var index = 0; index < count; index++)
+                {
+                    owners.Add(snapshots[index].Owner.Value);
+                }
+
+                Assert.That(
+                    owners,
+                    Is.EquivalentTo(new[]
+                    {
+                        first.Endpoint.Player.Value,
+                        second.Endpoint.Player.Value
+                    }),
+                    "the roster must cover exactly the two attached players");
+
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => first.World.LiveCount == DedicatedServerRunner.UnitsPerArmy &&
+                        second.World.LiveCount == DedicatedServerRunner.UnitsPerArmy &&
+                        first.Receiver.IsWorldUsable &&
+                        second.Receiver.IsWorldUsable,
+                    "both clients must install the filtered baseline of their own army",
+                    first,
+                    second);
+
+                Assert.That(
+                    first.Receiver.ChecksumMismatchCount, Is.Zero);
+                Assert.That(
+                    second.Receiver.ChecksumMismatchCount, Is.Zero);
+            }
+            finally
+            {
+                first?.Dispose();
+                second?.Dispose();
+                runner?.Shutdown();
+                if (runnerObject != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(runnerObject);
+                }
+
+                Application.targetFrameRate = savedTargetFrameRate;
+            }
+        }
+
+        [Test]
         public void Bootstrap_ParsesPortAndTickRateArguments()
         {
             Assert.That(
@@ -157,6 +269,51 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(
                 DedicatedServerBootstrap.IsDedicatedServerRequested(Array.Empty<string>()),
                 Is.False);
+        }
+
+        private static void PumpUntil(
+            DedicatedServerRunner runner,
+            VirtualNetworkPipe pipe,
+            VirtualTransportClock clock,
+            Func<bool> condition,
+            string message,
+            params RemoteSliceSession[] sessions)
+        {
+            for (var elapsed = 0; elapsed < 15_000 && !condition(); elapsed += 10)
+            {
+                // The virtual pipe owns its own delivery clock: advancing the
+                // transport clock alone leaves every datagram in flight.
+                pipe.Advance(10);
+                clock.Advance(10);
+                runner.Update();
+                for (var index = 0; index < sessions.Length; index++)
+                {
+                    sessions[index].Pump(clock.NowMs);
+                }
+            }
+
+            Assert.That(condition(), Is.True, () =>
+            {
+                var builder = new System.Text.StringBuilder(message);
+                builder.Append("\nrunner: active=").Append(runner.IsMatchActive)
+                    .Append(" joined=").Append(runner.JoinedPlayerCount)
+                    .Append(" units=").Append(runner.Host?.UnitCount ?? -1)
+                    .Append(" tick=").Append(runner.Host?.CurrentTick ?? 0);
+                for (var index = 0; index < sessions.Length; index++)
+                {
+                    var session = sessions[index];
+                    builder.Append("\nsession").Append(index)
+                        .Append(": endpoint=").Append(session.Endpoint.State)
+                        .Append(" connected=").Append(session.IsConnected)
+                        .Append(" player=").Append(session.Endpoint.Player.Value)
+                        .Append(" live=").Append(session.World.LiveCount)
+                        .Append(" receiver=").Append(session.Receiver.State)
+                        .Append(" carrier=").Append(session.Carrier.Metrics.DatagramsSent)
+                        .Append('/').Append(session.Carrier.Metrics.DatagramsReceived);
+                }
+
+                return builder.ToString();
+            });
         }
 
         private sealed class FakeCarrier : INetworkCarrier

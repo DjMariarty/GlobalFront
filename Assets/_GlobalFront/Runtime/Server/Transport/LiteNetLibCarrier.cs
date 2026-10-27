@@ -440,7 +440,16 @@ namespace GlobalFront.Server.Transport
             _connectionToPeer.Remove(connectionId);
             _peerToConnection.Remove(peerId);
             _peerLimiters.Remove(peerId);
-            _snapshotStates.Remove(connectionId);
+            if (_snapshotStates.TryGetValue(connectionId, out var snapshotState))
+            {
+                // A partial C2 group holds pooled fragment slices. Dropping the
+                // state without Reset would orphan them from the pool until the
+                // GC collected them, which is exactly the circulation this pool
+                // exists to avoid (audit P2-01).
+                snapshotState.Assembler.Reset();
+                snapshotState.SeqByMessageId.Clear();
+                _snapshotStates.Remove(connectionId);
+            }
         }
 
         public void AssignSessionToken(int connectionId, ulong token)
@@ -458,11 +467,22 @@ namespace GlobalFront.Server.Transport
             _manager?.Stop();
             lock (_eventGate)
             {
-                _events.Clear();
+                // Queued messages own pooled buffers. Clearing the queue without
+                // handing them back breaks the pool's circulation (audit P2-01).
+                while (_events.Count > 0)
+                {
+                    TransportBufferPool.Return(_events.Dequeue().Data);
+                }
             }
 
             lock (_peerGate)
             {
+                foreach (var snapshotState in _snapshotStates.Values)
+                {
+                    snapshotState.Assembler.Reset();
+                    snapshotState.SeqByMessageId.Clear();
+                }
+
                 _connectionToPeer.Clear();
                 _peerToConnection.Clear();
                 _peerLimiters.Clear();
@@ -656,24 +676,49 @@ namespace GlobalFront.Server.Transport
             // it back through ReturnEventBuffer once handled; the event's
             // Length carries the logical size.
             var controlSegment = reader.GetRemainingBytesSegment();
-            var controlLength = controlSegment.Count;
-            var bytes = TransportBufferPool.Rent(controlLength);
-            if (controlLength > 0)
+            try
             {
-                System.Buffer.BlockCopy(
-                    controlSegment.Array, controlSegment.Offset, bytes, 0, controlLength);
+                HandleControlReceive(
+                    connectionId,
+                    limiter,
+                    controlSegment.Array,
+                    controlSegment.Offset,
+                    controlSegment.Count);
+            }
+            finally
+            {
+                reader.Recycle();
+            }
+        }
+
+        /// <summary>
+        /// Owns the control-packet copy: rents the pooled buffer, copies the
+        /// reader's storage into it, and either queues it or returns it to the
+        /// pool when the limiter rejects the packet. Every early exit here is a
+        /// terminal branch that must hand the buffer back (audit P2-01).
+        /// </summary>
+        private void HandleControlReceive(
+            int connectionId,
+            RateLimiter limiter,
+            byte[] source,
+            int offset,
+            int length)
+        {
+            var bytes = TransportBufferPool.Rent(length);
+            if (length > 0)
+            {
+                System.Buffer.BlockCopy(source, offset, bytes, 0, length);
             }
 
-            reader.Recycle();
-
-            if (!limiter.TryConsume(controlLength, _clock.NowMs))
+            if (!limiter.TryConsume(length, _clock.NowMs))
             {
                 _metrics.DroppedRateLimited++;
+                TransportBufferPool.Return(bytes);
                 return;
             }
 
             _metrics.DatagramsReceived++;
-            _metrics.BytesReceived += controlLength;
+            _metrics.BytesReceived += length;
 
             EnqueueEvent(new TransportEvent
             {
@@ -681,7 +726,7 @@ namespace GlobalFront.Server.Transport
                 ConnectionId = connectionId,
                 Channel = TransportChannel.Control,
                 Data = bytes,
-                Length = controlLength
+                Length = length
             });
         }
 
@@ -932,6 +977,12 @@ namespace GlobalFront.Server.Transport
                     }
 
                     _metrics.DroppedQueueOverflow++;
+
+                    // The dropped event owns a pooled buffer: a message shed by
+                    // queue pressure still has to go back to the pool (P2-01).
+                    // Control events (Connected/Disconnected) have no payload,
+                    // and Return(null) is a no-op.
+                    TransportBufferPool.Return(transportEvent.Data);
                     return;
                 }
 

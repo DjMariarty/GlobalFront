@@ -554,6 +554,11 @@ namespace GlobalFront.Tests.PlayMode
         {
             _serverObject = new GameObject("SyntheticPlaytest_Server");
             _server = _serverObject.AddComponent<DedicatedServerRunner>();
+
+            // The playtest owns the 402-unit roster and the exact scenario
+            // pacing; production auto-start would replace it with the default
+            // armies.
+            _server.AutoStartMatch = false;
             _server.Initialize(0, PlaytestTickRate, maxPlayers: 2);
             _serverCarrier = _server.Carrier as LiteNetLibCarrier;
             Assert.That(_serverCarrier, Is.Not.Null);

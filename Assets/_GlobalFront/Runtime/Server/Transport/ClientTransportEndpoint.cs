@@ -330,6 +330,19 @@ namespace GlobalFront.Server.Transport
 
         private void HandleEvent(TransportEvent transportEvent)
         {
+            // The carrier queue spans socket generations: the connect timeout
+            // closes one socket and the retry policy opens its replacement in
+            // the very same frame, so an event for the old id can still be
+            // queued when the new socket exists. Only the current generation
+            // may drive the endpoint; everything else is dropped (the pump
+            // still returns its buffer to the pool). Before the first Connect
+            // there is no generation to protect, so decoding-only callers that
+            // never open a socket keep working. Audit P2-04, Block 3.4.
+            if (_connectionId != 0 && transportEvent.ConnectionId != _connectionId)
+            {
+                return;
+            }
+
             switch (transportEvent.Type)
             {
                 case TransportEventType.Connected:

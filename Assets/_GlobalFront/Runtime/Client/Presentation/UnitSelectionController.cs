@@ -141,6 +141,14 @@ namespace GlobalFront.Client.Presentation
         private Vector2 _pressOriginPx;
         private EntityId _hoveredEntity;
 
+        // A resync resets the replicated world before the keyframe arrives, so
+        // a frame boundary can observe a completely empty mirror while every
+        // selected unit is still alive on the server. Pruning during that gap
+        // would drop the whole selection and make the ring repair pointless
+        // (audit P2-07).
+        private int _observedResetCount;
+        private bool _holdSelectionAcrossReset;
+
         private float _dragThresholdPixels = DefaultDragThresholdPixels;
         private float _minimumPickRadiusMetres = DefaultMinimumPickRadiusMetres;
         private double _doubleClickWindowSeconds = DefaultDoubleClickWindowSeconds;
@@ -175,6 +183,7 @@ namespace GlobalFront.Client.Presentation
             _binder = binder;
             _world = world;
             LocalPlayerId = localPlayer;
+            _observedResetCount = world.ResetCount;
 
             // A selection can never hold more entries than there are slots to bind,
             // so the binder's own walk length is both the default and the hard ceiling.
@@ -304,6 +313,26 @@ namespace GlobalFront.Client.Presentation
         /// </summary>
         public int PruneStaleSelection()
         {
+            // PrepareForResync resets the mirror on the C0 Accepted frame, and
+            // the C2 keyframe may land a frame later. Hold the identity across
+            // that empty window; it is resolved by entity id as soon as the new
+            // baseline fills the table again.
+            if (_world.ResetCount != _observedResetCount)
+            {
+                _observedResetCount = _world.ResetCount;
+                _holdSelectionAcrossReset = true;
+            }
+
+            if (_holdSelectionAcrossReset)
+            {
+                if (_world.LiveCount == 0)
+                {
+                    return 0;
+                }
+
+                _holdSelectionAcrossReset = false;
+            }
+
             var write = 0;
             for (var index = 0; index < _selectedCount; index++)
             {
@@ -313,6 +342,24 @@ namespace GlobalFront.Client.Presentation
                 {
                     _selectedEntities[write] = entity;
                     _selectedSlots[write] = slot;
+                    write++;
+                    continue;
+                }
+
+                // The unit may be alive in a compacted slot: a keyframe rebases
+                // the table and may move every entity (audit P2-07). Refresh the
+                // slot instead of dropping a selection the player still owns.
+                if (_world.TryGetSlot(new EntityId(entity), out var currentSlot) &&
+                    currentSlot != slot &&
+                    IsStillSelectable(entity, currentSlot))
+                {
+                    _selectedEntities[write] = entity;
+                    _selectedSlots[write] = currentSlot;
+                    if (_binder.TryGetView(currentSlot, out var rebound))
+                    {
+                        rebound.SetSelected(true);
+                    }
+
                     write++;
                     continue;
                 }
@@ -359,8 +406,19 @@ namespace GlobalFront.Client.Presentation
             for (var index = 0; index < _selectedCount; index++)
             {
                 var entity = _selectedEntities[index];
-                var slot = _selectedSlots[index];
-                if (_binder.TryGetView(slot, out var view) && view.EntityValue == entity)
+
+                // Never trust the cached slot: the keyframe that triggered this
+                // repair may have compacted the table, so the same entity can
+                // live in a different slot (audit P2-07). Resolve identity
+                // through the world's entity index and repair the cached slot.
+                if (!_world.TryGetSlot(new EntityId(entity), out var slot) ||
+                    !IsStillSelectable(entity, slot))
+                {
+                    continue;
+                }
+
+                _selectedSlots[index] = slot;
+                if (_binder.TryGetView(slot, out var view))
                 {
                     view.SetSelected(true);
                 }

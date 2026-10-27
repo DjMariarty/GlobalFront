@@ -223,6 +223,49 @@ namespace GlobalFront.Tests.EditMode.Client
         }
 
         [Test]
+        public void Coordinator_OnReconnectResponse_InvalidState_StaysRetryable()
+        {
+            var coordinator = new ClientReconnectCoordinator();
+            coordinator.CacheSession(_sessionId, _matchId, _playerId, in _secret);
+            coordinator.OnTransportDisconnected(TransportDisconnectReason.TransportLost);
+
+            Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Reconnecting));
+
+            var transient = new ReconnectResponse(
+                ReconnectResult.InvalidState,
+                _playerId,
+                _matchId,
+                serverTick: 100UL,
+                activeKeyframeSeq: 2);
+            coordinator.OnReconnectResponse(in transient);
+
+            Assert.That(
+                coordinator.State, Is.EqualTo(ClientReconnectState.Reconnecting),
+                "the server still seeing the old socket as Connected is transient, not fatal (P2-03)");
+            Assert.That(coordinator.IsReconnecting, Is.True);
+            Assert.That(
+                coordinator.TryBuildReconnectRequest(new byte[ReconnectRequest.SizeBytes], out _),
+                Is.True,
+                "the coordinator must stay able to retry");
+
+            // A second asymmetric loss keeps it retryable rather than terminating.
+            coordinator.OnTransportDisconnected(TransportDisconnectReason.TransportLost);
+            Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Reconnecting));
+            Assert.That(coordinator.ReconnectAttemptCount, Is.EqualTo(2));
+
+            var accepted = new ReconnectResponse(
+                ReconnectResult.Accepted,
+                _playerId,
+                _matchId,
+                serverTick: 120UL,
+                activeKeyframeSeq: 3);
+            coordinator.OnReconnectResponse(in accepted);
+            Assert.That(
+                coordinator.State, Is.EqualTo(ClientReconnectState.Resyncing),
+                "a later accepted attempt must still take the normal resync path");
+        }
+
+        [Test]
         public void Coordinator_OnKeyframeInstalled_TransitionsToCountdown()
         {
             var coordinator = new ClientReconnectCoordinator();

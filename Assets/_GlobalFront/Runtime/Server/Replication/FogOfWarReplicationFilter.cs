@@ -23,6 +23,13 @@ namespace GlobalFront.Server.Replication
     /// down. A skipped unit is invisible to every player — the fail-closed
     /// direction for an anti-maphack filter.
     ///
+    /// Units with <c>CurrentHealth &lt;= 0</c> are excluded from the vision
+    /// world entirely: a dead unit is neither a sight source nor part of any
+    /// player's view. The authoritative roster keeps the corpse record, but a
+    /// corpse that kept opening the fog around its own position was a free
+    /// reconnaissance source (audit P1-03, OD-39). The defined policy is that
+    /// destroyed units leave the replicated view on the tick they die.
+    ///
     /// Disabling the filter stops both the visibility computation and mask
     /// recording; the emitter then streams the global world. Re-enabling it
     /// mid-match leaves older mask ticks missing, which simply routes affected
@@ -97,6 +104,14 @@ namespace GlobalFront.Server.Replication
                     count >= _units.Length)
                 {
                     IgnoredUnitCount++;
+                    continue;
+                }
+
+                if (unit.CurrentHealth <= 0)
+                {
+                    // A corpse must not grant vision (audit P1-03): skipping it
+                    // here removes it as a sight source in every rule of the
+                    // engine, including the own-visible rule.
                     continue;
                 }
 

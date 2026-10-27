@@ -287,6 +287,70 @@ namespace GlobalFront.Tests.EditMode.Server.Transport
         }
 
         [Test]
+        public void Host_ReattachedSessionWithoutReady_IsClosedAfterDeadline()
+        {
+            var host = new ServerHost(20);
+            var transport = new ResumeTransport();
+            host.AttachReplication(transport);
+            host.Pause();
+
+            var session = host.CreateSession(host.CreateConnectionHandle());
+            transport.Reattach(session);
+            Assert.That(host.AwaitingResumeCount, Is.EqualTo(1));
+
+            host.AdvancePauseTicks(
+                (ulong)(ServerHost.DefaultResumeReadyTimeoutTicks - 1));
+            Assert.That(host.IsPaused, Is.True,
+                "one tick short of the deadline must not end the wait");
+            Assert.That(host.AwaitingResumeCount, Is.EqualTo(1));
+
+            host.AdvancePauseTicks(1);
+
+            Assert.That(
+                host.AwaitingResumeCount, Is.Zero,
+                "a silent reattached session must not hold the pause forever (P1-05)");
+            Assert.That(
+                host.IsPaused, Is.False,
+                "the forced close must release the pause when nothing else is in grace");
+            Assert.That(host.TryGetSession(session, out var record), Is.True);
+            Assert.That(record.State, Is.EqualTo(SessionState.Closed),
+                "the stalled session is dropped, not left half-bound");
+        }
+
+        [Test]
+        public void Host_ClosingAnotherSession_DoesNotResumeWhileOneStillAwaitsReady()
+        {
+            var host = new ServerHost(20);
+            var transport = new ResumeTransport();
+            host.AttachReplication(transport);
+
+            var match = host.CreateSessionMatch(2);
+            var sessionA = host.CreateSession(host.CreateConnectionHandle());
+            var sessionB = host.CreateSession(host.CreateConnectionHandle());
+            Assert.That(host.TryJoinMatch(sessionA, match, out _), Is.EqualTo(JoinResult.Assigned));
+            Assert.That(host.TryJoinMatch(sessionB, match, out _), Is.EqualTo(JoinResult.Assigned));
+
+            Assert.That(host.NotifyConnectionLost(sessionB, 0), Is.True);
+            Assert.That(host.IsPaused, Is.True);
+
+            transport.Reattach(sessionA);
+            Assert.That(host.AwaitingResumeCount, Is.EqualTo(1));
+
+            Assert.That(
+                host.CloseSession(sessionB), Is.True,
+                "the other session leaves the match while A is still resyncing");
+
+            Assert.That(
+                host.IsPaused, Is.True,
+                "B's exit must not lift the pause while A still owes its ready signal (P2-06)");
+            Assert.That(host.AwaitingResumeCount, Is.EqualTo(1));
+
+            host.OnClientReadyToResume(sessionA);
+            Assert.That(host.IsPaused, Is.False,
+                "once A signals and nothing is in grace, the pause lifts");
+        }
+
+        [Test]
         public void Host_DetachClearsAwaitingResume()
         {
             var host = new ServerHost(20);
