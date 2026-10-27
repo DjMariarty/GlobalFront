@@ -4,14 +4,16 @@
 
 ## Current Phase
 
-**Phases 1–3 — [COMPLETED / CERTIFIED] • Phase 4 / Milestone M1 (1v1 Dedicated Server Prototype) — [REMEDIATION DELIVERED, PENDING COORDINATOR REVIEW]** (изменения не закоммичены поверх `5beb1d1`)
+**Phases 1–3 — [COMPLETED / CERTIFIED] • Phase 4 / Milestone M1 (1v1 Dedicated Server Prototype) — [CERTIFIED: CONDITIONAL APPROVAL]** (коммит `8e35bb3`, аудит `Artifacts/GrandAudit-Phase4-M1-8e35bb3-R4.md`)
 
 ## Current Task
 
-**M1 remediation (Blocks 1–6) complete • 1351 EditMode + 22 PlayMode green • next: independent review & commit; then Milestone M2 (2v2 + Phase 5)**
+**Milestone M1 Certified • Transition to Milestone M2 (2v2 Multiplayer + Phase 5 Faction Asymmetry & Gameplay Depth)**
 
-- **M1 remediation 2026-10-27 (на базе `5beb1d1`, без коммита):** Grand Audit M1 (`Artifacts/Audit-Phase4-M1-5beb1d1.md`, `Artifacts/GrandAudit-Phase4-M1-5beb1d1-R2.md`, `-R3.md`) вынес REJECT. Закрыты: corpse vision (`FogOfWarReplicationFilter` исключает `CurrentHealth <= 0`), утечка координат через `MoveTarget` преследователя (заморозка на last-known), status-oracle в отказах атаки (`TargetInFogOfWar` до проверок существования/жизни), автоматический старт 1v1 (`DedicatedServerRunner`: lobby → ростер → `TryStartSessionMatch`), повторяемый `InvalidState`, дедлайн `_awaitingResume` (400 paused ticks), запрет преждевременного resume, фильтрация поколений `ConnectionId`, возврат пуловых буферов на всех путях сброса (+ Rent/Return accounting), resync колец по `EntityId` и удержание selection через пустое зеркало. 17 новых EditMode-тестов, 15 bite-прогонов.
-- **Scope M1 зафиксирован как 1v1** (OD-48 в `DECISIONS.md`); 2v2 официально перенесён в Milestone M2 / Phase 5.
+- **Milestone M1 Certification 2026-10-27 (коммит `8e35bb3`, Re-Audit R4):** Состязательный аудит R4 (`Artifacts/GrandAudit-Phase4-M1-8e35bb3-R4.md`) вынес вердикт **CONDITIONAL APPROVAL**. Открытые P0 = 0, P1 = 0, новые P2 = 0. Все дефекты блоков 1–6 закрыты без регрессий: зрение трупов ликвидировано, утечка `MoveTarget` скрытой цели заморожена, status-oracle устранён, автостарт 1v1 работает, реконнект `InvalidState` нетерминален, дедлайн паузы 400 тиков активен, пуловые буферы возвращаются на всех путях сброса с учётом баланса, кольца выделения разрешаются по EntityId.
+- **Остаточный P2-бэклог (P2-02, P2-05, P2-08, P2-10, P2-11, P2-12)** формально перенесён в скоуп Milestone M2 / Phase 5.
+- **Scope M1 зафиксирован как 1v1** (OD-48 в `DECISIONS.md`); 2v2 перенесён в Milestone M2.
+- **Тестовый гейт:** **1373/1373 автоматизированных тестов зелёные (1351 EditMode + 22 PlayMode)**.
 
 - **Phase 1 (Simulation Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Спринты hardening 1.1–1.5.1 закрыли concurrency, reentrancy, friendly-fire и snapshot allocations (`5b16a05`..`349a074`).
 - **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / P0/P1 = 0 CERTIFIED]. Шаги 2.1–2.8 + спринты hardening 2.1–2.5 (`5c94e07`..`4cb8ffa`). Сертификация Phase 2.0 на `4cb8ffa` подтвердила **P0/P1 = 0**: это строгий состязательный ре-аудит, выполненный Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); сам отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели привлекались только на промежуточных этапах ревью и авторами сертификата не являются. Уязвимость N-01 / D-10 / A-01 полностью ликвидирована на 3 независимых слоях. Все оставшиеся замечания (F-1..F-11, F-13..F-15, N-02..N-04) закрыты в Hardening Phase 3.7.1 — см. блоки ниже.
