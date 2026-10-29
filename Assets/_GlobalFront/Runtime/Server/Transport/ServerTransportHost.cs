@@ -185,6 +185,28 @@ namespace GlobalFront.Server.Transport
             }
         }
 
+        /// <summary>
+        /// Force-terminates one attached session (M1.1 F3): the client first
+        /// receives the terminal <see cref="TransportMessageType.Disconnect"/>
+        /// status carrying <paramref name="reason"/>, then the token binding
+        /// is released and the socket is closed. Without this the ready
+        /// deadline closed the session server-side while the socket lived on,
+        /// leaving the client stuck in Resyncing.
+        /// </summary>
+        public bool DetachSession(SessionId session, TransportDisconnectReason reason)
+        {
+            if (!_binder.TryGetTokenBySession(session, out var token) ||
+                !_binder.TryGetByToken(token, out var binding))
+            {
+                return false;
+            }
+
+            SendDisconnect(session, reason);
+            _binder.Release(session);
+            _carrier.CloseConnection(binding.ConnectionId, reason);
+            return true;
+        }
+
         /// <summary>Graceful server shutdown: best-effort notice, then close.</summary>
         public void Shutdown()
         {

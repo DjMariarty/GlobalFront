@@ -165,7 +165,7 @@ namespace GlobalFront.Tests.EditMode
                     new[] { unit },
                     new WorldPointMm(1000, 0),
                     new FormationSpec(1, 2000, CardinalFacing.North)),
-                Is.EqualTo(MatchCommandRejection.NotEntityOwner));
+                Is.EqualTo(MatchCommandRejection.UnknownEntity));
         }
 
         [Test]

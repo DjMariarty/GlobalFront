@@ -548,6 +548,19 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - **Zero-GC контракт ограничен:** замер покрывает клиентский транспорт и пайплайны репликации при отключённой презентации (3 s, 0 блоков GC.Alloc). Полный кадр с URP/Editor аллоцирует мегабайты и в контракт не входит; поле `gcAllocBytes` в `playtest_metrics.json` — sentinel по числу blocks (`0` или `-1`), а не независимое измерение байт.
 - **Не заявлять «ZERO DEFECTS / M1 ACHIEVED» без нового независимого прохода.** Документы описывают remediation как DELIVERED / PENDING REVIEW; остаточные замечания R3 (P2-02, P2-05, P2-08, P2-10..P2-12, P3) перечислены в `CURRENT_STATE.md`.
 
+#### [OD-49] Milestone M1.1 Forensic Seal & Residual Defect Elimination
+*Status:* ACCEPTED (2026-10-29, по итогам аудита Kimi k 3.1 Pro / Qwen / DeepSeek)
+- **Устранение оракула сущностей (P1-1):** `MatchServer.ValidateControllable` для любого чужого или несуществующего `EntityId` возвращает строго `UnknownEntity`. `NotEntityOwner` исключён из протокола ACK, делая невозможным перебор вражеского ростера в тумане войны.
+- **Масштабирование пула буферов для 400 юнитов (P1-2):** `TransportBufferPool.BuffersPerBucket` увеличен с 8 до 32, а для 2048-байтовых слайсов фрагментов — до 64 (`LargeBuffersPerBucket = 64`); предпрогрев увеличен до 16. Ликвидированы циклические аллокации (2072 B) при сборке 9+ фрагментов (16-32 KiB keyframes).
+- **Очистка лобби и отмена соло-старта (F1/F2 / P2-1/P2-2):** `DedicatedServerRunner` удаляет игрока из `_joinedPlayers` и освобождает слот при отключении до старта (`ReleaseFormingSlot`). 30-секундный таймаут соло-старта удалён: старт строго при наличии ровно 2 игроков.
+- **Отвязка сетевого сокета при ready-дедлайне (F3 / P2-3):** При истечении 400 тиков паузы вызывается `ServerTransportHost.DetachSession`, отправляющий клиенту терминальный статус `ReadyTimeout` и освобождающий сетевой биндинг (`BoundCount == 0`).
+- **Монотонные часы Grace-периода (F4 / P2-4):** Введён `SessionGraceClock = CurrentTick + _pausedGraceTicks`. Повторный обрыв связи во время паузы штампуется актуальным монотонным тиком, гарантируя полные 4000 тиков (200 с) grace.
+- **Терминальные состояния матча и выключения (F5/F6):** При `MatchPhase.Finished` сервер рассылает клиентам терминальный статус `MatchFinished` и отвязывает сессии. При получении `ServerShutdown` клиент переходит в `Terminated` без бесконечного реконнекта.
+- **Очистка фрагментов в OwnDatagramCarrier (P2-5):** В методы sweep, `CloseConnection` и `Shutdown` добавлен `Assembler.Reset()`.
+- **Разделение enum (N-2):** `ReconnectModel`: `InvalidState = 5`, `Denied = 6` (только `InvalidState` является retryable).
+- **Причина удаления юнита (N-3):** Труп с `CurrentHealth <= 0` реплицируется строго как `DeltaRemoveCause.Destroyed`, а не `FogOfWarHidden`.
+- **Тестовый гейт расширен до 1390 тестов (1368 EditMode + 22 PlayMode), 100% green.** Добавлены тесты `M1ForensicSealTests.cs`; все 10 фиксов подтверждены bite-прогонами revert-to-fail.
+
 ### Verification Criteria (historical, superseded by the M1 audit)
 - Сквозные тесты Dedicated Server + 2 Remote Clients на 400 юнитах без десинков (`ChecksumMismatchCount == 0` доказан в `ReplicationParityUnderImpairmentTests` и `SyntheticPlaytestPlayModeTests`).
 - Полное отсутствие аллокаций памяти (`Is.Not.AllocatingGCMemory()`) на серверном тике и клиентском цикле рендеринга; Zero-GC транспорт под непрерывным боем (`TransportBufferPool.cs`).

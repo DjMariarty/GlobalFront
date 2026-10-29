@@ -127,6 +127,23 @@ namespace GlobalFront.Client
         }
 
         /// <summary>
+        /// Terminates the session after an authoritative server status
+        /// (shutdown, match finished, ready deadline — M1.1 F5/F6). Terminal
+        /// means no further reconnect attempt is armed: both
+        /// <see cref="TryBuildReconnectRequest"/> and the hosting retry policy
+        /// gate on the FSM state.
+        /// </summary>
+        public void OnSessionTerminated(TransportDisconnectReason reason)
+        {
+            if (State == ClientReconnectState.Terminated)
+            {
+                return;
+            }
+
+            SetState(ClientReconnectState.Terminated);
+        }
+
+        /// <summary>
         /// Builds a 64-byte wire ReconnectRequest for channel C0 (opcode = 12).
         /// Zero-GC allocation on hot path.
         /// </summary>

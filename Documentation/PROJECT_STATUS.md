@@ -1,26 +1,25 @@
 # Статус проекта GlobalFront
 
-> Фактический технический статус • обновлено 2026-10-27
+> Фактический технический статус • обновлено 2026-10-29
 
 ## Summary
 
-GlobalFront: Phases 1.0 — 2.8 + Phase 3.0 (Шаги 3.1–3.7) + Hardening Phase 3.7.1 + Phase 4.0 (Шаги 4.1–4.6.5) — **M1 REMEDIATION DELIVERED, PENDING COORDINATOR REVIEW**.
+GlobalFront: Phases 1.0 — 2.8 + Phase 3.0 (Шаги 3.1–3.7) + Hardening Phase 3.7.1 + Phase 4.0 (Шаги 4.1–4.6.5) + **Микро-спринт M1.1 (Forensic Seal)** — **10/10 ДЕФЕКТОВ ЗАКРЫТЫ, 1390 ТЕСТОВ ЗЕЛЁНЫЕ**.
 - **Phase 1 Hardening:** Спринты 1.1–1.5.1 (`5b16a05`..`349a074`) закрыли race conditions, reentrancy, friendly fire, unit limits и alloc-free snapshots.
 - **Phase 2 Hardening & Grand Re-Audit:** Спринты 2.1–2.5 (`5c94e07`..`4cb8ffa`) устранили socket hijack, rate limit leaks, fragment map overflow, concurrency в TickDriver и cross-session reconnect hijack (N-01 / D-10 / A-01; P0/P1 = 0 сертифицирован).
 - **Hardening Phase 3.7.1 (Grand Audit remediation):** Блоки 1–4 (`934840d`..`3a112ad`) закрыли F-1..F-11, F-13..F-15 и N-02..N-04 на уровне кода; блок 5 закрыл документальные F-6 и F-10.
 - **Phase 3 (Visual Presentation & RTS Controls):** Шаги 3.1–3.7 (ADR-012, OD-23..OD-29) полностью сертифицированы `[APPROVED: ZERO DEFECTS]` (`3414ba6` / `cb01ea2`). Замер OD-28 на 400 юнитах: **0.623 ms/frame** и **0 B GC.Alloc** за 60 steady-state кадров. Milestone **M2 Playable RTS Core** достигнут.
-- **Phase 4 (Multiplayer Gameplay Integration):** Шаги 4.1–4.6.5 реализованы. Grand Audit M1 (отчёты `Artifacts/Audit-Phase4-M1-5beb1d1.md`, `GrandAudit-Phase4-M1-5beb1d1-R2.md`, `-R3.md`) вынес **REJECT** прежней сертификации; M1 remediation 2026-10-27 закрывает замечания блоков 1–5 этого задания. Milestone **M1 = 1v1 Dedicated Server Prototype**; 2v2 официально перенесён в Milestone M2 (Phase 5), см. OD-48.
-  - Dedicated Server (`GlobalFront.ServerHost`, `DedicatedServerRunner`, `DedicatedServerBootstrap`). M1 remediation добавил автоматический старт 1v1: два рукопожатия → серверный ростер `UnitsPerArmy × 2` → `TryStartSessionMatch`.
-  - Remote Dedicated Client (`RemoteSliceSession`, `ClientTransportEndpoint`, CLI `-connect`, меню `GlobalFront/Playtest/Launch 400-Unit Dedicated Match`).
-  - Server-Side Fog of War (`BitMask1024`, `VisibilityEngine`, `VisibilityHistoryRing`, `FogOfWarReplicationFilter`, per-client delta stream & `StateChecksum`, anti-maphack combat validation). M1 remediation закрыл corpse vision, утечку координат через `MoveTarget` преследователя и status-oracle в отказах атаки.
-  - Authoritative Command Ingress (`CalculateLeadTicks`, multi-batch dispatch, sequence token security).
-  - Live Combat Reconnect & Tactical Pause (C0 opcode 9/13/14, 4000-тик grace, 5s countdown, C0 auto-resume, `ResyncSelectionViews()`). M1 remediation сделал `InvalidState` повторяемым, ввёл дедлайн ожидания ready, запретил преждевременное снятие паузы и добавил фильтрацию поколений соединений.
-  - 400-Unit Parity under Impairment (Wi-Fi 1%, WAN 5% + Burst, 0 desyncs, `ChecksumMismatchCount == 0`).
-  - Live UDP PlayMode Harness (`NetworkImpairmentPlayModeTests`, LiteNetLib `SIMULATE_NETWORK`).
-  - Synthetic 400-Unit Playtest (`SyntheticPlaytestPlayModeTests`), 1080p capture harness, honest combat damage. Честная длительность сценария — **≈26.1–26.3 s** (спавн → бой → разрыв → реконнект → возобновление), а не «5 минут»; FPS-окно — 3 s.
-  - Zero-GC контракт транспорта: `TransportBufferPool` с учётом Rent/Return; замер ограничен клиентским транспортом и пайплайнами репликации при отключённой презентации (3 s, **0 блоков GC.Alloc**). Полный кадр с URP/Editor аллоцирует мегабайты и в контракт не входит.
+- **Phase 4 (Multiplayer Gameplay Integration & Milestone M1.1):** Шаги 4.1–4.6.5 + микро-спринт M1.1 реализованы. Milestone **M1 = 1v1 Dedicated Server Prototype**; 2v2 официально перенесён в Milestone M2 (Phase 5), см. OD-48.
+  - Устранён Command ACK оракул вражеского ростера (`ValidateControllable` fail-closed, P1-1).
+  - Пул `TransportBufferPool` расширен (32/64 буферов, предпрогрев 16), аллокации 9+ фрагментов устранены (P1-2).
+  - Очистка лобби при выходе до старта (`ReleaseFormingSlot`, F2) и удаление соло-старта (F1).
+  - Отвязка сокета по ready-дедлайну (`DetachSession`, F3).
+  - Непрерывные часы Grace-периода (`SessionGraceClock`, 200с при обрыве во время паузы, F4 / P2-05).
+  - Терминация клиентов при победе (`MatchFinished`, F5) и штатном выключении сервера (`ServerShutdown`, F6).
+  - Сброс ассемблера в `OwnDatagramCarrier` (P2-5).
+  - Разведение enum `InvalidState=5`, `Denied=6` (N-2) и причина смерти `Destroyed` (N-3).
 
-Проверка текущего состояния: **1351/1351 EditMode passed (100%)** и **22/22 PlayMode passed (100%)** (**1373 автоматизированных теста суммарно**, 0 failed, 0 skipped; gates: `Artifacts/TestResults/m1-remediation-editmode-postbite.xml` / `m1-remediation-playmode.xml`, 2026-10-27; изменения не закоммичены). Открытые остатки Grand Audit (P1-02 2v2 — вынесен в M2; P2-02, P2-05, P2-08, P2-10..P2-12 и P3) перечислены в `CURRENT_STATE.md`.
+Проверка текущего состояния: **1368/1368 EditMode passed (100%)** и **22/22 PlayMode passed (100%)** (**1390 автоматизированных тестов суммарно**, 0 failed, 0 skipped). Все 10 фиксов подтверждены bite-прогонами revert-to-fail.
 
 ## Confirmed Baseline
 

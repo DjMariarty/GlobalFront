@@ -142,7 +142,7 @@ namespace GlobalFront.Tests.EditMode.Server
         }
 
         [Test]
-        public void TryEnqueueAttack_AttackerNotOwnedByPlayer_ReturnsNotEntityOwner()
+        public void TryEnqueueAttack_AttackerNotOwnedByPlayer_ReturnsUnknownEntity()
         {
             var server = new MatchServer();
             var foreign = server.SpawnUnit(
@@ -153,7 +153,7 @@ namespace GlobalFront.Tests.EditMode.Server
             Assert.That(
                 server.TryEnqueueAttack(
                     AttackHeader(Player1, 1, 1), new[] { foreign }, target),
-                Is.EqualTo(MatchCommandRejection.NotEntityOwner));
+                Is.EqualTo(MatchCommandRejection.UnknownEntity));
         }
 
         [Test]

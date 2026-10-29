@@ -142,6 +142,38 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
             Assert.That(client.Receiver.World.Contains(enemy), Is.False);
         }
 
+        /// <summary>
+        /// M1.1 N-3: a corpse stays in the authoritative capture (the server
+        /// never shrinks its roster) but drops out of the vision mask. That
+        /// 1 → 0 transition is a destruction, and must not be reported as a
+        /// fog concealment.
+        /// </summary>
+        [Test]
+        public void Destroyed_CorpseInSight_SendsDestroyedRemove()
+        {
+            var harness = new Harness();
+            var own = new EntityId(1);
+            var enemy = new EntityId(2);
+            harness.Source.Spawn(own, Player1, 0, 0);
+            harness.Source.Spawn(enemy, Player2, 5_000, 0);
+            var client = harness.AddClient(Player1);
+
+            Assert.That(client.Receiver.World.Contains(enemy), Is.True,
+                "the enemy must be visible before it dies");
+
+            harness.Source.Damage(enemy, 0);
+            harness.Step();
+
+            var delta = client.Deltas[client.Deltas.Count - 1];
+            Assert.That(delta.Removes.Length, Is.EqualTo(1), "1 -> 0 must be one REMOVE");
+            Assert.That((DeltaRemoveCause)delta.Removes[0].Cause,
+                Is.EqualTo(DeltaRemoveCause.Destroyed),
+                "a dead unit leaving the view is a destruction, not a fog concealment");
+            Assert.That(client.Receiver.World.DestroyedRemoveCount, Is.EqualTo(1));
+            Assert.That(client.Receiver.World.FogOfWarRemoveCount, Is.Zero);
+            Assert.That(client.Receiver.World.Contains(enemy), Is.False);
+        }
+
         [Test]
         public void HiddenEnemy_MovesAndAttacks_NoRecordsLeak()
         {

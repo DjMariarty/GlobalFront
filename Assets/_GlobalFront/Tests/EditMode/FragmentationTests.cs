@@ -318,6 +318,176 @@ namespace GlobalFront.Tests.EditMode
                 "message; the Group, jagged/length arrays and every slice must be pooled");
         }
 
+        /// <summary>
+        /// M1.1 P1-2: a 16-fragment snapshot is twice the old 8-slot bucket,
+        /// so half of every reassembly was dropped to the GC and reallocated
+        /// on the next message. After warm-up, cycles of pooled 12- and
+        /// 16-fragment assemblies must not allocate a single byte.
+        /// </summary>
+        [Test]
+        public void Reassembly_PooledTwelveAndSixteenFragmentCycles_DoNotAllocate()
+        {
+            const int twelve = 12;
+            const int sixteen = 16;
+            var dataTwelve = new byte[twelve * TransportProtocol.FragmentPayloadBytes];
+            var dataSixteen = new byte[sixteen * TransportProtocol.FragmentPayloadBytes];
+            for (var index = 0; index < dataTwelve.Length; index++)
+            {
+                dataTwelve[index] = (byte)((index * 31) & 0xFF);
+            }
+
+            for (var index = 0; index < dataSixteen.Length; index++)
+            {
+                dataSixteen[index] = (byte)((index * 17 + 3) & 0xFF);
+            }
+
+            TransportBufferPool.Warm();
+            var assembler = new FragmentAssembler();
+
+            // Warm-up: the Group pool, the 16-slot jagged arrays and every
+            // slice bucket must be populated before the measured window.
+            for (var warm = 0; warm < 4; warm++)
+            {
+                var message = FeedPooledMessage(
+                    assembler, (ushort)(100 + warm), dataSixteen, sixteen, warm * 100);
+                Assert.That(message, Is.Not.Null);
+                TransportBufferPool.Return(message);
+
+                message = FeedPooledMessage(
+                    assembler, (ushort)(200 + warm), dataTwelve, twelve, warm * 100 + 50);
+                Assert.That(message, Is.Not.Null);
+                TransportBufferPool.Return(message);
+            }
+
+            Assert.That(assembler.GroupCount, Is.Zero, "no group may survive a completed message");
+
+            var control = CountCurrentThreadGcAllocations(
+                () =>
+                {
+                    var probe = new byte[16];
+                    System.GC.KeepAlive(probe);
+                });
+            Assert.That(control, Is.EqualTo(1),
+                "the GC.Alloc recorder must observe a known allocation");
+
+            byte[] completed = null;
+            var measured = CountCurrentThreadGcAllocations(
+                () =>
+                {
+                    for (var round = 0; round < 5; round++)
+                    {
+                        completed = FeedPooledMessage(
+                            assembler, 1, dataTwelve, twelve, 1000 + round * 10);
+                        TransportBufferPool.Return(completed);
+                        completed = FeedPooledMessage(
+                            assembler, 2, dataSixteen, sixteen, 1005 + round * 10);
+                        TransportBufferPool.Return(completed);
+                    }
+                });
+
+            Assert.That(completed, Is.Not.Null);
+            Assert.That(measured, Is.Zero,
+                "a warmed 12/16-fragment pooled assembly cycle must not allocate; " +
+                "a nonzero count means a bucket still spills its slices to the GC");
+        }
+
+        /// <summary>
+        /// M1.1 P1-2, non-pooled carrier path: the completed message is the
+        /// caller's allocation, but its slices are not. Discarding 12- and
+        /// 16-fragment groups in a cycle must recycle every slice through the
+        /// buckets instead of dropping half of them to the GC.
+        /// </summary>
+        [Test]
+        public void Reassembly_DiscardedTwelveAndSixteenFragmentGroups_DoNotAllocate()
+        {
+            const int sixteen = 16;
+            var data = new byte[sixteen * TransportProtocol.FragmentPayloadBytes];
+            TransportBufferPool.Warm();
+            var assembler = new FragmentAssembler();
+
+            for (var warm = 0; warm < 4; warm++)
+            {
+                FeedIncompleteGroup(assembler, (ushort)(300 + warm), data, sixteen, warm * 100);
+                Assert.That(assembler.DiscardGroup((ushort)(300 + warm)), Is.True);
+            }
+
+            var control = CountCurrentThreadGcAllocations(
+                () =>
+                {
+                    var probe = new byte[16];
+                    System.GC.KeepAlive(probe);
+                });
+            Assert.That(control, Is.EqualTo(1),
+                "the GC.Alloc recorder must observe a known allocation");
+
+            var measured = CountCurrentThreadGcAllocations(
+                () =>
+                {
+                    for (var round = 0; round < 5; round++)
+                    {
+                        FeedIncompleteGroup(assembler, 1, data, sixteen, 1000 + round * 10);
+                        assembler.DiscardGroup(1);
+                    }
+                });
+
+            Assert.That(measured, Is.Zero,
+                "sixteen discarded slices must all fit their bucket; a nonzero count " +
+                "means the pool threw a slice away and reallocated it");
+        }
+
+        private static byte[] FeedPooledMessage(
+            FragmentAssembler assembler,
+            ushort messageId,
+            byte[] data,
+            ushort fragmentCount,
+            long nowMs)
+        {
+            byte[] complete = null;
+            for (var index = 0; index < fragmentCount; index++)
+            {
+                MessageFragmenter.GetFragmentPayload(
+                    data.Length, index, out var offset, out var length);
+                complete = assembler.AddFragmentPooled(
+                    messageId,
+                    (ushort)index,
+                    fragmentCount,
+                    data,
+                    offset,
+                    length,
+                    nowMs + index,
+                    out _);
+            }
+
+            return complete;
+        }
+
+        /// <summary>
+        /// Feeds all but the last fragment of the declared group: the last
+        /// one would complete it and release the slices this test keeps alive
+        /// until the teardown path under test.
+        /// </summary>
+        private static void FeedIncompleteGroup(
+            FragmentAssembler assembler,
+            ushort messageId,
+            byte[] data,
+            ushort fragmentCount,
+            long nowMs)
+        {
+            for (var index = 0; index < fragmentCount - 1; index++)
+            {
+                MessageFragmenter.GetFragmentPayload(
+                    data.Length, index, out var offset, out var length);
+                assembler.AddFragment(
+                    messageId,
+                    (ushort)index,
+                    fragmentCount,
+                    data,
+                    offset,
+                    length,
+                    nowMs + index);
+            }
+        }
+
         [Test]
         public void Reassembly_ReusedPoolBuffers_DoNotLeakBytesBetweenGroups()
         {

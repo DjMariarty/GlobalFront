@@ -85,6 +85,10 @@ namespace GlobalFront.Server
         // scan never allocates on the paused tick path.
         private readonly List<SessionId> _expiredResumeWaiters = new List<SessionId>();
 
+        // Snapshot of the sessions of a match that just reached its terminal
+        // outcome, reused so match teardown allocates nothing per tick.
+        private readonly List<SessionId> _terminatedSessionBuffer = new List<SessionId>();
+
         // Pause bookkeeping is whole nanoseconds rather than a double: the
         // architecture gate forbids floating-point instance fields in the
         // server assembly, and this value only elapses the disconnect grace
@@ -150,6 +154,23 @@ namespace GlobalFront.Server
             _sessions.SessionGraceExpired += OnSessionGraceExpired;
             _sessions.SessionClosed += OnSessionClosed;
         }
+
+        /// <summary>
+        /// Continuous session clock: simulation ticks plus the pause ticks
+        /// accumulated while the simulation was frozen. Disconnect stamps and
+        /// grace deadlines must use it, otherwise a link lost deep inside a
+        /// tactical pause is dated before the pause started and consumes the
+        /// grace budget that already elapsed (M1.1 F4).
+        /// </summary>
+        public ulong SessionGraceClock => _server.CurrentTick + _pausedGraceTicks;
+
+        /// <summary>
+        /// Raised when the host force-terminates a session outside the normal
+        /// loss/grace path: the ready-to-resume deadline expired, or the match
+        /// reached its terminal outcome. The hosting layer must deliver the
+        /// terminal status to the client and detach the socket (M1.1 F3/F5).
+        /// </summary>
+        public event Action<SessionId, GlobalFront.Server.Transport.TransportDisconnectReason> SessionTerminated;
 
         /// <summary>
         /// Raised before the server simulates tick N, while the server is
@@ -361,6 +382,12 @@ namespace GlobalFront.Server
                 var session = _expiredResumeWaiters[index];
                 _awaitingResume.Remove(session);
                 _sessions.CloseSession(session);
+
+                // The socket must not outlive the closed session: the client
+                // would otherwise stay in Resyncing forever, retrying into a
+                // session the server already forgot (M1.1 F3).
+                SessionTerminated?.Invoke(
+                    session, GlobalFront.Server.Transport.TransportDisconnectReason.ReadyTimeout);
             }
 
             _expiredResumeWaiters.Clear();
@@ -647,6 +674,13 @@ namespace GlobalFront.Server
             _sessions.TryJoinMatch(session, match, out assigned);
 
         /// <summary>
+        /// Frees a forming match's player slot for a session that detached
+        /// before the start (M1.1 P2-2). No-op once the match is running.
+        /// </summary>
+        public bool ReleaseFormingSlot(SessionId session) =>
+            _sessions.ReleaseFormingSlot(session);
+
+        /// <summary>
         /// Session-aware match start (OD-6): maps the host-supplied template
         /// onto the assigned PlayerIds deterministically and initializes the
         /// authoritative server. Returns false — leaving the match forming —
@@ -781,9 +815,22 @@ namespace GlobalFront.Server
 
             // A terminal authoritative outcome retires the session-managed
             // match: a finished match accepts no joins and no commands.
-            if (_activeSessionMatch.IsValid && _server.Outcome.IsTerminal)
+            if (_activeSessionMatch.IsValid && _server.Outcome.IsTerminal &&
+                _sessions.NotifyMatchFinished(_activeSessionMatch))
             {
-                _sessions.NotifyMatchFinished(_activeSessionMatch);
+                // Every attached client must learn the outcome once: commands
+                // are refused from now on, and a silent socket would leave the
+                // client in Established or in an endless reconnect loop
+                // (M1.1 F5).
+                _sessions.CopyMatchSessions(_activeSessionMatch, _terminatedSessionBuffer);
+                for (var index = 0; index < _terminatedSessionBuffer.Count; index++)
+                {
+                    SessionTerminated?.Invoke(
+                        _terminatedSessionBuffer[index],
+                        GlobalFront.Server.Transport.TransportDisconnectReason.MatchFinished);
+                }
+
+                _terminatedSessionBuffer.Clear();
             }
         }
     }

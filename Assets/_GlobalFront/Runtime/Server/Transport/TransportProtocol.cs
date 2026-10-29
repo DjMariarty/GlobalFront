@@ -120,7 +120,20 @@ namespace GlobalFront.Server.Transport
         Timeout = 3,
         MaxRetransmits = 4,
         TransportLost = 5,
-        Rejected = 6
+        Rejected = 6,
+
+        /// <summary>
+        /// Terminal status sent when the authoritative match ended (M1.1 F5).
+        /// The client retires the session instead of reconnecting into a
+        /// closed match.
+        /// </summary>
+        MatchFinished = 7,
+
+        /// <summary>
+        /// Terminal status sent when a reattached session missed its
+        /// ready-to-resume deadline (M1.1 F3).
+        /// </summary>
+        ReadyTimeout = 8
     }
 
     /// <summary>

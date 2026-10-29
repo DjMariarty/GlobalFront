@@ -252,6 +252,45 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
                 "refused orders must not consume a sequence number");
         }
 
+        /// <summary>
+        /// M1.1 P1-1: the executor ownership check must not answer differently
+        /// for a hidden enemy than for an id that never existed. Otherwise a
+        /// Stop probe with incrementing ids reconstructs the hidden roster
+        /// one entity at a time.
+        /// </summary>
+        [Test]
+        public void StopProbe_ForeignAndMissingIds_AreIndistinguishable()
+        {
+            var filter = new FogOfWarReplicationFilter();
+            var server = new MatchServer(SkirmishCombatRelation.Instance, filter);
+            server.SpawnUnit(Player1, StandardStats, new WorldPointMm(0, 0), speedMmPerTick: 1);
+            var hidden = server.SpawnUnit(
+                Player2, StandardStats, new WorldPointMm(900_000, 0), speedMmPerTick: 1);
+            var visibleForeign = server.SpawnUnit(
+                Player2, StandardStats, new WorldPointMm(4_000, 0), speedMmPerTick: 1);
+            RecordTick(server, filter);
+
+            Assert.That(filter.IsVisible(server.CurrentTick, Player1, hidden), Is.False,
+                "the fixture needs one genuinely hidden enemy");
+            Assert.That(filter.IsVisible(server.CurrentTick, Player1, visibleForeign), Is.True,
+                "the fixture needs one visible enemy as well");
+
+            var hiddenResult = server.TryEnqueueStop(
+                StopHeader(Player1, 1, server.CurrentTick + 1), new[] { hidden });
+            var visibleResult = server.TryEnqueueStop(
+                StopHeader(Player1, 2, server.CurrentTick + 1), new[] { visibleForeign });
+            var missingResult = server.TryEnqueueStop(
+                StopHeader(Player1, 3, server.CurrentTick + 1), new[] { new EntityId(999_999) });
+
+            Assert.That(
+                new[] { hiddenResult, visibleResult, missingResult },
+                Is.All.EqualTo(MatchCommandRejection.UnknownEntity),
+                "every id outside the commander's ownership must produce one identical refusal");
+            Assert.That(
+                server.TryGetLastAcceptedSequence(Player1, out _), Is.False,
+                "refused probes must not consume a sequence number");
+        }
+
         [Test]
         public void Passthrough_WithoutFilter_KeepsTheDetailedRejections()
         {
@@ -288,6 +327,10 @@ namespace GlobalFront.Tests.EditMode.Server.Replication
         private static CommandHeader MoveHeader(
             PlayerId player, uint sequence, ulong requestedTick) =>
             new CommandHeader(player, sequence, requestedTick, GameCommandType.Move);
+
+        private static CommandHeader StopHeader(
+            PlayerId player, uint sequence, ulong requestedTick) =>
+            new CommandHeader(player, sequence, requestedTick, GameCommandType.Stop);
 
         /// <summary>
         /// Feeds the mask exactly like the emitter does at a completed tick:

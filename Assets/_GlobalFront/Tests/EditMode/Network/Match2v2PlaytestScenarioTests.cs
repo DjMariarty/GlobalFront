@@ -185,8 +185,8 @@ namespace GlobalFront.Tests.EditMode.Network
                 new[] { fixture.Unit3 },
                 new WorldPointMm(20000, 20000),
                 new FormationSpec(1, 2000, CardinalFacing.North));
-            Assert.That(directRejection, Is.EqualTo(MatchCommandRejection.NotEntityOwner),
-                "Authoritative server must reject command targeting foreign unit");
+            Assert.That(directRejection, Is.EqualTo(MatchCommandRejection.UnknownEntity),
+                "Authoritative server must reject command targeting foreign unit without confirming its existence");
 
             // Pump network ticks until command ack round-trip arrives
             for (var i = 0; i < 5 && client0.CommandAcks.Count == 0; i++)
@@ -197,8 +197,8 @@ namespace GlobalFront.Tests.EditMode.Network
             if (client0.CommandAcks.Count > 0)
             {
                 var foreignAck = client0.CommandAcks[client0.CommandAcks.Count - 1];
-                Assert.That(foreignAck.Command, Is.EqualTo(MatchCommandRejection.NotEntityOwner),
-                    "Server command ack must report NotEntityOwner");
+                Assert.That(foreignAck.Command, Is.EqualTo(MatchCommandRejection.UnknownEntity),
+                    "Server command ack must use the fail-closed rejection for foreign ids");
             }
 
             // 2. Simultaneous Combat: All 4 players issue valid attack orders simultaneously

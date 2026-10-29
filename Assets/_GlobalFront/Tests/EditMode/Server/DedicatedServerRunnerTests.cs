@@ -1,9 +1,12 @@
 using System;
 using GlobalFront.Client;
+using GlobalFront.Core.Combat;
 using GlobalFront.Core.Model;
+using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
 using GlobalFront.DedicatedServer;
 using GlobalFront.Server;
+using GlobalFront.Server.Sessions;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
 using UnityEngine;
@@ -224,6 +227,399 @@ namespace GlobalFront.Tests.EditMode
                     first.Receiver.ChecksumMismatchCount, Is.Zero);
                 Assert.That(
                     second.Receiver.ChecksumMismatchCount, Is.Zero);
+            }
+            finally
+            {
+                first?.Dispose();
+                second?.Dispose();
+                runner?.Shutdown();
+                if (runnerObject != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(runnerObject);
+                }
+
+                Application.targetFrameRate = savedTargetFrameRate;
+            }
+        }
+
+        /// <summary>
+        /// M1.1 F1: the old 30-second safety deadline started a one-army match
+        /// whose instant victory permanently closed the second slot. A lobby
+        /// with one player must wait indefinitely and spawn nothing.
+        /// </summary>
+        [Test]
+        public void SingleClient_WaitsIndefinitely_AndNeverStartsASoloMatch()
+        {
+            var savedTargetFrameRate = Application.targetFrameRate;
+            var pipe = new VirtualNetworkPipe(new ImpairmentProfile());
+            var clock = new VirtualTransportClock();
+            var serverAddress = pipe.CreateEndpoint();
+            var serverCarrier = OwnDatagramCarrier.CreateServer(pipe, serverAddress, clock);
+            var runnerObject = new GameObject("DedicatedServerRunner_NoSoloStart");
+            DedicatedServerRunner runner = null;
+            RemoteSliceSession first = null;
+            RemoteSliceSession second = null;
+
+            try
+            {
+                runner = runnerObject.AddComponent<DedicatedServerRunner>();
+                runner.Initialize(serverCarrier, clock);
+                first = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+
+                first.Connect("virtual", 0);
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => first.IsConnected,
+                    "the first client must complete the handshake",
+                    first);
+                Assert.That(runner.JoinedPlayerCount, Is.EqualTo(1));
+
+                // Far beyond the retired 30-second deadline.
+                for (var elapsed = 0; elapsed < 60_000; elapsed += 100)
+                {
+                    pipe.Advance(100);
+                    clock.Advance(100);
+                    runner.Update();
+                    first.Pump(clock.NowMs);
+                }
+
+                Assert.That(runner.JoinedPlayerCount, Is.EqualTo(1));
+                Assert.That(runner.IsMatchActive, Is.False,
+                    "a 1v1 lobby must never start on a solo player");
+                Assert.That(runner.Host.UnitCount, Is.Zero,
+                    "no army may spawn before the second player arrives");
+                Assert.That(runner.Host.Server.Outcome.IsTerminal, Is.False,
+                    "a solo lobby must not declare an instant victory");
+
+                second = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+                second.Connect("virtual", 0);
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => second.IsConnected && runner.IsMatchActive,
+                    "the delayed second handshake must still start the 1v1",
+                    first,
+                    second);
+
+                Assert.That(
+                    runner.Host.UnitCount,
+                    Is.EqualTo(DedicatedServerRunner.UnitsPerArmy * 2),
+                    "both armies must spawn once the second player finally joins");
+            }
+            finally
+            {
+                first?.Dispose();
+                second?.Dispose();
+                runner?.Shutdown();
+                if (runnerObject != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(runnerObject);
+                }
+
+                Application.targetFrameRate = savedTargetFrameRate;
+            }
+        }
+
+        /// <summary>
+        /// M1.1 F2: a player who disconnects before the match starts must be
+        /// removed from the lobby and release the player slot. Otherwise the
+        /// forming match stays full, and the next two handshakes can never
+        /// start a 1v1.
+        /// </summary>
+        [Test]
+        public void LobbyDisconnect_ReleasesTheSlot_SoTheNextTwoClientsCanStart()
+        {
+            var savedTargetFrameRate = Application.targetFrameRate;
+            var pipe = new VirtualNetworkPipe(new ImpairmentProfile());
+            var clock = new VirtualTransportClock();
+            var serverAddress = pipe.CreateEndpoint();
+            var serverCarrier = OwnDatagramCarrier.CreateServer(pipe, serverAddress, clock);
+            var runnerObject = new GameObject("DedicatedServerRunner_LobbyDisconnect");
+            DedicatedServerRunner runner = null;
+            RemoteSliceSession first = null;
+            RemoteSliceSession second = null;
+            RemoteSliceSession third = null;
+
+            try
+            {
+                runner = runnerObject.AddComponent<DedicatedServerRunner>();
+                runner.Initialize(serverCarrier, clock);
+                first = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+
+                first.Connect("virtual", 0);
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => first.IsConnected,
+                    "the first client must complete the handshake",
+                    first);
+                Assert.That(runner.JoinedPlayerCount, Is.EqualTo(1));
+                Assert.That(runner.IsMatchActive, Is.False);
+
+                first.Endpoint.GracefulDisconnect();
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => runner.JoinedPlayerCount == 0,
+                    "a player who left before the start must be removed from the lobby",
+                    first);
+                Assert.That(runner.IsMatchActive, Is.False);
+                Assert.That(runner.Host.Sessions.TryGetMatchPhase(runner.Match, out var phase), Is.True);
+                Assert.That(phase, Is.EqualTo(MatchPhase.Forming),
+                    "the match must still be waiting for its 1v1 roster");
+
+                second = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+                second.Connect("virtual", 0);
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => second.IsConnected,
+                    "the replacement handshake must be accepted",
+                    first,
+                    second);
+                Assert.That(runner.JoinedPlayerCount, Is.EqualTo(1));
+                Assert.That(second.Endpoint.Player, Is.EqualTo(new PlayerId(2)),
+                    "the retired PlayerId must never be handed out again (OD-3)");
+                Assert.That(runner.IsMatchActive, Is.False,
+                    "one replacement player is still not a 1v1");
+
+                third = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+                third.Connect("virtual", 0);
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => third.IsConnected && runner.IsMatchActive,
+                    "the second live player must start the 1v1",
+                    first,
+                    second,
+                    third);
+
+                Assert.That(
+                    runner.Host.UnitCount,
+                    Is.EqualTo(DedicatedServerRunner.UnitsPerArmy * 2));
+                var snapshots = new ServerUnitSnapshot[SimulationConstants.MaxUnitsPerMatch];
+                var count = runner.Host.CopySnapshots(snapshots);
+                var owners = new System.Collections.Generic.HashSet<ulong>();
+                for (var index = 0; index < count; index++)
+                {
+                    owners.Add(snapshots[index].Owner.Value);
+                }
+
+                Assert.That(
+                    owners,
+                    Is.EquivalentTo(new[]
+                    {
+                        second.Endpoint.Player.Value,
+                        third.Endpoint.Player.Value
+                    }),
+                    "the roster must cover the two live players, not the abandoned slot");
+            }
+            finally
+            {
+                first?.Dispose();
+                second?.Dispose();
+                third?.Dispose();
+                runner?.Shutdown();
+                if (runnerObject != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(runnerObject);
+                }
+
+                Application.targetFrameRate = savedTargetFrameRate;
+            }
+        }
+
+        /// <summary>
+        /// M1.1 F4: the disconnect stamp must use the continuous session
+        /// clock. Stamping the frozen simulation tick made a break deep inside
+        /// a tactical pause consume the pause ticks that already elapsed, so
+        /// the client got seconds of grace instead of the full 200 s window.
+        /// </summary>
+        [Test]
+        public void RepeatedDisconnectInsidePause_GetsTheFullGraceWindow()
+        {
+            var savedTargetFrameRate = Application.targetFrameRate;
+            var pipe = new VirtualNetworkPipe(new ImpairmentProfile());
+            var clock = new VirtualTransportClock();
+            var serverAddress = pipe.CreateEndpoint();
+            var serverCarrier = OwnDatagramCarrier.CreateServer(pipe, serverAddress, clock);
+            var runnerObject = new GameObject("DedicatedServerRunner_PausedGrace");
+            DedicatedServerRunner runner = null;
+            RemoteSliceSession first = null;
+            RemoteSliceSession second = null;
+
+            try
+            {
+                runner = runnerObject.AddComponent<DedicatedServerRunner>();
+                runner.Initialize(serverCarrier, clock);
+                first = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+                second = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+
+                first.Connect("virtual", 0);
+                PumpUntil(runner, pipe, clock, () => first.IsConnected,
+                    "the first client must complete the handshake", first);
+                second.Connect("virtual", 0);
+                PumpUntil(runner, pipe, clock, () => second.IsConnected && runner.IsMatchActive,
+                    "the second handshake must start the 1v1", first, second);
+
+                var frozenTick = runner.Host.CurrentTick;
+                runner.Host.Pause();
+                runner.Host.AdvancePauseTicks(3900);
+                var expectedStamp = runner.Host.SessionGraceClock;
+                Assert.That(expectedStamp, Is.GreaterThan(frozenTick),
+                    "the continuous clock must include the pause ticks");
+
+                var session = first.Endpoint.Session;
+                Assert.That(
+                    runner.TransportHost.Binder.TryGetTokenBySession(session, out var token),
+                    Is.True);
+                Assert.That(runner.TransportHost.Binder.TryGetByToken(token, out var binding), Is.True);
+                first.Endpoint.DropConnection(TransportDisconnectReason.TransportLost);
+                runner.Carrier.CloseConnection(
+                    binding.ConnectionId, TransportDisconnectReason.TransportLost);
+
+                // A frame that does not advance virtual time drains the loss
+                // without adding pause ticks, so the stamp is exact.
+                runner.Update();
+
+                Assert.That(runner.Host.TryGetSession(session, out var lost), Is.True);
+                Assert.That(lost.State, Is.EqualTo(SessionState.Disconnected));
+                Assert.That(lost.DisconnectedAtTick, Is.EqualTo(expectedStamp),
+                    "the stamp must be the continuous clock, not the frozen simulation tick");
+
+                runner.Host.AdvancePauseTicks(200);
+                Assert.That(runner.Host.TryGetSession(session, out var stillDisconnected), Is.True);
+                Assert.That(
+                    stillDisconnected.State, Is.EqualTo(SessionState.Disconnected),
+                    "a break at pause tick 3900 must still receive the full 4000-tick window; " +
+                    "the old frozen-tick stamp expired it after ~100 dropped ticks");
+            }
+            finally
+            {
+                first?.Dispose();
+                second?.Dispose();
+                runner?.Shutdown();
+                if (runnerObject != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(runnerObject);
+                }
+
+                Application.targetFrameRate = savedTargetFrameRate;
+            }
+        }
+
+        /// <summary>
+        /// M1.1 F5: the terminal outcome must reach both connected clients as
+        /// a MatchFinished status, terminate their reconnect FSM and detach
+        /// their sockets.
+        /// </summary>
+        [Test]
+        public void MatchFinished_SendsTerminalStatus_AndBothClientsTerminate()
+        {
+            var savedTargetFrameRate = Application.targetFrameRate;
+            var pipe = new VirtualNetworkPipe(new ImpairmentProfile());
+            var clock = new VirtualTransportClock();
+            var serverAddress = pipe.CreateEndpoint();
+            var serverCarrier = OwnDatagramCarrier.CreateServer(pipe, serverAddress, clock);
+            var runnerObject = new GameObject("DedicatedServerRunner_MatchFinished");
+            DedicatedServerRunner runner = null;
+            RemoteSliceSession first = null;
+            RemoteSliceSession second = null;
+
+            try
+            {
+                runner = runnerObject.AddComponent<DedicatedServerRunner>();
+                runner.Initialize(serverCarrier, clock);
+                first = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+                second = new RemoteSliceSession(
+                    OwnDatagramCarrier.CreateClient(
+                        pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+
+                first.Connect("virtual", 0);
+                PumpUntil(runner, pipe, clock, () => first.IsConnected,
+                    "the first client must complete the handshake", first);
+                second.Connect("virtual", 0);
+                PumpUntil(runner, pipe, clock, () => second.IsConnected && runner.IsMatchActive,
+                    "the second handshake must start the 1v1", first, second);
+
+                TransportDisconnectReason? firstReason = null;
+                TransportDisconnectReason? secondReason = null;
+                first.Disconnected += reason => firstReason = reason;
+                second.Disconnected += reason => secondReason = reason;
+
+                // A one-shot killer next to the first army decides the match
+                // through the authoritative combat path.
+                runner.Host.Server.SpawnUnit(
+                    second.Endpoint.Player,
+                    new CombatStats(
+                        maximumHealth: 100_000,
+                        damage: 1_000,
+                        rangeMm: 12_000,
+                        cooldownTicks: 1),
+                    new WorldPointMm(-55_000, 0),
+                    speedMmPerTick: 1,
+                    autoAcquire: true);
+
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () => runner.Host.Server.Outcome.IsTerminal &&
+                        first.ReconnectCoordinator.State == ClientReconnectState.Terminated &&
+                        second.ReconnectCoordinator.State == ClientReconnectState.Terminated,
+                    "the match outcome must terminate both clients",
+                    first,
+                    second);
+
+                Assert.That(first.ReconnectCoordinator.State,
+                    Is.EqualTo(ClientReconnectState.Terminated));
+                Assert.That(second.ReconnectCoordinator.State,
+                    Is.EqualTo(ClientReconnectState.Terminated));
+                Assert.That(firstReason, Is.EqualTo(TransportDisconnectReason.MatchFinished));
+                Assert.That(secondReason, Is.EqualTo(TransportDisconnectReason.MatchFinished));
+                Assert.That(first.Endpoint.State, Is.EqualTo(ClientTransportState.Disconnected));
+                Assert.That(second.Endpoint.State, Is.EqualTo(ClientTransportState.Disconnected));
+                Assert.That(runner.TransportHost.Binder.BoundCount, Is.Zero,
+                    "both sessions must be detached from their sockets");
+
+                // Further frames must not resurrect the finished session.
+                var attempts = first.ReconnectCoordinator.ReconnectAttemptCount;
+                for (var frame = 0; frame < 5; frame++)
+                {
+                    pipe.Advance(500);
+                    clock.Advance(500);
+                    runner.Update();
+                    first.Pump(clock.NowMs);
+                }
+
+                Assert.That(first.ReconnectCoordinator.State,
+                    Is.EqualTo(ClientReconnectState.Terminated));
+                Assert.That(first.ReconnectCoordinator.ReconnectAttemptCount,
+                    Is.EqualTo(attempts),
+                    "a terminated client must never arm another reconnect attempt");
             }
             finally
             {

@@ -115,6 +115,14 @@ namespace GlobalFront.Server.Transport
         public event Action<TransportDisconnectReason> Lost;
 
         /// <summary>
+        /// Raised when the server sends a terminal <see cref="TransportMessageType.Disconnect"/>
+        /// status: the session is over and must not be retried (server
+        /// shutdown, ready deadline, match finished — M1.1 F5/F6). Distinct
+        /// from <see cref="Lost"/>, which merely starts the reconnect policy.
+        /// </summary>
+        public event Action<TransportDisconnectReason> Terminated;
+
+        /// <summary>
         /// Echo timestamp of a server Pong (OD-47). The payload is the
         /// timestamp this client put in its own Ping, so RTT is measured
         /// entirely on the client's monotonic clock.
@@ -485,6 +493,24 @@ namespace GlobalFront.Server.Transport
                         : ConnectDenyReason.Internal;
                     State = ClientTransportState.Disconnected;
                     Denied?.Invoke(reason);
+                    return;
+
+                case TransportMessageType.Disconnect:
+                    // The server closed this session. Treat the status as
+                    // terminal instead of a packet loss: a reconnect into a
+                    // finished match or a shut-down server loops forever
+                    // (M1.1 F5/F6). The socket is closed locally as well; the
+                    // Disconnected event this queues is a no-op because the
+                    // state is already Disconnected.
+                    var terminalReason = header.PayloadLength > 0
+                        ? (TransportDisconnectReason)transportEvent.Data[header.PayloadOffset]
+                        : TransportDisconnectReason.None;
+                    State = ClientTransportState.Disconnected;
+                    _isReconnecting = false;
+                    _connectingViaReconnect = false;
+                    _carrier.CloseConnection(
+                        _connectionId, TransportDisconnectReason.ClientRequested);
+                    Terminated?.Invoke(terminalReason);
                     return;
 
                 case TransportMessageType.CommandAck:

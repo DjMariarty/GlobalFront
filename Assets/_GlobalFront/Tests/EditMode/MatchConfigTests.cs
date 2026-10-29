@@ -369,7 +369,7 @@ namespace GlobalFront.Tests.EditMode
                 new WorldPointMm(1000, 0),
                 new FormationSpec(1, 2000, CardinalFacing.North));
 
-            Assert.That(rejection, Is.EqualTo(MatchCommandRejection.NotEntityOwner));
+            Assert.That(rejection, Is.EqualTo(MatchCommandRejection.UnknownEntity));
         }
 
         #endregion

@@ -132,7 +132,7 @@ namespace GlobalFront.Core.Reconnect
             }
 
             byte rawResult = buffer[1];
-            if (rawResult > (byte)ReconnectResult.InvalidState)
+            if (rawResult > (byte)ReconnectResult.Denied)
             {
                 response = default;
                 return false;

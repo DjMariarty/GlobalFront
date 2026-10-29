@@ -380,6 +380,47 @@ namespace GlobalFront.Tests.EditMode.Server
                 "the duplicate must not overwrite the accepted command's slot");
         }
 
+        /// <summary>
+        /// M1.1 P1-1: the wire ACK for a Stop probe on a foreign entity must
+        /// be byte-for-byte the same payload as for an id that does not exist.
+        /// Any difference (NotEntityOwner vs UnknownEntity) is a roster oracle.
+        /// </summary>
+        [Test]
+        public void CommandIngress_StopProbe_ForeignAndMissingIds_GetIdenticalAcks()
+        {
+            var foreignAck = SubmitStopProbeAndCaptureAck(foreignTarget: true);
+            var missingAck = SubmitStopProbeAndCaptureAck(foreignTarget: false);
+
+            Assert.That(foreignAck.Command, Is.EqualTo(MatchCommandRejection.UnknownEntity),
+                "a foreign id must answer the fail-closed refusal");
+            Assert.That(foreignAck, Is.EqualTo(missingAck),
+                "the ACK for a foreign id must be identical to the ACK for a missing id: " +
+                $"foreign={foreignAck.Command}, missing={missingAck.Command}");
+        }
+
+        private static CommandAckPayload SubmitStopProbeAndCaptureAck(bool foreignTarget)
+        {
+            var world = World.Create(DuelSpecs());
+            var target = foreignTarget
+                ? FirstEntityOf(world.Server, PlayerTwo)
+                : new EntityId(999_999);
+
+            Assert.That(
+                world.ChannelA.TrySubmitStop(
+                    new CommandHeader(
+                        world.PlayerA,
+                        1,
+                        world.Server.CurrentTick + 1,
+                        GameCommandType.Stop),
+                    new[] { target }),
+                Is.EqualTo(MatchCommandRejection.None),
+                "the local pre-flight must queue the probe so the server answers it");
+
+            Assert.That(world.PumpUntil(() => world.Acks.Count >= 1), Is.True,
+                "the authoritative ACK must arrive");
+            return world.Acks[0];
+        }
+
         [Test]
         public void CommandIngress_MultiBatchSelection_DispatchedWithDistinctSequences_AllExecuted()
         {

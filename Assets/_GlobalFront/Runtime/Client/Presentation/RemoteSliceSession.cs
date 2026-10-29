@@ -39,6 +39,7 @@ namespace GlobalFront.Client
         private readonly Action _onAttached;
         private readonly Action<TransportDisconnectReason> _onLost;
         private readonly Action<ConnectDenyReason> _onDenied;
+        private readonly Action<TransportDisconnectReason> _onTerminated;
         private readonly Action<SessionSecret32> _onSecretReceived;
         private readonly Action<ReconnectResponse> _onReconnectResponse;
         private readonly Action _onReadyToResume;
@@ -90,11 +91,13 @@ namespace GlobalFront.Client
             _onAttached = OnAttached;
             _onLost = OnLost;
             _onDenied = OnDenied;
+            _onTerminated = OnTerminated;
 
             Endpoint.PongReceived += _onPong;
             Endpoint.Attached += _onAttached;
             Endpoint.Lost += _onLost;
             Endpoint.Denied += _onDenied;
+            Endpoint.Terminated += _onTerminated;
             Endpoint.SecretReceived += _onSecretReceived;
             Endpoint.ReconnectResponseReceived += _onReconnectResponse;
             ReconnectCoordinator.ReadyToResume += _onReadyToResume;
@@ -247,6 +250,7 @@ namespace GlobalFront.Client
             Endpoint.Attached -= _onAttached;
             Endpoint.Lost -= _onLost;
             Endpoint.Denied -= _onDenied;
+            Endpoint.Terminated -= _onTerminated;
             Endpoint.SecretReceived -= _onSecretReceived;
             Endpoint.ReconnectResponseReceived -= _onReconnectResponse;
             ReconnectCoordinator.ReadyToResume -= _onReadyToResume;
@@ -277,6 +281,18 @@ namespace GlobalFront.Client
             _hasReconnectAttempt = false;
             ReconnectAttemptCount = 0;
             ReconnectCoordinator.OnTransportDisconnected(reason);
+            Disconnected?.Invoke(reason);
+        }
+
+        private void OnTerminated(TransportDisconnectReason reason)
+        {
+            // The server declared the session over (shutdown, match finished,
+            // ready deadline). No retry may be armed from this point on.
+            _readyToResumePending = false;
+            _lastCountdownPumpMs = 0;
+            _hasReconnectAttempt = false;
+            ReconnectAttemptCount = 0;
+            ReconnectCoordinator.OnSessionTerminated(reason);
             Disconnected?.Invoke(reason);
         }
 

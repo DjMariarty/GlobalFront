@@ -222,6 +222,43 @@ namespace GlobalFront.Tests.EditMode.Client
             Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Terminated));
         }
 
+        /// <summary>
+        /// M1.1 N-2: Denied and InvalidState used to share the wire value 5,
+        /// so an explicit refusal decoded as the retryable transient state and
+        /// the client retried forever. They are distinct now, and Denied must
+        /// terminate the FSM.
+        /// </summary>
+        [Test]
+        public void Coordinator_OnReconnectResponse_Denied_Terminates()
+        {
+            var coordinator = new ClientReconnectCoordinator();
+            coordinator.CacheSession(_sessionId, _matchId, _playerId, in _secret);
+            coordinator.OnTransportDisconnected(TransportDisconnectReason.TransportLost);
+
+            var denied = new ReconnectResponse(
+                ReconnectResult.Denied,
+                default(PlayerId),
+                default(MatchId),
+                serverTick: 100UL,
+                activeKeyframeSeq: 0);
+            coordinator.OnReconnectResponse(in denied);
+
+            Assert.That(coordinator.State, Is.EqualTo(ClientReconnectState.Terminated));
+            Assert.That(coordinator.IsReconnecting, Is.False);
+            Assert.That(
+                coordinator.TryBuildReconnectRequest(new byte[ReconnectRequest.SizeBytes], out _),
+                Is.False,
+                "a denied session must never arm another request");
+        }
+
+        [Test]
+        public void ReconnectResults_DeniedAndInvalidState_HaveDistinctWireValues()
+        {
+            Assert.That((byte)ReconnectResult.InvalidState, Is.EqualTo(5));
+            Assert.That((byte)ReconnectResult.Denied, Is.EqualTo(6),
+                "the explicit refusal must not alias the retryable state (M1.1 N-2)");
+        }
+
         [Test]
         public void Coordinator_OnReconnectResponse_InvalidState_StaysRetryable()
         {

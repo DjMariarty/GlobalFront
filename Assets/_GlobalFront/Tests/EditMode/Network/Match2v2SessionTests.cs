@@ -141,7 +141,7 @@ namespace GlobalFront.Tests.EditMode.Network
                 new WorldPointMm(15000, 15000),
                 new FormationSpec(0, FormationSpacingMm, CardinalFacing.North));
 
-            Assert.That(moveRejection, Is.EqualTo(MatchCommandRejection.NotEntityOwner));
+            Assert.That(moveRejection, Is.EqualTo(MatchCommandRejection.UnknownEntity));
 
             // 2. AttackCommand from Player 0 using Unit 1 as attacker
             var attackHeader = new CommandHeader(p0, 2, 1, GameCommandType.Attack);
@@ -150,7 +150,7 @@ namespace GlobalFront.Tests.EditMode.Network
                 new[] { unit1 },
                 unit0);
 
-            Assert.That(attackRejection, Is.EqualTo(MatchCommandRejection.NotEntityOwner));
+            Assert.That(attackRejection, Is.EqualTo(MatchCommandRejection.UnknownEntity));
 
             // 3. StopCommand from Player 0 targeting Unit 1
             var stopHeader = new CommandHeader(p0, 3, 1, GameCommandType.Stop);
@@ -158,7 +158,7 @@ namespace GlobalFront.Tests.EditMode.Network
                 stopHeader,
                 new[] { unit1 });
 
-            Assert.That(stopRejection, Is.EqualTo(MatchCommandRejection.NotEntityOwner));
+            Assert.That(stopRejection, Is.EqualTo(MatchCommandRejection.UnknownEntity));
 
             // 4. Client-side PrototypeCommandQueue ownership validation
             var registry = new UnitRegistry();

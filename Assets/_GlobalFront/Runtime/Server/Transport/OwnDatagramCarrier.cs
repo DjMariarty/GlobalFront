@@ -268,6 +268,9 @@ namespace GlobalFront.Server.Transport
             _shutdown = true;
             foreach (var pair in _connections)
             {
+                // Every teardown path releases the assembly slices of the
+                // connection before its state is dropped (M1.1 P2-5).
+                pair.Value.Assembler.Reset();
                 if (!pair.Value.Closed)
                 {
                     pair.Value.Closed = true;
@@ -324,6 +327,10 @@ namespace GlobalFront.Server.Transport
                 var connectionId = _pendingRemovals[index];
                 if (_connections.TryGetValue(connectionId, out var connection))
                 {
+                    // A connection removed with a partially assembled message
+                    // would strand its rented slices in the pool forever
+                    // (M1.1 P2-5).
+                    connection.Assembler.Reset();
                     _connections.Remove(connectionId);
 
                     // A reconnect can install a newer connection at the same

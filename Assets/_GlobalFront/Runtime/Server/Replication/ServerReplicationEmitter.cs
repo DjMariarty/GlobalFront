@@ -731,7 +731,8 @@ namespace GlobalFront.Server.Replication
         /// <item><c>0 → 1</c>: ADD with the entity's absolute current state;</item>
         /// <item><c>1 → 0</c>: REMOVE with <see cref="DeltaRemoveCause.FogOfWarHidden"/>,
         /// or <see cref="DeltaRemoveCause.Destroyed"/> when the entity no longer
-        /// exists in the authoritative capture;</item>
+        /// exists in the authoritative capture or is a corpse
+        /// (<c>CurrentHealth &lt;= 0</c>);</item>
         /// <item><c>1 → 1</c>: the merged changes of <c>(baseTick, tick]</c>, if any;</item>
         /// <item><c>0 → 0</c>: nothing — the client never knew the entity, so
         /// no record may describe it (anti-maphack).</item>
@@ -854,17 +855,34 @@ namespace GlobalFront.Server.Replication
                 var entity = new EntityId((ulong)bit + 1);
                 removes[removeCount++] = new DeltaRemoveRecord(
                     entity,
-                    EntityExists(entity)
-                        ? DeltaRemoveCause.FogOfWarHidden
-                        : DeltaRemoveCause.Destroyed);
+                    ResolveRemoveCause(entity));
             }
 
             changeSet = buffer.AsChangeSet(addCount, updateCount, removeCount);
             return true;
         }
 
+        /// <summary>
+        /// Why a <c>1 → 0</c> visibility transition is reported to the client.
+        /// An entity that left the authoritative roster is destroyed; one
+        /// that is still captured but left the player's view is fog-hidden —
+        /// unless it is a corpse, which is a destruction, not a concealment
+        /// (M1.1 N-3).
+        /// </summary>
+        private DeltaRemoveCause ResolveRemoveCause(EntityId entity)
+        {
+            if (!TryFindCaptureIndex(entity, out var index))
+            {
+                return DeltaRemoveCause.Destroyed;
+            }
+
+            return _captures[_captureIndex][index].CurrentHealth <= 0
+                ? DeltaRemoveCause.Destroyed
+                : DeltaRemoveCause.FogOfWarHidden;
+        }
+
         /// <summary>Binary search of the current capture (ascending entity ids).</summary>
-        private bool EntityExists(EntityId entity)
+        private bool TryFindCaptureIndex(EntityId entity, out int index)
         {
             var capture = _captures[_captureIndex];
             var low = 0;
@@ -875,6 +893,7 @@ namespace GlobalFront.Server.Replication
                 var value = capture[middle].Entity.Value;
                 if (value == entity.Value)
                 {
+                    index = middle;
                     return true;
                 }
 
@@ -888,6 +907,7 @@ namespace GlobalFront.Server.Replication
                 }
             }
 
+            index = -1;
             return false;
         }
 

@@ -846,14 +846,15 @@ namespace GlobalFront.Server
 
         private MatchCommandRejection ValidateControllable(EntityId entity, PlayerId player)
         {
-            if (!_units.TryGetValue(entity, out var record))
+            // Fail-closed (M1.1 P1-1): a foreign id and a nonexistent id must
+            // be indistinguishable on the wire. Answering NotEntityOwner for
+            // an enemy unit would turn a Stop probe into a roster oracle: a
+            // client could enumerate every hidden enemy by comparing the two
+            // rejections.
+            if (!_units.TryGetValue(entity, out var record) ||
+                record.Combat.Owner != player)
             {
                 return MatchCommandRejection.UnknownEntity;
-            }
-
-            if (record.Combat.Owner != player)
-            {
-                return MatchCommandRejection.NotEntityOwner;
             }
 
             if (!record.Combat.IsAlive)

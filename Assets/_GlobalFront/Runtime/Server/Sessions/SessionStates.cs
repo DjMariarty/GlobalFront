@@ -133,6 +133,12 @@ namespace GlobalFront.Server.Sessions
         GraceExpired = 3,
         MatchFinished = 4,
         InvalidState = 5,
-        Denied = 5
+
+        /// <summary>
+        /// Explicit access refusal. It must keep the same wire value as
+        /// <see cref="GlobalFront.Core.Reconnect.ReconnectResult.Denied"/>
+        /// (M1.1 N-2), so the response cast below stays identity-preserving.
+        /// </summary>
+        Denied = 6
     }
 }

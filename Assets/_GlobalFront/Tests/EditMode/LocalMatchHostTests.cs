@@ -119,7 +119,7 @@ namespace GlobalFront.Tests.EditMode
                     new[] { new EntityId(1) },
                     new WorldPointMm(1000, 0),
                     new FormationSpec(1, 2000, CardinalFacing.North)),
-                Is.EqualTo(MatchCommandRejection.NotEntityOwner));
+                Is.EqualTo(MatchCommandRejection.UnknownEntity));
         }
 
         [Test]

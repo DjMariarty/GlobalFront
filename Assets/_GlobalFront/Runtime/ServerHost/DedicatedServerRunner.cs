@@ -57,7 +57,6 @@ namespace GlobalFront.DedicatedServer
         private ITransportClock _clock;
         private MatchId _match;
         private long _lastPumpMs;
-        private long _firstJoinMs = -1;
 
         /// <summary>The hosted server core, or null before initialization / after shutdown.</summary>
         public ServerHost Host => _host;
@@ -84,14 +83,6 @@ namespace GlobalFront.DedicatedServer
 
         /// <summary>True once the authoritative match has been started (units exist).</summary>
         public bool IsMatchActive => _host != null && _host.ActiveSessionMatch.IsValid;
-
-        /// <summary>
-        /// Safety deadline measured from the first joined player. It lets the
-        /// lobby start even if the second join notification is delayed; with a
-        /// single player the match starts as a one-army skirmish rather than
-        /// waiting forever. Zero or negative disables the deadline.
-        /// </summary>
-        public long MatchStartTimeoutMs { get; set; } = 30_000;
 
         /// <summary>True between a successful <see cref="Initialize(int,int,int)"/> and <see cref="Shutdown"/>.</summary>
         public bool IsRunning => _host != null;
@@ -184,12 +175,18 @@ namespace GlobalFront.DedicatedServer
             _match = _host.CreateSessionMatch(maxPlayers);
             _transportHost.AutoJoinMatch = _match;
             _transportHost.SessionAttached += OnSessionAttached;
+            _transportHost.SessionDetached += OnSessionDetached;
 
             // The dedicated runner is the composition root that owns both the
             // authoritative host and the transport: a bound client's
             // post-reconnect countdown completion lifts the OD-18 pause here,
             // without any manual game-layer Resume call.
             _transportHost.ClientReadyToResumeReceived += _host.OnClientReadyToResume;
+
+            // Terminal session outcomes (ready deadline, match finished) are
+            // decided by the host but owned by the transport: the runner
+            // delivers the status and detaches the socket (M1.1 F3/F5).
+            _host.SessionTerminated += OnHostSessionTerminated;
 
             _host.AttachReplication(
                 new TransportReplicationAdapter(_transportHost),
@@ -226,7 +223,10 @@ namespace GlobalFront.DedicatedServer
                 elapsedSeconds = 0.0;
             }
 
-            _transportHost.Pump(nowMs, _host.Server.CurrentTick);
+            // The session clock includes the pause ticks accumulated so far:
+            // a disconnect inside a tactical pause must stamp the continuous
+            // clock, not the frozen simulation tick (M1.1 F4).
+            _transportHost.Pump(nowMs, _host.SessionGraceClock);
             TryStartMatchWhenReady();
             _host.AdvanceRealTime(elapsedSeconds);
         }
@@ -244,8 +244,10 @@ namespace GlobalFront.DedicatedServer
             }
 
             _host.StopRealTime();
+            _host.SessionTerminated -= OnHostSessionTerminated;
             _transportHost.ClientReadyToResumeReceived -= _host.OnClientReadyToResume;
             _transportHost.SessionAttached -= OnSessionAttached;
+            _transportHost.SessionDetached -= OnSessionDetached;
             _transportHost.Shutdown();
 
             _transportHost = null;
@@ -254,7 +256,6 @@ namespace GlobalFront.DedicatedServer
             _host = null;
             _match = default;
             _lastPumpMs = 0;
-            _firstJoinMs = -1;
             _joinedPlayers.Clear();
         }
 
@@ -275,35 +276,58 @@ namespace GlobalFront.DedicatedServer
             }
 
             _joinedPlayers.Add(player);
-            if (_firstJoinMs < 0)
-            {
-                _firstJoinMs = _clock.NowMs;
-            }
-
             TryStartMatchWhenReady();
         }
 
         /// <summary>
+        /// Delivers a terminal outcome to one client: the transport sends the
+        /// status frame, releases the token binding and closes the socket, so
+        /// the client's reconnect coordinator terminates instead of retrying
+        /// into a dead session.
+        /// </summary>
+        private void OnHostSessionTerminated(SessionId session, TransportDisconnectReason reason)
+        {
+            _transportHost?.DetachSession(session, reason);
+        }
+
+        /// <summary>
+        /// A session that leaves before the match starts must leave the lobby
+        /// with it (M1.1 P2-2). Keeping the abandoned player would make the
+        /// forming match full: the next handshake would never be able to start
+        /// a 1v1, and the runner would wait forever on a slot nobody owns.
+        /// After the start a disconnect is the grace window's business, not the
+        /// lobby's.
+        /// </summary>
+        private void OnSessionDetached(SessionId session, TransportDisconnectReason reason)
+        {
+            if (_host == null || _host.ActiveSessionMatch.IsValid)
+            {
+                return;
+            }
+
+            if (!_host.TryGetSession(session, out var record) || !record.Player.IsValid)
+            {
+                return;
+            }
+
+            _joinedPlayers.Remove(record.Player);
+            _host.ReleaseFormingSlot(session);
+        }
+
+        /// <summary>
         /// Builds the base 1v1 roster from the players currently in the lobby
-        /// and hands it to the authoritative start path. The deadline is a
-        /// safety net: the primary trigger is the second handshake.
+        /// and hands it to the authoritative start path (M1.1 F1): the match
+        /// starts only when exactly the two required players are present. A
+        /// lobby that waits too long keeps waiting — a one-army match would
+        /// declare an instant victory and permanently close the second slot.
         /// </summary>
         private bool TryStartMatchWhenReady()
         {
             if (_host == null ||
                 !AutoStartMatch ||
-                _joinedPlayers.Count == 0 ||
+                _joinedPlayers.Count != RequiredPlayersForStart ||
                 _host.ActiveSessionMatch.IsValid ||
                 _host.UnitCount > 0)
-            {
-                return false;
-            }
-
-            var enoughPlayers = _joinedPlayers.Count >= RequiredPlayersForStart;
-            var deadlinePassed = MatchStartTimeoutMs > 0 &&
-                _firstJoinMs >= 0 &&
-                _clock.NowMs - _firstJoinMs >= MatchStartTimeoutMs;
-            if (!enoughPlayers && !deadlinePassed)
             {
                 return false;
             }

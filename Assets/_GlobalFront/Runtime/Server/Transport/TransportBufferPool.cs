@@ -20,8 +20,29 @@ namespace GlobalFront.Server.Transport
         private const int MinBucketShift = 7;   // 128 B
         private const int MaxBucketShift = 20;  // 1 MiB
         private const int WarmBucketShift = 16; // 64 KiB; snapshots are kilobytes
-        private const int BuffersPerBucket = 8;
-        private const int WarmBuffersPerBucket = 4;
+
+        /// <summary>
+        /// Buffers a bucket keeps. A 16-32 KiB snapshot fragments into 14-28
+        /// datagrams of <see cref="TransportProtocol.FragmentPayloadBytes"/>,
+        /// so 8 slots discarded half of every reassembly and the next message
+        /// reallocated them (M1.1 P1-2). 32 covers a full 16 KiB message.
+        /// </summary>
+        private const int BuffersPerBucket = 32;
+
+        /// <summary>
+        /// The 2048-byte bucket is the slice size of every snapshot fragment
+        /// (1171 payload bytes), so it must hold a whole 32 KiB snapshot on
+        /// its own; the other buckets only ever see wider messages.
+        /// </summary>
+        private const int LargeBucketShift = 11; // 2048 B
+        private const int LargeBuffersPerBucket = 64;
+
+        /// <summary>
+        /// Buffers preallocated per bucket by <see cref="Warm"/>. Warm-up must
+        /// cover one full 16-fragment assembly, otherwise the first measured
+        /// message still allocates its slices.
+        /// </summary>
+        private const int WarmBuffersPerBucket = 16;
 
         private static readonly Stack<byte[]>[] Buckets = CreateBuckets();
         private static readonly object Gate = new object();
@@ -111,7 +132,7 @@ namespace GlobalFront.Server.Transport
                 // describes whether a caller dropped a buffer on the floor.
                 System.Threading.Interlocked.Increment(ref _returnCount);
                 var bucket = Buckets[shift - MinBucketShift];
-                if (bucket.Count < BuffersPerBucket)
+                if (bucket.Count < CapacityFor(shift))
                 {
                     bucket.Push(buffer);
                 }
@@ -129,12 +150,15 @@ namespace GlobalFront.Server.Transport
             return shift;
         }
 
+        private static int CapacityFor(int shift) =>
+            shift >= LargeBucketShift ? LargeBuffersPerBucket : BuffersPerBucket;
+
         private static Stack<byte[]>[] CreateBuckets()
         {
             var buckets = new Stack<byte[]>[MaxBucketShift - MinBucketShift + 1];
             for (var index = 0; index < buckets.Length; index++)
             {
-                buckets[index] = new Stack<byte[]>(BuffersPerBucket);
+                buckets[index] = new Stack<byte[]>(CapacityFor(index + MinBucketShift));
             }
 
             return buckets;

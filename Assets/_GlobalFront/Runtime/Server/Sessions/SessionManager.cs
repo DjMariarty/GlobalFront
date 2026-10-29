@@ -67,6 +67,13 @@ namespace GlobalFront.Server.Sessions
             /// </summary>
             public readonly List<PlayerId> AssignedPlayers = new List<PlayerId>();
 
+            /// <summary>
+            /// High-water mark of PlayerId assignment. It never decreases, so a
+            /// slot freed by a pre-match lobby disconnect still retires its id
+            /// permanently (OD-3).
+            /// </summary>
+            public int NextPlayerValue = 1;
+
             public readonly Dictionary<PlayerId, PlayerSlot> Slots =
                 new Dictionary<PlayerId, PlayerSlot>();
         }
@@ -258,10 +265,16 @@ namespace GlobalFront.Server.Sessions
                 return JoinResult.MatchFull;
             }
 
-            // Monotonic assignment: next = max assigned so far + 1. A retired
-            // PlayerId is never handed out again within this match (OD-3).
-            var nextValue = (byte)(matchRecord.AssignedPlayers.Count + 1);
-            assigned = new PlayerId(nextValue);
+            // Monotonic assignment through the match high-water mark: a
+            // retired PlayerId is never handed out again within this match
+            // (OD-3), even when its slot was freed by a pre-match disconnect.
+            if (matchRecord.NextPlayerValue > SimulationConstants.MaxPlayers)
+            {
+                return JoinResult.MatchFull;
+            }
+
+            assigned = new PlayerId((byte)matchRecord.NextPlayerValue);
+            matchRecord.NextPlayerValue++;
 
             matchRecord.AssignedPlayers.Add(assigned);
             matchRecord.Slots[assigned] = new PlayerSlot { Session = session };
@@ -270,6 +283,36 @@ namespace GlobalFront.Server.Sessions
             record.Match = match;
             record.Player = assigned;
             return JoinResult.Assigned;
+        }
+
+        /// <summary>
+        /// Frees the player slot of a session that left a forming match before
+        /// the start (M1.1 P2-2). The PlayerId stays retired — assignment is
+        /// monotonic — but the slot no longer blocks a new handshake, so a
+        /// 1v1 can still fill after the first joiner leaves. Running and
+        /// finished matches are untouched: after the start the slot belongs to
+        /// the grace/reconnect lifecycle.
+        /// </summary>
+        public bool ReleaseFormingSlot(SessionId session)
+        {
+            if (!_sessions.TryGetValue(session, out var record) ||
+                !record.Match.IsValid ||
+                !record.Player.IsValid ||
+                !_matches.TryGetValue(record.Match, out var matchRecord) ||
+                matchRecord.Phase != MatchPhase.Forming)
+            {
+                return false;
+            }
+
+            if (!matchRecord.Slots.TryGetValue(record.Player, out var slot) ||
+                slot.Session != session)
+            {
+                return false;
+            }
+
+            matchRecord.Slots.Remove(record.Player);
+            matchRecord.AssignedPlayers.Remove(record.Player);
+            return true;
         }
 
         /// <summary>
@@ -406,6 +449,32 @@ namespace GlobalFront.Server.Sessions
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Collects the sessions currently bound to <paramref name="match"/>
+        /// (one per assigned player). Used by the hosting layer to deliver a
+        /// terminal status to every participant when the match finishes
+        /// (M1.1 F5). The destination is reused by the caller.
+        /// </summary>
+        public int CopyMatchSessions(MatchId match, List<SessionId> destination)
+        {
+            destination.Clear();
+            if (!_matches.TryGetValue(match, out var matchRecord))
+            {
+                return 0;
+            }
+
+            for (var index = 0; index < matchRecord.AssignedPlayers.Count; index++)
+            {
+                if (matchRecord.Slots.TryGetValue(matchRecord.AssignedPlayers[index], out var slot) &&
+                    slot.Session.IsValid)
+                {
+                    destination.Add(slot.Session);
+                }
+            }
+
+            return destination.Count;
         }
 
         /// <summary>

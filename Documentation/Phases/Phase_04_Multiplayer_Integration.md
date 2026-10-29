@@ -1,6 +1,6 @@
 # Phase 04 — Multiplayer Gameplay Integration
 
-> Status: **M1 REMEDIATION DELIVERED — PENDING COORDINATOR REVIEW** • Scope fixed to **1v1 Dedicated Server Prototype** (base `5beb1d1`, changes uncommitted, 1351 EditMode + 22 PlayMode green)
+> Status: **MILESTONE M1.1 FORENSIC SEAL DELIVERED — 10/10 FIXES VERIFIED** • Scope fixed to **1v1 Dedicated Server Prototype** (OD-48, OD-49, 1368 EditMode + 22 PlayMode = 1390 green)
 
 ## Goal
 
@@ -59,9 +59,9 @@
 - gameplay snapshot/reconnect tests под эмулированными сетевыми потерями (1–5% packet loss);
 - latency/jitter/disconnect сценарии;
 - deterministic and desync regression tests;
-- 17 новых регрессионных тестов M1 remediation (FoW anti-cheat, dedicated auto-start, reconnect FSM, buffer accounting, selection resync);
-- Zero-GC: замер **ограничен** клиентским транспортом и пайплайнами репликации при отключённой презентации (3-секундное окно) — **0 блоков GC.Alloc**; полный кадр с URP/Editor аллоцирует мегабайты и в этот контракт не входит;
-- Итог: **1373 автоматизированных теста (1351 EditMode + 22 PlayMode), 100% green** на 2026-10-27.
+- 17 новых регрессионных тестов M1 remediation + 17 новых тестов M1.1 Forensic Seal (`M1ForensicSealTests.cs` и фикстуры Ingress, FoW, Fragmentation, Runner, Reconnect);
+- Zero-GC: замер **ограничен** клиентским транспортом и пайплайнами репликации при отключённой презентации (3-секундное окно) — **0 блоков GC.Alloc**; вместимость пула расширена до 32/64 буферов под 16-32 KiB keyframes;
+- Итог: **1390 автоматизированных тестов (1368 EditMode + 22 PlayMode), 100% green** на 2026-10-29.
 
 ## Definition of Done
 

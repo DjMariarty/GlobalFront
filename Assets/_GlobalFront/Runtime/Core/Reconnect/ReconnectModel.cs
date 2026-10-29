@@ -14,8 +14,12 @@ namespace GlobalFront.Core.Reconnect
         InvalidSecret = 2,
         GraceExpired = 3,
         MatchFinished = 4,
+
+        /// <summary>Transient: the old socket is still considered alive; retry.</summary>
         InvalidState = 5,
-        Denied = 5
+
+        /// <summary>Explicit access refusal: terminal, never retried (M1.1 N-2).</summary>
+        Denied = 6
     }
 
     /// <summary>
