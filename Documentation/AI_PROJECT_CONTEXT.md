@@ -522,16 +522,17 @@ These hashes are historical evidence available to the handoff. The coordinator m
 ## 14. Current Phase Status & Baseline
 
 - **Phase 1 (Simulation Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (hardening sprints 1.1–1.5.1)
-- **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / P0/P1 = 0 CERTIFIED; все P2/P3 закрыты] (steps 2.1–2.8, hardening 2.1–2.5, certified at `4cb8ffa`, все 15 замечаний Grand Audit закрыты в Hardening 3.7.1)
+- **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / P0/P1 = 0 CERTIFIED; все P2/P3 закрыты] (steps 2.1–2.8, hardening 2.1–2.5, certified at `4cb8ffa`, все замечания Grand Audit закрыты в Hardening 3.7.1)
 - **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (steps 3.1–3.7, 400-unit slice, OD-28 benchmark + Hardening Phase 3.7.1)
-- **Current Baseline:** 1179 EditMode + 16 PlayMode = 1195 automated tests (100% green, 0 compiler warnings, 0 compiler errors на HEAD `80226f5`)
-- **Next Phase:** Phase 4 (Multiplayer Gameplay Integration)
+- **Phase 4 (Multiplayer Gameplay Integration):** [100% COMPLETED / AUDITED: ZERO DEFECTS] (Milestone M1.2 certified APPROVE: P0=0, P1=0, P2=0, P3=0 by Kimi k 3.1 Pro on `66419a8` / `6d8a20c`; OD-48..OD-50)
+- **Current Baseline:** 1370 EditMode + 22 PlayMode = 1392 automated tests (100% green, 0 compiler warnings, 0 compiler errors на HEAD `66419a8` / `6d8a20c`)
+- **Next Phase:** Phase 5 (Full Five Factions: Faction Asymmetry & Strategic Combat, Milestone M2 2v2 Topology)
 
 ---
 
 ## 15. Immediate Coordinator Action
 
-Phases 1, 2, and 3 are 100% complete and certified. The incoming coordinator's immediate action is to initialize and coordinate **Phase 4: Multiplayer Gameplay Integration**:
-1. Verify working tree and baseline against commit `80226f5` (1179 EditMode, 16 PlayMode).
-2. Prepare Phase 4 R&D and integration plan (connecting Phase 2 network transport and snapshot replication to Phase 3 400-unit presentation stack).
+Phases 1, 2, 3, and 4 are 100% complete and certified. The incoming coordinator's immediate action is to initialize and coordinate **Phase 5: Full Five Factions (Faction Asymmetry & Strategic Combat)** and **Milestone M2**:
+1. Verify working tree and baseline against commit `66419a8` / `6d8a20c` (1370 EditMode, 22 PlayMode).
+2. Prepare Phase 5 roadmap and specification (5 factions: NATO, Russia, China, GLA, USA; roster, tech trees, economic model, armor/damage matrix, 2v2 topology expansion per OD-48).
 3. Ensure strict enforcement of Proof-of-Defect, zero-trust review gates, and Zero-GC contracts.

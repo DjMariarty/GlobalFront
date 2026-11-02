@@ -1,6 +1,6 @@
 # Phase 04 — Multiplayer Gameplay Integration
 
-> Status: **MILESTONE M1.1 FORENSIC SEAL DELIVERED — 10/10 FIXES VERIFIED** • Scope fixed to **1v1 Dedicated Server Prototype** (OD-48, OD-49, 1368 EditMode + 22 PlayMode = 1390 green)
+> Status: **COMPLETE / CERTIFIED [APPROVED: ZERO DEFECTS]** • Milestone M1.2 (1v1 Dedicated Server Prototype) certified by Kimi k 3.1 Pro (P0=0, P1=0, P2=0, P3=0 on commit `66419a8` / `6d8a20c`; OD-48..OD-50; 1370 EditMode + 22 PlayMode = 1392 green)
 
 ## Goal
 
@@ -36,7 +36,7 @@
 ## Milestones
 
 - первый end-to-end multiplayer RTS prototype на 400 юнитов — [COMPLETE];
-- Milestone M1 (1v1 Dedicated Server Prototype) — [REMEDIATED, PENDING REVIEW];
+- Milestone M1 (1v1 Dedicated Server Prototype) — [COMPLETE / CERTIFIED] (OD-48..OD-50, certified APPROVE на `66419a8`, отчёт `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`);
 - Milestone M2 (2v2 + Phase 5 Faction Asymmetry) — [PLANNED].
 
 ## Acceptance Criteria
@@ -49,7 +49,8 @@
 - [x] дельта-снапшоты и ключевые кадры доставляются по реальной сети с контролем пропускной способности;
 - [x] отключение и повторное подключение (reconnect/resync) клиента восстанавливает идентичное состояние боя без десинхронизации;
 - [x] реконнект ограничен по времени: временный `InvalidState` повторяется, ожидание ready имеет дедлайн (M1 remediation 3.1–3.2);
-- [x] пул транспортных буферов сбалансирован на всех путях сброса (M1 remediation Block 4);
+- [x] пул транспортных буферов сбалансирован на всех путях сброса (M1 remediation Block 4, OD-50);
+- [x] терминация клиентов при `MatchFinished` и штатном отключении сервера закрывает реконнект-цикл (OD-50);
 - [ ] 2v2 (командный режим) — перенесено в Milestone M2.
 
 ## Tests
@@ -59,10 +60,10 @@
 - gameplay snapshot/reconnect tests под эмулированными сетевыми потерями (1–5% packet loss);
 - latency/jitter/disconnect сценарии;
 - deterministic and desync regression tests;
-- 17 новых регрессионных тестов M1 remediation + 17 новых тестов M1.1 Forensic Seal (`M1ForensicSealTests.cs` и фикстуры Ingress, FoW, Fragmentation, Runner, Reconnect);
-- Zero-GC: замер **ограничен** клиентским транспортом и пайплайнами репликации при отключённой презентации (3-секундное окно) — **0 блоков GC.Alloc**; вместимость пула расширена до 32/64 буферов под 16-32 KiB keyframes;
-- Итог: **1390 автоматизированных тестов (1368 EditMode + 22 PlayMode), 100% green** на 2026-10-29.
+- 17 новых регрессионных тестов M1 remediation + 17 новых тестов M1.1 Forensic Seal (`M1ForensicSealTests.cs`) + 2 новых теста M1.2 (`FragmentationTests.cs`, `M1ForensicSealTests.cs`);
+- Zero-GC: строгий замер подтверждён на всех размерах пакетов до протокольного предела (2048 буферов пула `TransportBufferPool`, проверено до 895 фрагментов / 1 MiB) — **0 блоков / 0 B GC.Alloc**;
+- Итог: **1392 автоматизированных теста (1370 EditMode + 22 PlayMode), 100% green** на 2026-11-03.
 
 ## Definition of Done
 
-Настоящий authoritative **1v1** RTS prototype работает end-to-end по сети с реальными юнитами, combat, snapshots, reconnect и presentation; тесты green (EditMode + PlayMode); 2v2 вынесен в Milestone M2; Milestone M1 ожидает независимого ревью.
+Настоящий authoritative **1v1** RTS prototype работает end-to-end по сети с реальными юнитами, combat, snapshots, reconnect и presentation; тесты green (1370 EditMode + 22 PlayMode = 1392); 2v2 вынесен в Milestone M2 (Phase 5); Milestone M1.2 полностью сертифицирован независимым состязательным ре-аудитом Kimi k 3.1 Pro по P0=0, P1=0, P2=0, P3=0 на коммите `66419a8` (отчёт: `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`).

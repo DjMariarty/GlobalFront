@@ -4,15 +4,15 @@
 
 ## Current Phase
 
-**Phases 1–3 — [COMPLETED / CERTIFIED] • Phase 4 / Milestone M1.2 (1v1 Dedicated Server Prototype) — [STRICT ZERO-GC & MATCH TERMINATION SEAL]** (OD-49, OD-50, 1392 теста 100% green)
+**Phases 1–4 — [COMPLETED / CERTIFIED: ZERO DEFECTS] • Milestone M1.2 (1v1 Dedicated Server Prototype) — [CERTIFIED APPROVE]** (OD-48..OD-50, 1370 EditMode + 22 PlayMode = 1392 теста 100% green)
 
 ## Current Task
 
-**Milestone M1.2 Ready for Final Tri-Model Audit Sign-Off (Kimi / Qwen / DeepSeek) & Transition to Milestone M2 (Phase 5)**
+**Transition to Phase 5: Full Five Factions (Faction Asymmetry & Strategic Combat) & Milestone M2 (2v2 Topology)**
 
-- **Микро-спринт M1.2 (2026-11-03, OD-50):** Закрыты дефекты, выявленные независимым ре-аудитом Kimi k 3.1 Pro:
-  1. **P1-01 (Strict Zero-GC на 65+ фрагментах):** `TransportBufferPool.LargeBuffersPerBucket` поднят до `TransportProtocol.MaxFragmentsPerGroup` (2048), а `CapacityFor` изолирован строго под `shift == LargeBucketShift` (слайсы фрагментов 2048 B). Аллокации на 65+ фрагментах полностью устранены (0 B GC).
-  2. **P1-02 (Терминация клиентов по real UDP при MatchFinished):** В `SessionManager.TryRebindSession` проверка `MatchPhase.Finished` поднята на самый верх до `SessionState.Disconnected`. Любая попытка реконнекта в завершённый матч моментально получает `RebindResult.MatchFinished` и не зацикливается в `InvalidState`.
+- **Milestone M1.2 Certification (2026-11-03, commit `6d8a20c` / `66419a8`):** Независимый состязательный ре-аудит Kimi k 3.1 Pro вынес вердикт **APPROVE (P0=0, P1=0, P2=0, P3=0)** (`Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`). Все три дефекта закрыты:
+  1. **P1-01 (Strict Zero-GC на 65+ фрагментах):** `TransportBufferPool.LargeBuffersPerBucket` поднят до `TransportProtocol.MaxFragmentsPerGroup` (2048), а `CapacityFor` изолирован строго под `shift == LargeBucketShift` (слайсы фрагментов 2048 B). Аллокации на 65, 128 и максимальных 895 фрагментах (1 MiB) полностью устранены (0 B GC).
+  2. **P1-02 (Терминация клиентов по real UDP при MatchFinished):** В `SessionManager.TryRebindSession` проверка `MatchPhase.Finished` поднята на самый верх до `SessionState.Disconnected`. Любая попытка реконнекта в завершённый матч моментально получает `RebindResult.MatchFinished` и не зацикливается в `InvalidState`. Live UDP witness подтвердил переход клиентов в `Terminated` за 138 мс и очистку ресурсов за 2.2 с.
   3. **P2-01 (LiteNetLib close/receive race):** `LiteNetLibCarrier.OnNetworkReceive` проверяет существование пира в `_connectionToPeer` под `_peerGate` перед вызовом `HandleSnapshotReceive`, исключая утечку сиротского состояния.
 - **Микро-спринт M1.1 Forensic Seal (2026-10-29, OD-49):** Закрыты все 10 базовых дефектов R4/R5 (Fail-closed FoW `UnknownEntity`, очистка лобби, дедлайн ready, часы grace, `Destroyed` cause, `Denied=6`).
 - **Тестовый гейт:** **1392/1392 автоматизированных теста зелёные (1370 EditMode + 22 PlayMode)**. Добавлен тест 65 фрагментов в `FragmentationTests.cs` и тест немедленного `MatchFinished` в `M1ForensicSealTests.cs`. Все фиксы подтверждены bite-прогонами revert-to-fail.
@@ -22,7 +22,7 @@
 - **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / P0/P1 = 0 CERTIFIED]. Шаги 2.1–2.8 + спринты hardening 2.1–2.5 (`5c94e07`..`4cb8ffa`). Сертификация Phase 2.0 на `4cb8ffa` подтвердила **P0/P1 = 0**: это строгий состязательный ре-аудит, выполненный Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); сам отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели привлекались только на промежуточных этапах ревью и авторами сертификата не являются. Уязвимость N-01 / D-10 / A-01 полностью ликвидирована на 3 независимых слоях. Все оставшиеся замечания (F-1..F-11, F-13..F-15, N-02..N-04) закрыты в Hardening Phase 3.7.1 — см. блоки ниже.
 - **Phase 3 (Visual Presentation & RTS Controls):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Шаги 3.1–3.7 (ADR-012, OD-23..OD-29). Сквозной вертикальный срез на 400 юнитах (`3414ba6` / `cb01ea2`). Замер OD-28: **0.623 ms/frame** — это CPU-пайплайн симуляции и презентации (headless EditMode, 400 юнитов, гард 8.0 ms), а не полный кадр с физическим GPU draw-call; **0 B GC.Alloc** за 60 steady-state кадров.
 - **Hardening Phase 3.7.1 (закрытие Grand Audit):** [100% COMPLETED]. Блоки 1–4 (`934840d`..`3a112ad`) закрыли code-level замечания F-1..F-11, F-13..F-15 и N-02..N-04; блок 5 закрыл F-6 и F-10. 17 новых EditMode-тестов (1162 → 1179), bite-прогоны по каждому наблюдаемому дефекту.
-- **Phase 4 (Multiplayer Gameplay Integration):** [M1 REMEDIATION DELIVERED / PENDING REVIEW]. ADR-014 принят (OD-35..OD-43); формат M1 зафиксирован как 1v1 (OD-48), 2v2 — Milestone M2. Grand Audit M1 вынес REJECT прежней сертификации; см. блок remediation в начале документа.
+- **Phase 4 (Multiplayer Gameplay Integration):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Шаги 4.1–4.6.5 + микро-спринты M1.1/M1.2 (ADR-014, OD-35..OD-50). Milestone M1.2 сертифицирован независимым состязательным ре-аудитом Kimi k 3.1 Pro: **APPROVE (P0=0, P1=0, P2=0, P3=0)** на коммите `66419a8` (отчёт: `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`). Формат M1 зафиксирован как 1v1 Dedicated Server Prototype (OD-48); 2v2 перенесён в Milestone M2.
 - **Шаг 4.1 (Dedicated Server Core Relocation & Headless Runner):** [COMPLETE / COMMITTED `5f2f29e`]. `ServerHost` вынесен в `GlobalFront.Server` (engine-free), `LocalMatchHost` остался тонкой клиентской обёрткой с `BindReconnectCoordinator`; добавлена сборка `GlobalFront.ServerHost` с `DedicatedServerRunner` (цикл `Pump` → `AdvanceRealTime`, 120 FPS) и `DedicatedServerBootstrap` (`-port`, `-tickrate`, `-dedicatedServer` / `UNITY_SERVER`); в `FixedStepClock` добавлен кламп бэклога `MaxBacklogSeconds = 0.25` (OD-45).
 - **Шаг 4.2 (Client Remote Connection & Handshake):** [COMPLETE / COMMITTED `1760f17`]. `ClientTransportEndpoint` отправляет `Ping` и публикует `PongReceived`; `RemoteSliceSession` компонует endpoint, uplink, receiver/bridge, C1 command channel и RTT-контур (каденс 1 Гц, EWMA α = 0.125 по клиентским часам); `TacticalVerticalSliceRunner.InitializeDedicatedClient` работает без локального `_host` (тик — из `ClientReplicationReceiver`, команды — через `NetworkCommandChannel`, пул прогревается по полученному ростеру), RTT и сетевой статус выводятся в `NetworkHudPresenter`.
 - **Шаг 4.2.1 (Client Bootstrap CLI `-connect`):** [COMPLETE / COMMITTED `34e994e`]. `GlobalFrontRuntimeBootstrap` разбирает `-connect <host>[:<port>]` и `-connect=<host>[:<port>]` (порт по умолчанию 7777, диапазон 1..65535; отсутствие флага/пустой хост/невалидный порт → `false`). При наличии флага `Initialize()` не строит легаси-прототип, а вызывает `ActivateDedicatedClient`: снимает легаси-прототип и предыдущий срез, создаёт `RemoteSliceSession`, подключается и инициализирует раннер в `DedicatedClient`; сессией владеет бутстрап и освобождает её при замене среза. Гейт: EditMode **1219/1219**, PlayMode **17/17**; live PlayMode-проверка с реальным UDP-сервером: `Established`, RTT 28–29 ms, HUD-слот `Connected`.
@@ -50,21 +50,21 @@
     5. Архитектурный Zero-GC фикс транспорта: `TransportBufferPool.cs`, возврат буферов после обработки событий, пул ассемблера фрагментов. M1 remediation добавил учёт `RentCount`/`ReturnCount` и закрыл потери на rate-limit, queue overflow, teardown и shutdown.
     6. Стабилизация `NetworkImpairmentPlayModeTests.cs` (`1bac832`): пошаговая откачка тиков сервера во время ожидания дельт при 5% потерь пакетов, устранившая таймауты под нагрузкой полного пакета тестов.
     7. Диагностика аллокационных стек-трейсов (`156d898`, `Artifacts/Playtest/gc_alloc_callstacks.txt`): доказано отсутствие аллокаций в `GlobalFront.*` и `LiteNetLib.*`; подтверждено, что периодические блоки вызваны внутренними механизмами `UnityEngine.TestRunner` (`LogScope`), Editor и URP/IMGUI.
-  - Гейт: EditMode **1334/1334**, PlayMode **22/22** (всего **1356/1356 passed**) на момент шага 4.6.5; после M1 remediation 2026-10-27 — **1351 EditMode + 22 PlayMode**.
+  - Гейт: EditMode **1334/1334**, PlayMode **22/22** (всего **1356/1356 passed**) на момент шага 4.6.5; после M1 remediation — **1351 EditMode + 22 PlayMode**; в M1.1 — **1368 EditMode + 22 PlayMode**; в финальном M1.2 — **1370 EditMode + 22 PlayMode = 1392 passed**.
   - Сценарий синтетического плейтеста длится **≈26.1–26.3 s** (спавн, бой, разрыв на 20-й секунде, реконнект, возобновление), а не «5 минут»; FPS-окно — 3 s.
   - Zero-GC контракт: измеряется только клиентский транспорт и пайплайны репликации при отключённой презентации (3-секундное окно) — 0 блоков GC.Alloc. Полный кадр с URP/Editor аллоцирует мегабайты и в контракт не входит; поле `gcAllocBytes` в метриках — sentinel по числу blocks, а не байты.
   - Артефакты: 6 скриншотов 1080p (`Artifacts/Playtest/01_spawn_and_fog.png` .. `06_interactive_menu.png`), `playtest_metrics.json`, `gc_alloc_callstacks.txt`.
 
 ## Last Commit
 
-`5beb1d1` (`docs(current_state): record allocation callstack artifact and close GC residual as test-runner LogScope artifact`). M1 remediation 2026-10-27 идёт поверх него **без коммита** — на ревью Координатору.
+`6d8a20c` (`docs(audit): record Kimi k 3.1 Pro final APPROVE certification for Milestone M1`). Все коммиты синхронизированы с `origin/main`.
 
 ## Tests
 
-- EditMode: **1351/1351 passed** (100% green, 0 failed, 0 skipped, 2026-10-27; gate: `Artifacts/TestResults/m1-remediation-editmode-postbite.xml`)
-- PlayMode: **22/22 passed** (100% green, 0 failed, 0 skipped, 2026-10-27; gate: `Artifacts/TestResults/m1-remediation-playmode.xml`)
-- Всего: **1373 автоматизированных теста** (1351 EditMode + 22 PlayMode)
-- Zero-GC (scoped): 0 блоков GC.Alloc в клиентском транспорте и пайплайнах репликации при отключённой презентации; полный кадр не входит в контракт
+- EditMode: **1370/1370 passed** (100% green, 0 failed, 0 skipped, 2026-11-03)
+- PlayMode: **22/22 passed** (100% green, 0 failed, 0 skipped, 2026-11-03)
+- Всего: **1392 автоматизированных теста** (1370 EditMode + 22 PlayMode, 100% green)
+- Zero-GC: строгий 0 B GC.Alloc на всех размерах пакетов до протокольного предела (895 фрагментов / 1 MiB, `TransportBufferPool` capacity 2048)
 - 6 визуальных артефактов Full HD 1080p в `Artifacts/Playtest/`
 - Unity: `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
 
@@ -97,19 +97,20 @@
   - Phase 3.6 Minimap & Tactical HUD — COMPLETE (`2a754db`)
   - Phase 3.7 Vertical Slice Integration, 400-Unit Benchmark & Multi-Frame Suite — COMPLETE (`3414ba6`, `cb01ea2`)
 - **Hardening Phase 3.7.1 — Grand Audit remediation — COMPLETE (`934840d`..`3a112ad`)**
-- **Milestone M1 Multiplayer Prototype — [1v1 SCOPE, REMEDIATION DELIVERED / PENDING REVIEW] (Phase 4.0, ADR-014, OD-35..OD-43, OD-48)**
-  - Шаги 4.1–4.6.5 реализованы; M1 remediation 2026-10-27 закрыл блоки 1–5 задания и обновил документацию (блок 6).
-  - Сквозной dedicated-матч на 402 юнита, FoW, реальные UDP-сокеты, живой реконнект в разгаре боя, авто-возобновление C0 Opcode 14, 6 скриншотов Full HD 1080p.
-  - Заявляемый формат M1 — **1v1 Dedicated Server Prototype**; 2v2 — Milestone M2.
+- **Milestone M1 Multiplayer Prototype — [100% COMPLETED / AUDITED: ZERO DEFECTS] (Phase 4.0, ADR-014, OD-35..OD-50, commit `66419a8` / `6d8a20c`)**
+  - Шаги 4.1–4.6.5 + микро-спринты M1.1/M1.2 реализованы; все дефекты состязательных аудитов устранены.
+  - Сквозной dedicated-матч на 402 юнита, FoW, реальные UDP-сокеты, живой реконнект в разгаре боя, авто-возобновление C0 Opcode 14, терминация `MatchFinished`, 6 скриншотов Full HD 1080p.
+  - Заявляемый формат M1 — **1v1 Dedicated Server Prototype**; 2v2 перенесён в Milestone M2 (OD-48).
+  - Финальный независимый ре-аудит Kimi k 3.1 Pro: **APPROVE (P0=0, P1=0, P2=0, P3=0)**.
 
 ## Next Step
 
-**Независимое ревью и коммит M1 remediation Координатором.** После приёмки — Milestone M2: 2v2 composition (ex-P1-02) и Phase 5 Faction Asymmetry & Strategic Combat.
+**Переход к Phase 5: Full Five Factions (Faction Asymmetry & Strategic Combat) & Milestone M2 (2v2 Topology).**
 
 ## Backlog
 
 - **[OPEN — M2] 2v2 composition:** `DedicatedServerRunner` создаёт `ServerHost(tickRate)` с `SkirmishCombatRelation`; `Team2v2CombatRelation` и `SetPlayerTeam` не подключены runtime-композицией. Официально вынесено в Milestone M2 (OD-48).
-- **[OPEN — audit residuals, не входили в M1 remediation]:** P2-02 (receive может воскресить state закрытого connection), P2-05 (новый disconnect во время паузы наследует остаток старого grace), P2-08 (countdown не реплицируется всем клиентам), P2-10 (bootstrap-owned `RemoteSliceSession` не закрывается при уничтожении root), P2-11 (приёмочный E2E-сценарий не покрывает real-entry-point до outcome), P2-12 (GC-gate нестабилен и уже заявленного охвата), P3-01..P3-04.
+- **[CLOSED] Дефекты состязательного аудита M1.0/M1.1/M1.2:** P1-01 (Strict Zero-GC до 1 MiB), P1-02 (терминация клиентов при MatchFinished), P2-01 (LiteNetLib race guard), F1–F6 (очистка лобби, дедлайн ready, непрерывные часы grace, fail-closed FoW) закрыты и сертифицированы с P0=0, P1=0, P2=0, P3=0 в `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`.
 - **[OPEN] (Phase 4.4.2 lead ceiling residual)**: `CalculateLeadTicks` реализован точно по формуле брифа и не клампится. При RTT выше ~4.5 с (`1 + 12 render + 2 + ceil(RTT/100ms) > 60`) `RequestedTick` выйдет за `AcceptedFutureTicks` и сервер ответит `HeaderRejected`; для LAN/обычного интернета запас велик (RTT 100 мс → lead ≈ 8 тиков).
 - **[CLOSED] (Phase 4 FoW)**: per-client `StateChecksum` для отфильтрованного среза мира реализован в Шаге 4.3.2 (OD-40); глобальная чексумма остаётся только для режима без фильтра.
 - **[CLOSED] Backlog Phase 2.0 (N-02, N-03, N-04) и P3-пакет Grand Audit (F-1..F-11, F-13..F-15; ID F-12 в отчёте отсутствует)**: закрыты в Hardening Phase 3.7.1 (блоки 1–5). Это не отменяет OPEN-замечаний Grand Audit M1, перечисленных выше.

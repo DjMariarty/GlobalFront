@@ -5,9 +5,9 @@ GlobalFront — современная реализация фундамента
 Техническая цель — перенести эту формулу на современную архитектуру: authoritative server, deterministic simulation, улучшенные pathfinding, multiplayer, производительность, стабильность, UX, reconnect/resync, replay и диагностика desync.
 
 > **Стек:** Unity `6000.6.2f1` • URP `17.6.0` • uGUI `2.6.0` • C# 9.0 (Zero-GC hot path)  
-> **Статус проекта:** Фазы 1, 2 и 3 полностью завершены; Phase 2 сертифицирована по **P0/P1 = 0**, все P2/P3 Grand Audit закрыты в Hardening Phase 3.7.1  
-> **Текущий бейзлайн:** **1179/1179 EditMode** + **16/16 PlayMode** = **1195 тестов passed** (100% green, 0 warnings, 0 errors на `3a112ad`)  
-> **Следующая фаза:** **Phase 4: Multiplayer Gameplay Integration** `[READY / NEXT]`
+> **Статус проекта:** Фазы 1, 2, 3 и 4 полностью завершены и сертифицированы; Milestone M1.2 (1v1 Dedicated Server Prototype) сертифицирован независимым состязательным ре-аудитом Kimi k 3.1 Pro по **P0=0, P1=0, P2=0, P3=0** на коммите `66419a8` (OD-48..OD-50, Zero-GC до 1 MiB / 895 фрагментов, live UDP MatchFinished)  
+> **Текущий бейзлайн:** **1370/1370 EditMode** + **22/22 PlayMode** = **1392 теста passed** (100% green, 0 warnings, 0 errors на `66419a8` / `6d8a20c`)  
+> **Следующая фаза:** **Phase 5: Full Five Factions (Faction Asymmetry & Strategic Combat) / Milestone M2** `[READY / NEXT]`
 
 ---
 
@@ -57,6 +57,15 @@ GlobalFront — современная реализация фундамента
    - Сквозной вертикальный срез 400 юнитов и бенчмарк (Шаг 3.7, `TacticalVerticalSliceRunner`, `ArchitectureInvariantsTests`).
    - **Профиль OD-28 на 400 юнитах:** **0.623 ms/frame** (при гарде 8.0 ms и потолке 16.67 ms для 60 FPS) и **0 B GC.Alloc** за 60 steady-state кадров.
 
+4. **Phase 4: Multiplayer Gameplay Integration — [100% COMPLETED / AUDITED: ZERO DEFECTS] (Milestone M1.2 Certified)**
+   - Authoritative dedicated server stack (`DedicatedServerRunner`, `DedicatedServerBootstrap`, `RemoteSliceSession`, CLI `-connect`, 120 FPS pump, ADR-014, OD-35..OD-38).
+   - Сквозной 1v1 RTS матч на 400 активных юнитов по реальной сети (LiteNetLib 1.3.5, real UDP) с авто-стартом серверного ростера.
+   - Networked Fog of War (OD-16, OD-39, `BitMask1024`, `VisibilityEngine`, `VisibilityHistoryRing`, per-client replication filtering, per-client FNV-1a `StateChecksum`, anti-maphack server command validation, OD-41).
+   - Reconnect & Resync посреди активного RTS-боя (тактическая пауза, 5-секундный countdown, C0 Opcode 14 `ClientReadyToResume`, `ResyncSelectionViews()`, OD-42).
+   - Строгий Zero-GC на всем допустимом диапазоне пакетов до протокольного предела (2048 буферов пула `TransportBufferPool`, проверено до 895 фрагментов / 1 MiB, 0 B GC.Alloc, OD-50).
+   - Терминация клиентов при `MatchFinished` и штатном выключении сервера без зацикливания в reconnect (OD-50).
+   - **Финальный Grand Re-Audit Milestone M1.2 (`66419a8`):** независимый аудит Kimi k 3.1 Pro вынес вердикт **APPROVE (P0=0, P1=0, P2=0, P3=0)**, подтвердив выполнение всех критериев на live UDP-клиентах (отчёт: `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`).
+
 Краткая оперативная сводка для человека или AI-агента: [CURRENT_STATE.md](Documentation/CURRENT_STATE.md).
 
 ---
@@ -79,7 +88,7 @@ GlobalFront — современная реализация фундамента
 GlobalFront/
 ├── Assets/_GlobalFront/
 │   ├── Runtime/              # Core, Server, Client, Presentation, UI
-│   ├── Tests/                # EditMode (1179) и PlayMode (16) тесты
+│   ├── Tests/                # EditMode (1370) и PlayMode (22) тесты
 │   ├── GameContent/
 │   └── ThirdParty/           # LiteNetLib 1.3.5
 ├── Documentation/            # Architecture, Roadmap, Phases, Decisions (ADR)

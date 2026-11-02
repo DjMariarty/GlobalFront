@@ -37,9 +37,9 @@ GlobalFront: Phases 1.0 — 2.8 + Phase 3.0 (Шаги 3.1–3.7) + Hardening Pha
 | Snapshots | Per-client delta streaming с FoW, rate-pacing, keyframe slicing; паритет 400 юнитов доказан под 1% и 5% loss + burst (0 desyncs); live UDP reconnect посреди боя доказан в PlayMode |
 | Presentation | RTS camera (`RtsCameraController`) и input layer (`RtsInputManager`); `UnitViewTickBuffer` (SoA, 37 B/slot, adaptive delay); `UnitViewPool` и `UnitViewBinder` (Zero-GC биндинг, `HandleResync` recycling); `UnitOverlayBatcher` + `UnitOverlayRendererFeature` (кольца и HP-бары, URP RenderGraph, 0 B GC); `UnitSelectionController` (каноническое множество `EntityId`, box drag, resync по `EntityId`, удержание selection через пустое зеркало); миникарта и HUD (`PermanentHudPresenter`, `SelectionHudPresenter` с `ValueColumnX = 124f`, `TacticalPauseOverlay`); сквозной 400-юнитный срез (`TacticalVerticalSliceRunner`) |
 | Scene | одна включённая `Assets/Scenes/SampleScene.unity` |
-| Tests | **1351/1351 EditMode passed (100%)**, **22/22 PlayMode passed (100%)**; **1373 автоматизированных тестов суммарно** (gates: `Artifacts/TestResults/m1-remediation-editmode-postbite.xml`, `m1-remediation-playmode.xml`, 2026-10-27) |
+| Tests | **1370/1370 EditMode passed (100%)**, **22/22 PlayMode passed (100%)**; **1392 автоматизированных теста суммарно** (100% green, 0 failed, 0 skipped на `66419a8` / `6d8a20c`) |
 
-## Phase 4.0 Status — [M1 REMEDIATION DELIVERED, PENDING REVIEW]
+## Phase 4.0 Status — [100% COMPLETED / AUDITED: ZERO DEFECTS]
 
 - 4.1 Dedicated Server Core Relocation & Headless Runner — [COMPLETE] (`5f2f29e`)
 - 4.2 Client Remote Connection & Handshake — [COMPLETE] (`1760f17`)
@@ -56,10 +56,13 @@ GlobalFront: Phases 1.0 — 2.8 + Phase 3.0 (Шаги 3.1–3.7) + Hardening Pha
 - 4.6.2 Impairment Harness & Presets (Wi-Fi 1% / WAN 5% + Burst) — [COMPLETE] (`1b38f05`)
 - 4.6.3 Parity under Loss/Latency on 400 Units (OD-40 / OD-43) — [COMPLETE] (`4d15ace`)
 - 4.6.4 Live UDP PlayMode Harness & Reconnect Path B — [COMPLETE] (`1eeb3d2`, `491811c`, `3eca5de`)
-- 4.6.5 Synthetic 400-Unit Playtest (~26 s), Full HD Visual Evidence, Polish & Zero-GC Transport — [COMPLETE] (`666f89f`, `828c55d`, `ff344a9`, `366e444`)
-- **M1 remediation (Block 1–6, 2026-10-27, uncommitted on `5beb1d1`)** — [DELIVERED / PENDING INDEPENDENT REVIEW]: FoW anti-cheat (1.1–1.3), dedicated 1v1 auto-start (2.1), reconnect/pause hardening (3.1–3.4), buffer accounting (4.1), selection resync (5.1), documentation/scope (6.1). 17 новых EditMode-тестов, 15 bite-прогонов.
+- 4.6.5 Synthetic 400-Unit Playtest (~26 s), Full HD Visual Evidence, Polish & Zero-GC Transport — [COMPLETE] (`666f89f`, `828c55d`, `ff344a9`, `366e444`, `1bac832`)
+- M1 Remediation (Block 1–6) — [COMPLETE] (`8e35bb3`, OD-48, OD-49)
+- M1.1 Forensic Seal (10 defect fixes across 35 files) — [COMPLETE] (`645a532`, OD-49, 1390 green)
+- M1.2 Strict Zero-GC & Match Termination Seal — [COMPLETE] (`66419a8`, OD-50, 1392 green)
+- Grand Re-Audit M1.2 Certification — [COMPLETE / CERTIFIED] (`6d8a20c`, Kimi k 3.1 Pro **APPROVE: P0=0, P1=0, P2=0, P3=0**, `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`)
 
-**Итог: Milestone M1 (1v1 Dedicated Server Prototype) — remediation delivered; независимое ревью и коммит остаются за Координатором.** 2v2 — Milestone M2 / Phase 5.
+**Итог: Milestone M1.2 (1v1 Dedicated Server Prototype) полностью сертифицирован независимым состязательным ре-аудитом Kimi k 3.1 Pro (P0=0, P1=0, P2=0, P3=0) на коммите `66419a8` (отчёт `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`, коммит `6d8a20c`).** 2v2 — Milestone M2 / Phase 5.
 
 ## Next Phase
 

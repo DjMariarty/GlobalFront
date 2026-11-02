@@ -52,20 +52,29 @@
 - Phase 4.6.3 Parity under Loss/Latency on 400 Units — COMPLETE (`4d15ace`, OD-40, OD-43).
 - Phase 4.6.4 Live UDP PlayMode Harness & Reconnect Path B — COMPLETE (`1eeb3d2`, `491811c`, `3eca5de`).
 - Phase 4.6.5 5-Minute 400-Unit Playtest, Full HD Visual Evidence, Polish & Zero-GC Transport — COMPLETE (`666f89f`, `828c55d`, `ff344a9`, `366e444`, `1bac832`).
+- Phase 4 M1 Remediation (1v1 Dedicated Server Prototype) — COMPLETE (`8e35bb3`, OD-48, OD-49; FoW anti-cheat fail-closed, dedicated 1v1 auto-start, reconnect/pause hardening, buffer pool accounting, selection resync).
+- Milestone M1.1 Forensic Seal — COMPLETE (`645a532`, OD-49; закрыты 10 дефектов R4/R5 across 35 files; 1390 automated tests green).
+- Milestone M1.2 Strict Zero-GC & Match Termination Seal — COMPLETE (`66419a8`, OD-50; P1-01 Zero-GC up to 1 MiB / 895 fragments via 2048 buffers, P1-02 terminal `MatchFinished` rebind, P2-01 `LiteNetLibCarrier` peer gate; 1392 automated tests green).
+- Milestone M1.2 Final Grand Re-Audit Certification — COMPLETE (`6d8a20c`, Kimi k 3.1 Pro **UNCONDITIONAL APPROVE: P0=0, P1=0, P2=0, P3=0** на commit `66419a8`; `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`).
 
 ### Verified
 
 - Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`.
-- **1334/1334 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-10-26 (gate: `Artifacts/TestResults/step465-polish-editmode.xml`).
-- **22/22 PlayMode passed (100%)**, 0 failed, 0 skipped, 2026-10-26 (gate: `Artifacts/TestResults/step465-polish-playmode.xml`).
-- **1356 автоматизированных тестов суммарно** (0 compiler warnings, 0 compiler errors).
-- Zero-GC сетевого транспорта и симуляции под непрерывным боем 402 юнитов: **0 блоков / 0 байт GC.Alloc**.
+- **1370/1370 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-11-03.
+- **22/22 PlayMode passed (100%)**, 0 failed, 0 skipped, 2026-11-03.
+- **1392 автоматизированных теста суммарно** (0 compiler warnings, 0 compiler errors на `66419a8` / `6d8a20c`).
+- Строгий Zero-GC сетевого транспорта: **0 B GC.Alloc** на всех допустимых размерах пакетов до протокольного предела (895 фрагментов / 1 MiB, `TransportBufferPool` capacity 2048).
 - 6 визуальных артефактов Full HD 1080p в `Artifacts/Playtest/` (`01_spawn_and_fog.png` .. `06_interactive_menu.png`).
 
 ## Confirmed Foundation History
 
 | Commit | Milestone |
 |---|---|
+| `6d8a20c` | Grand Re-Audit M1.2: Kimi k 3.1 Pro UNCONDITIONAL APPROVE certification (P0=0, P1=0, P2=0, P3=0) |
+| `66419a8` | Milestone M1.2 Seal: strict Zero-GC up to 1 MiB (2048 buffers) and terminal MatchFinished rebind |
+| `645a532` | Milestone M1.1 Forensic Seal: 10 audit defect remediations (FoW, lobby, deadline, grace) with 1390 tests green |
+| `76836e9` | Documentation synchronization: Re-Audit R4 certification and Milestone M1 completion |
+| `8e35bb3` | Phase 4 M1 Remediation: 1v1 dedicated prototype fixes (OD-48, OD-49) |
 | `1bac832` | Phase 4.6.5 stabilization: manual server tick pump during post-command delta waits under loss |
 | `366e444` | Phase 4.6.5 Polish Sprint: selection rings resync, HUD 124px layout, honest HP damage, interactive bootstrap, Zero-GC TransportBufferPool |
 | `ff344a9` | Phase 4.6.5 Step 3: synthetic 400-unit PlayMode test, 1080p capture harness, remote pool warming |
