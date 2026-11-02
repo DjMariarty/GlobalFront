@@ -660,7 +660,24 @@ namespace GlobalFront.Server.Transport
                     _metrics.DatagramsReceived++;
                     _metrics.BytesReceived += length;
 
-                    HandleSnapshotReceive(connectionId, segment.Array, segment.Offset, length);
+                    // M1.2 P2-01: CloseConnection/OnPeerDisconnected drop the peer
+                    // maps on the host thread under this same gate. The mapping
+                    // check above and the per-peer state creation inside
+                    // HandleSnapshotReceive have to be one critical section:
+                    // otherwise a fragment that lands during teardown allocates a
+                    // PeerSnapshotState that nothing will ever reset, which strands
+                    // its pooled fragment slices and the dictionary entry until
+                    // Shutdown.
+                    lock (_peerGate)
+                    {
+                        if (!_connectionToPeer.ContainsKey(connectionId))
+                        {
+                            _metrics.DroppedBadToken++;
+                            return;
+                        }
+
+                        HandleSnapshotReceive(connectionId, segment.Array, segment.Offset, length);
+                    }
                 }
                 finally
                 {

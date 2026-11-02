@@ -1,17 +1,19 @@
 # Статус проекта GlobalFront
 
-> Фактический технический статус • обновлено 2026-10-29
+> Фактический технический статус • обновлено 2026-11-03
 
 ## Summary
 
-GlobalFront: Phases 1.0 — 2.8 + Phase 3.0 (Шаги 3.1–3.7) + Hardening Phase 3.7.1 + Phase 4.0 (Шаги 4.1–4.6.5) + **Микро-спринт M1.1 (Forensic Seal)** — **10/10 ДЕФЕКТОВ ЗАКРЫТЫ, 1390 ТЕСТОВ ЗЕЛЁНЫЕ**.
+GlobalFront: Phases 1.0 — 2.8 + Phase 3.0 (Шаги 3.1–3.7) + Hardening Phase 3.7.1 + Phase 4.0 (Шаги 4.1–4.6.5) + **Микро-спринты M1.1/M1.2** — **ВСЕ ДЕФЕКТЫ ЗАКРЫТЫ, 1392 ТЕСТА ЗЕЛЁНЫЕ**.
 - **Phase 1 Hardening:** Спринты 1.1–1.5.1 (`5b16a05`..`349a074`) закрыли race conditions, reentrancy, friendly fire, unit limits и alloc-free snapshots.
 - **Phase 2 Hardening & Grand Re-Audit:** Спринты 2.1–2.5 (`5c94e07`..`4cb8ffa`) устранили socket hijack, rate limit leaks, fragment map overflow, concurrency в TickDriver и cross-session reconnect hijack (N-01 / D-10 / A-01; P0/P1 = 0 сертифицирован).
 - **Hardening Phase 3.7.1 (Grand Audit remediation):** Блоки 1–4 (`934840d`..`3a112ad`) закрыли F-1..F-11, F-13..F-15 и N-02..N-04 на уровне кода; блок 5 закрыл документальные F-6 и F-10.
 - **Phase 3 (Visual Presentation & RTS Controls):** Шаги 3.1–3.7 (ADR-012, OD-23..OD-29) полностью сертифицированы `[APPROVED: ZERO DEFECTS]` (`3414ba6` / `cb01ea2`). Замер OD-28 на 400 юнитах: **0.623 ms/frame** и **0 B GC.Alloc** за 60 steady-state кадров. Milestone **M2 Playable RTS Core** достигнут.
-- **Phase 4 (Multiplayer Gameplay Integration & Milestone M1.1):** Шаги 4.1–4.6.5 + микро-спринт M1.1 реализованы. Milestone **M1 = 1v1 Dedicated Server Prototype**; 2v2 официально перенесён в Milestone M2 (Phase 5), см. OD-48.
+- **Phase 4 (Multiplayer Gameplay Integration & Milestone M1.2):** Шаги 4.1–4.6.5 + микро-спринты M1.1/M1.2 реализованы. Milestone **M1 = 1v1 Dedicated Server Prototype**; 2v2 официально перенесён в Milestone M2 (Phase 5), см. OD-48.
   - Устранён Command ACK оракул вражеского ростера (`ValidateControllable` fail-closed, P1-1).
-  - Пул `TransportBufferPool` расширен (32/64 буферов, предпрогрев 16), аллокации 9+ фрагментов устранены (P1-2).
+  - Пул `TransportBufferPool` масштабирован под `MaxFragmentsPerGroup = 2048`, аллокации на 65+ фрагментах полностью устранены (0 B GC, P1-01 / OD-50).
+  - Ранний терминальный ответ `MatchFinished` в `TryRebindSession` предотвращает зацикливание клиентов в `InvalidState` (P1-02 / OD-50).
+  - Защита от гонки потоков при приёме снапшотов после закрытия пира в `LiteNetLibCarrier` (P2-01 / OD-50).
   - Очистка лобби при выходе до старта (`ReleaseFormingSlot`, F2) и удаление соло-старта (F1).
   - Отвязка сокета по ready-дедлайну (`DetachSession`, F3).
   - Непрерывные часы Grace-периода (`SessionGraceClock`, 200с при обрыве во время паузы, F4 / P2-05).
@@ -19,7 +21,7 @@ GlobalFront: Phases 1.0 — 2.8 + Phase 3.0 (Шаги 3.1–3.7) + Hardening Pha
   - Сброс ассемблера в `OwnDatagramCarrier` (P2-5).
   - Разведение enum `InvalidState=5`, `Denied=6` (N-2) и причина смерти `Destroyed` (N-3).
 
-Проверка текущего состояния: **1368/1368 EditMode passed (100%)** и **22/22 PlayMode passed (100%)** (**1390 автоматизированных тестов суммарно**, 0 failed, 0 skipped). Все 10 фиксов подтверждены bite-прогонами revert-to-fail.
+Проверка текущего состояния: **1370/1370 EditMode passed (100%)** и **22/22 PlayMode passed (100%)** (**1392 автоматизированных теста суммарно**, 0 failed, 0 skipped). Все фиксы подтверждены bite-прогонами revert-to-fail.
 
 ## Confirmed Baseline
 

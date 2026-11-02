@@ -35,7 +35,13 @@ namespace GlobalFront.Server.Transport
         /// its own; the other buckets only ever see wider messages.
         /// </summary>
         private const int LargeBucketShift = 11; // 2048 B
-        private const int LargeBuffersPerBucket = 64;
+        /// <summary>
+        /// M1.2 P1-01: Large bucket holds 2048-byte fragment slices. It must
+        /// sustain up to the protocol's maximum permitted fragment count
+        /// (MaxFragmentsPerGroup = 2048), otherwise messages with 65+ fragments
+        /// spill their slices to GC upon return, violating strict Zero-GC.
+        /// </summary>
+        private const int LargeBuffersPerBucket = TransportProtocol.MaxFragmentsPerGroup;
 
         /// <summary>
         /// Buffers preallocated per bucket by <see cref="Warm"/>. Warm-up must
@@ -151,7 +157,7 @@ namespace GlobalFront.Server.Transport
         }
 
         private static int CapacityFor(int shift) =>
-            shift >= LargeBucketShift ? LargeBuffersPerBucket : BuffersPerBucket;
+            shift == LargeBucketShift ? LargeBuffersPerBucket : BuffersPerBucket;
 
         private static Stack<byte[]>[] CreateBuckets()
         {

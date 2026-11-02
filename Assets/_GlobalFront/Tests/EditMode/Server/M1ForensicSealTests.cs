@@ -277,6 +277,43 @@ namespace GlobalFront.Tests.EditMode.Server
             Assert.That(phase, Is.EqualTo(MatchPhase.Finished));
         }
 
+        /// <summary>
+        /// M1.2 P1-02: Rebinding into a Finished match must return MatchFinished
+        /// even if the session record state is still Connected (not yet marked Disconnected).
+        /// </summary>
+        [Test]
+        public void Rebind_IntoFinishedMatch_ReturnsMatchFinished_EvenWhenConnected()
+        {
+            var host = new ServerHost();
+            var match = host.CreateSessionMatch(2);
+            var session = host.Sessions.CreateSession(host.CreateConnectionHandle(), out var secret);
+            var otherSession = host.CreateSession(host.CreateConnectionHandle());
+            Assert.That(
+                host.TryJoinMatch(session, match, out var player), Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                host.TryJoinMatch(otherSession, match, out var otherPlayer),
+                Is.EqualTo(JoinResult.Assigned));
+            Assert.That(
+                host.TryStartSessionMatch(match, TwoPlayerConfig(player, otherPlayer), out _),
+                Is.True,
+                "a finished match can only be reached from a running one");
+
+            // Force match to Finished
+            Assert.That(host.Sessions.NotifyMatchFinished(match), Is.True);
+
+            // Attempt rebind with valid secret while session is still in Connected state
+            Assert.That(host.Sessions.TryGetSession(session, out var record), Is.True);
+            Assert.That(record.State, Is.EqualTo(SessionState.Connected),
+                "the witness needs a session that never entered the disconnect grace");
+
+            var result = host.Sessions.TryRebindSession(
+                session, secret, host.CreateConnectionHandle(), 100, out var rebound);
+            Assert.That(result, Is.EqualTo(RebindResult.MatchFinished),
+                "rebind into finished match must immediately return MatchFinished to terminate client retry loops");
+            Assert.That(rebound, Is.Null,
+                "a terminal rejection must not hand back a rebound session");
+        }
+
         private static MatchConfig TwoPlayerConfig(PlayerId player1, PlayerId player2) =>
             new MatchConfig(
                 StandardStats,

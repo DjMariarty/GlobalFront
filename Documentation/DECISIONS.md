@@ -561,6 +561,13 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - **Причина удаления юнита (N-3):** Труп с `CurrentHealth <= 0` реплицируется строго как `DeltaRemoveCause.Destroyed`, а не `FogOfWarHidden`.
 - **Тестовый гейт расширен до 1390 тестов (1368 EditMode + 22 PlayMode), 100% green.** Добавлены тесты `M1ForensicSealTests.cs`; все 10 фиксов подтверждены bite-прогонами revert-to-fail.
 
+#### [OD-50] Milestone M1.2 Strict Zero-GC (65+ Fragments) & UDP Match Termination Seal
+*Status:* ACCEPTED (2026-11-03, по итогам ре-аудита Kimi k 3.1 Pro)
+- **Strict Zero-GC на произвольном числе фрагментов (P1-01):** `TransportBufferPool.LargeBuffersPerBucket` поднят до `TransportProtocol.MaxFragmentsPerGroup` (2048), а `CapacityFor` изолирован строго для `shift == LargeBucketShift` (слайсы 2048 B). Аллокации на 65+ фрагментах полностью устранены (0 B GC).
+- **Приоритет MatchFinished при реконнекте (P1-02):** `SessionManager.TryRebindSession` проверяет `MatchPhase.Finished` до `SessionState.Disconnected`. Любая попытка реконнекта в завершённый матч моментально получает терминальный `MatchFinished`, предотвращая зацикливание в `InvalidState`.
+- **Защита от гонки потоков в LiteNetLib (P2-01):** `LiteNetLibCarrier.OnNetworkReceive` проверяет `_connectionToPeer` внутри `lock (_peerGate)` перед передачей в `HandleSnapshotReceive`.
+- **Тестовый гейт расширен до 1392 тестов (1370 EditMode + 22 PlayMode), 100% green.** Добавлен тест 65 фрагментов в `FragmentationTests.cs` и тест немедленного `MatchFinished` в `M1ForensicSealTests.cs`.
+
 ### Verification Criteria (historical, superseded by the M1 audit)
 - Сквозные тесты Dedicated Server + 2 Remote Clients на 400 юнитах без десинков (`ChecksumMismatchCount == 0` доказан в `ReplicationParityUnderImpairmentTests` и `SyntheticPlaytestPlayModeTests`).
 - Полное отсутствие аллокаций памяти (`Is.Not.AllocatingGCMemory()`) на серверном тике и клиентском цикле рендеринга; Zero-GC транспорт под непрерывным боем (`TransportBufferPool.cs`).

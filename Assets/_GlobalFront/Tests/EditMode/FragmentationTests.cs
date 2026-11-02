@@ -435,6 +435,47 @@ namespace GlobalFront.Tests.EditMode
                 "means the pool threw a slice away and reallocated it");
         }
 
+        /// <summary>
+        /// M1.2 P1-01: A valid 65-fragment message (76 KiB) must reassemble and return
+        /// without dropping slices to GC in steady-state.
+        /// </summary>
+        [Test]
+        public void Reassembly_SixtyFiveFragments_Pooled_DoNotAllocate()
+        {
+            const int sixtyFive = 65;
+            var data = new byte[sixtyFive * TransportProtocol.FragmentPayloadBytes];
+            TransportBufferPool.Warm();
+            var assembler = new FragmentAssembler();
+
+            // Warm up 65 slices
+            for (var warm = 0; warm < 4; warm++)
+            {
+                var warmMsg = FeedPooledMessage(
+                    assembler, (ushort)(300 + warm), data, sixtyFive, warm * 100);
+                Assert.That(warmMsg, Is.Not.Null,
+                    "a 65-fragment message is legal input: the warm-up must complete it");
+                TransportBufferPool.Return(warmMsg);
+            }
+
+            byte[] completed = null;
+            var measured = CountCurrentThreadGcAllocations(
+                () =>
+                {
+                    for (var round = 0; round < 5; round++)
+                    {
+                        completed = FeedPooledMessage(
+                            assembler, 1, data, sixtyFive, 1000 + round * 10);
+                        TransportBufferPool.Return(completed);
+                    }
+                });
+
+            Assert.That(completed, Is.Not.Null,
+                "the measured window has to contain a real completion, otherwise zero " +
+                "allocations proves nothing");
+            Assert.That(measured, Is.Zero,
+                "assembly of 65 fragments must not allocate memory in steady state");
+        }
+
         private static byte[] FeedPooledMessage(
             FragmentAssembler assembler,
             ushort messageId,

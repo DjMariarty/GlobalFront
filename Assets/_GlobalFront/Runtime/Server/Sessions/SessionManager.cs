@@ -624,6 +624,17 @@ namespace GlobalFront.Server.Sessions
                 return RebindResult.InvalidSecret;
             }
 
+            // Early terminal gate (M1.2 P1-02): a finished/closed match cannot be
+            // rejoined, regardless of whether the session is Connected, Disconnected,
+            // or Closed. Returning MatchFinished immediately prevents the client from
+            // seeing InvalidState and looping on reconnect.
+            if (record.Match.IsValid &&
+                _matches.TryGetValue(record.Match, out var matchRecord) &&
+                (matchRecord.Phase == MatchPhase.Finished || matchRecord.Phase == MatchPhase.Closed))
+            {
+                return RebindResult.MatchFinished;
+            }
+
             if (record.State == SessionState.Closed)
             {
                 return RebindResult.GraceExpired;
@@ -650,15 +661,6 @@ namespace GlobalFront.Server.Sessions
                 }
 
                 return RebindResult.GraceExpired;
-            }
-
-            if (record.Match.IsValid &&
-                _matches.TryGetValue(record.Match, out var matchRecord))
-            {
-                if (matchRecord.Phase == MatchPhase.Finished || matchRecord.Phase == MatchPhase.Closed)
-                {
-                    return RebindResult.MatchFinished;
-                }
             }
 
             record.State = SessionState.Connected;

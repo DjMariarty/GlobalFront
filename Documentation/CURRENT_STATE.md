@@ -1,28 +1,22 @@
 # GlobalFront Current State
 
-> Быстрый handoff для AI-агента • обновлено 2026-10-29
+> Быстрый handoff для AI-агента • обновлено 2026-11-03
 
 ## Current Phase
 
-**Phases 1–3 — [COMPLETED / CERTIFIED] • Phase 4 / Milestone M1.1 (1v1 Dedicated Server Prototype) — [FORENSIC SEAL DELIVERED: 10/10 FIXES]** (OD-49, 1390 тестов 100% green)
+**Phases 1–3 — [COMPLETED / CERTIFIED] • Phase 4 / Milestone M1.2 (1v1 Dedicated Server Prototype) — [STRICT ZERO-GC & MATCH TERMINATION SEAL]** (OD-49, OD-50, 1392 теста 100% green)
 
 ## Current Task
 
-**Milestone M1.1 Forensic Seal Verified • Ready for Final Audit Sign-Off & Transition to Milestone M2 (Phase 5)**
+**Milestone M1.2 Ready for Final Tri-Model Audit Sign-Off (Kimi / Qwen / DeepSeek) & Transition to Milestone M2 (Phase 5)**
 
-- **Микро-спринт M1.1 Forensic Seal (2026-10-29, OD-49):** Закрыты все 10 дефектов, выявленных независимыми аудитами Kimi k 3.1 Pro, Qwen 3.8 Max и DeepSeek V4.1:
-  1. **P1-1 (Anti-Cheat):** `ValidateControllable` возвращает fail-closed `UnknownEntity` для любых чужих/несуществующих ID; оракул ростера в Command ACK полностью ликвидирован.
-  2. **P1-2 (Zero-GC на 400 юнитах):** Вместимость корзин `TransportBufferPool` увеличена до 32 (и до 64 для 2048-байтовых слайсов фрагментов). Аллокации при сборке 9+ фрагментов устранены (строго 0 B).
-  3. **F1/F2 (Лобби 1v1):** Отключившийся до старта игрок удаляется из ростера и освобождает слот; соло-старт по 30с таймауту удалён (старт строго при наличии ровно 2 игроков).
-  4. **F3 (Дедлайн паузы):** По истечении 400 тиков ready-таймаута вызывается `ServerTransportHost.DetachSession`, сокет отвязывается, клиент переходит в `Terminated`.
-  5. **F4 / P2-05 (Часы Grace):** `SessionGraceClock = CurrentTick + _pausedGraceTicks` обеспечивает полные 200с при повторном обрыве связи во время паузы.
-  6. **F5 (Финал матча):** Сервер уведомляет клиентов о `MatchFinished` и корректно отвязывает сессии.
-  7. **F6 (Выключение сервера):** Клиент обрабатывает `ServerShutdown` и переходит в `Terminated` без бесконечного реконнекта.
-  8. **P2-5 (OwnDatagram):** Добавлен `Assembler.Reset()` в sweep и shutdown.
-  9. **N-2 (Enum Aliasing):** Разведены `InvalidState = 5`, `Denied = 6`.
-  10. **N-3 (Причина смерти):** Труп с `CurrentHealth <= 0` реплицируется строго как `Destroyed`.
-- **Тестовый гейт:** **1390/1390 автоматизированных тестов зелёные (1368 EditMode + 22 PlayMode)**. Добавлен suite `M1ForensicSealTests.cs` (6 тестов) + 11 тестов в существующих фикстурах. Все 10 фиксов подтверждены bite-прогонами revert-to-fail.
-- **Scope M1 зафиксирован как 1v1 Dedicated Server Prototype** (OD-48, OD-49); 2v2 перенесён в Milestone M2.
+- **Микро-спринт M1.2 (2026-11-03, OD-50):** Закрыты дефекты, выявленные независимым ре-аудитом Kimi k 3.1 Pro:
+  1. **P1-01 (Strict Zero-GC на 65+ фрагментах):** `TransportBufferPool.LargeBuffersPerBucket` поднят до `TransportProtocol.MaxFragmentsPerGroup` (2048), а `CapacityFor` изолирован строго под `shift == LargeBucketShift` (слайсы фрагментов 2048 B). Аллокации на 65+ фрагментах полностью устранены (0 B GC).
+  2. **P1-02 (Терминация клиентов по real UDP при MatchFinished):** В `SessionManager.TryRebindSession` проверка `MatchPhase.Finished` поднята на самый верх до `SessionState.Disconnected`. Любая попытка реконнекта в завершённый матч моментально получает `RebindResult.MatchFinished` и не зацикливается в `InvalidState`.
+  3. **P2-01 (LiteNetLib close/receive race):** `LiteNetLibCarrier.OnNetworkReceive` проверяет существование пира в `_connectionToPeer` под `_peerGate` перед вызовом `HandleSnapshotReceive`, исключая утечку сиротского состояния.
+- **Микро-спринт M1.1 Forensic Seal (2026-10-29, OD-49):** Закрыты все 10 базовых дефектов R4/R5 (Fail-closed FoW `UnknownEntity`, очистка лобби, дедлайн ready, часы grace, `Destroyed` cause, `Denied=6`).
+- **Тестовый гейт:** **1392/1392 автоматизированных теста зелёные (1370 EditMode + 22 PlayMode)**. Добавлен тест 65 фрагментов в `FragmentationTests.cs` и тест немедленного `MatchFinished` в `M1ForensicSealTests.cs`. Все фиксы подтверждены bite-прогонами revert-to-fail.
+- **Scope M1 зафиксирован как 1v1 Dedicated Server Prototype** (OD-48, OD-49, OD-50); 2v2 перенесён в Milestone M2.
 
 - **Phase 1 (Simulation Foundation):** [100% COMPLETED / AUDITED: ZERO DEFECTS]. Спринты hardening 1.1–1.5.1 закрыли concurrency, reentrancy, friendly-fire и snapshot allocations (`5b16a05`..`349a074`).
 - **Phase 2 (Multiplayer Foundation):** [100% COMPLETED / P0/P1 = 0 CERTIFIED]. Шаги 2.1–2.8 + спринты hardening 2.1–2.5 (`5c94e07`..`4cb8ffa`). Сертификация Phase 2.0 на `4cb8ffa` подтвердила **P0/P1 = 0**: это строгий состязательный ре-аудит, выполненный Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); сам отчёт ограничивает область сертификации P0/P1 и фиксирует открытый на тот момент P2-бэклог (N-02, N-03, N-04) и P3-пакет. Сторонние модели привлекались только на промежуточных этапах ревью и авторами сертификата не являются. Уязвимость N-01 / D-10 / A-01 полностью ликвидирована на 3 независимых слоях. Все оставшиеся замечания (F-1..F-11, F-13..F-15, N-02..N-04) закрыты в Hardening Phase 3.7.1 — см. блоки ниже.
