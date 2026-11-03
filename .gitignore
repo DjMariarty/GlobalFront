@@ -76,3 +76,7 @@ crashlytics-build.properties
 !/Artifacts/Tools/LiteNetLibProvenance/LiteNetLibProvenance.csproj
 /Artifacts/Tools/LiteNetLibProvenance/bin/
 /Artifacts/Tools/LiteNetLibProvenance/obj/
+
+# Unity Test Runner transient scenes
+Assets/InitTestScene*.unity
+Assets/InitTestScene*.unity.meta
