@@ -64,9 +64,11 @@ GlobalFront: Phases 1.0 — 2.8 + Phase 3.0 (Шаги 3.1–3.7) + Hardening Pha
 
 **Итог: Milestone M1.2 (1v1 Dedicated Server Prototype) полностью сертифицирован независимым состязательным ре-аудитом Kimi k 3.1 Pro (P0=0, P1=0, P2=0, P3=0) на коммите `66419a8` (отчёт `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`, коммит `6d8a20c`).** 2v2 — Milestone M2 / Phase 5.
 
-## Next Phase
+## Current Phase (In Progress)
 
-**Milestone M2 / Phase 5: Faction Asymmetry & Strategic Combat** (2v2 composition, roster, asymmetric faction mechanics, armor/damage matrix, production buildings, resource flow).
+**Milestone M2 / Phase 5: Faction Asymmetry & Strategic Combat**
+- Step 5.1: Integer Armor & Damage Matrix (8x7) in `GlobalFront.Core` — [IN PROGRESS] (ADR-015 / OD-51)
+- Steps 5.2–5.6: Structures, Queues, Economy, 5 Factions, 2v2 Topology — [QUEUED]
 
 ## Связанные документы
 

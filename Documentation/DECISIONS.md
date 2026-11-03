@@ -581,6 +581,40 @@ ADR-008 зарезервировал в `SessionManager` состояние `Dis
 - Гейт: **1351/1351 EditMode** (`Artifacts/TestResults/m1-remediation-editmode-postbite.xml`) + **22/22 PlayMode** (`Artifacts/TestResults/m1-remediation-playmode.xml`), 2026-10-27.
 - P1-02 (2v2) не исправлялся — вынесен в M2 (OD-48). Остальные P2/P3 R3 остаются открытыми и перечислены в `CURRENT_STATE.md`.
 
+## ADR-015: Integer Armor & Damage Matrix (8x7), Combat Resolvers & Backward-Compatible Sentinels
+*Status:* ACCEPTED (Owner Decision; Phase 5 Step 5.1 Architecture)  
+*Date:* 2026-11-03  
+*Target:* Unity 6000.6.2f1 / Pure C# in `GlobalFront.Core` / Zero-GC  
+
+### Context & Problem Statement
+Для реализации фракционной асимметрии пяти сторон (США, Китай, ГЛА, Россия, НАТО) и стратегического баланса формулы C&C Generals / Zero Hour требуется целочисленная матрица типов урона и брони с поддержкой специфических видов оружия (включая токсины ГЛА, термобарику, гатлинг-эскалацию и снайперские/бронебойные орудия).
+
+Ключевые ограничения:
+1. **Детерминизм:** Никаких `float`/`double`/`decimal`. Расчет строго в целых числах через `long` в пермилле (базис 1000 = ×1.0) с детерминированным математическим округлением «половина вверх» (`(scaled + 500) / 1000`).
+2. **Zero-GC Hot Path:** Никаких аллокаций памяти (`0 B GC.Alloc`) при поиске по матрице и расчете урона. Матрица хранится в плоском статическом массиве `short[8 * 7]`.
+3. **100% обратная совместимость:** Все 1392 существующих теста (1370 EditMode + 22 PlayMode) должны оставаться зелеными бит-в-бит. Для существующих архетипов юнитов вводится легаси-сентинел `255`, полностью отключающий матрицу и сохраняющий плоский базовый урон.
+
+### Owner Decisions (OD-51):
+
+#### [OD-51] Integer Combat Matrix & Legacy Sentinel Policy
+- **8 типов урона (DamageType, byte):** `SmallArms = 0`, `HeavyMachineGun = 1`, `AntiTankCannon = 2`, `GuidedMissile = 3`, `ArtilleryExplosive = 4`, `ThermobaricNapalm = 5`, `ToxinChemical = 6`, `HighTechLaser = 7`, `Count = 8`.
+- **7 типов брони (ArmorType, byte):** `Infantry = 0`, `HeavyInfantry = 1`, `LightVehicle = 2`, `HeavyVehicle = 3`, `Aircraft = 4`, `Structure = 5`, `Fortified = 6`, `Count = 7`.
+- **Таблица матрицы (DamageMatrix):** Плоский массив `static readonly short[8 * 7]` с индексацией `(int)damageType * 7 + (int)armorType`. Возвращает множитель в пермилле.
+- **Единая каноническая формула расчета урона:**
+  ```csharp
+  // Опциональное плоское снижение брони (ДОТы, тяжелые танки):
+  int effectiveBase = flatReduction > 0 ? Math.Max(baseDamage - flatReduction, 1) : baseDamage;
+  long scaled = (long)effectiveBase * multiplierPermille;
+  int finalDamage = (int)((scaled + 500) / 1000);
+  finalDamage = Math.Max(finalDamage, baseDamage > 0 ? 1 : 0); // ненулевой урон не обнуляется
+  ```
+- **Легаси-сентинел 255 (`LegacySentinel = 255`):** В `CombatStats` поля `DamageType` и `ArmorType` инициализируются значением `255`. Если у источника урона `DamageType == 255` ИЛИ у цели `ArmorType == 255`, расчет множителя не применяется (`finalDamage = baseDamage`). Существующие тесты и спавны легаси-юнитов сохраняют поведение бит-в-бит.
+- **Специальные резолверы урона:**
+  - *Splash Falloff:* Линейный целочисленный спад: `dmg(r) = (int)((long)baseDamage * (radiusMm - distMm) / radiusMm)` при `distMm < radiusMm`.
+  - *Gatling Escalation:* Уровни непрерывного огня 0..3 по тикам (пороги 20/60/120 тиков -> множители 1000/1400/1800/2200, сброс после 40 тиков тишины).
+  - *Toxin Mechanics:* `ToxinChemical` имеет множитель 2500 по пехоте, вытравливает гарнизоны зданий и создает детерминированные зоны заражения `PoisonHazardArea`.
+- **DoD Шага 5.1:** Добавление ~65 новых тестов (достижение отметки ≈1457 тестов), 100% green, 0 B GC.Alloc.
+
 ## Open Decision Queue
 
 - Replay-формат и desync diagnostics.
