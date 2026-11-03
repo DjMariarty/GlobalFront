@@ -80,3 +80,6 @@ crashlytics-build.properties
 # Unity Test Runner transient scenes
 Assets/InitTestScene*.unity
 Assets/InitTestScene*.unity.meta
+
+# ZCode configuration
+.zcode/
