@@ -9,18 +9,52 @@ namespace GlobalFront.Core.Combat
 {
     public readonly struct CombatStats : IEquatable<CombatStats>
     {
+        /// <summary>
+        /// The ADR-015 legacy marker: an untyped source or target keeps flat base damage,
+        /// because <see cref="DamageMatrix"/> reads an unknown index as x1.000.
+        /// </summary>
+        public const byte LegacySentinel = 255;
+
+        /// <summary>
+        /// Upper bound for <see cref="Damage"/>: the widest matrix cell is 2500 permille, so
+        /// the scaled product must still fit an int after the calculator narrows it back.
+        /// </summary>
+        public const int MaxDamage = 800_000_000;
+
+        /// <summary>
+        /// The legacy archetype: no damage or armor type, which resolves to the
+        /// (SmallArms x Infantry) cell of x1.000 and keeps every pre-Phase-5 damage value
+        /// bit-for-bit.
+        /// </summary>
         public CombatStats(
             int maximumHealth,
             int damage,
             int rangeMm,
             uint cooldownTicks)
+            : this(
+                maximumHealth,
+                damage,
+                rangeMm,
+                cooldownTicks,
+                LegacySentinel,
+                LegacySentinel)
+        {
+        }
+
+        public CombatStats(
+            int maximumHealth,
+            int damage,
+            int rangeMm,
+            uint cooldownTicks,
+            byte damageType,
+            byte armorType)
         {
             if (maximumHealth <= 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(maximumHealth));
             }
 
-            if (damage <= 0)
+            if (damage <= 0 || damage > MaxDamage)
             {
                 throw new ArgumentOutOfRangeException(nameof(damage));
             }
@@ -36,10 +70,28 @@ namespace GlobalFront.Core.Combat
                 throw new ArgumentOutOfRangeException(nameof(cooldownTicks));
             }
 
+            // Only a real matrix row/column, or the sentinel that excuses the whole table.
+            // A stray byte would otherwise be read as x1.000 and hide an archetype typo.
+            // The enum names are qualified because this struct also exposes properties
+            // called DamageType and ArmorType.
+            if (damageType != LegacySentinel &&
+                damageType >= (byte)GlobalFront.Core.Combat.DamageType.Count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(damageType));
+            }
+
+            if (armorType != LegacySentinel &&
+                armorType >= (byte)GlobalFront.Core.Combat.ArmorType.Count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(armorType));
+            }
+
             MaximumHealth = maximumHealth;
             Damage = damage;
             RangeMm = rangeMm;
             CooldownTicks = cooldownTicks;
+            DamageType = damageType;
+            ArmorType = armorType;
         }
 
         public int MaximumHealth { get; }
@@ -50,9 +102,14 @@ namespace GlobalFront.Core.Combat
 
         public uint CooldownTicks { get; }
 
+        public byte DamageType { get; }
+
+        public byte ArmorType { get; }
+
         public bool IsValid =>
             MaximumHealth > 0 &&
             Damage > 0 &&
+            Damage <= MaxDamage &&
             RangeMm >= 0 &&
             RangeMm <= SimulationConstants.MaxWorldCoordinateMm &&
             CooldownTicks > 0;
@@ -61,13 +118,21 @@ namespace GlobalFront.Core.Combat
             MaximumHealth == other.MaximumHealth &&
             Damage == other.Damage &&
             RangeMm == other.RangeMm &&
-            CooldownTicks == other.CooldownTicks;
+            CooldownTicks == other.CooldownTicks &&
+            DamageType == other.DamageType &&
+            ArmorType == other.ArmorType;
 
         public override bool Equals(object obj) =>
             obj is CombatStats other && Equals(other);
 
         public override int GetHashCode() =>
-            HashCode.Combine(MaximumHealth, Damage, RangeMm, CooldownTicks);
+            HashCode.Combine(
+                MaximumHealth,
+                Damage,
+                RangeMm,
+                CooldownTicks,
+                DamageType,
+                ArmorType);
     }
 
     public sealed class CombatantState
@@ -542,10 +607,18 @@ namespace GlobalFront.Core.Combat
                     }
 
                     attacker.CommitShot(tick);
+
+                    // The matrix is applied here and nowhere else: the DamageEvent carries
+                    // the final value, so clients present it without recalculating (R&D §4.3).
+                    var appliedDamage = DamageCalculator.CalculateDamage(
+                        attacker.Stats.Damage,
+                        (DamageType)attacker.Stats.DamageType,
+                        (ArmorType)targetInput.State.Stats.ArmorType);
+
                     var damageEvent = new DamageEvent(
                         attacker.Entity,
                         targetInput.State.Entity,
-                        attacker.Stats.Damage);
+                        appliedDamage);
                     _events.Add(damageEvent);
 
                     _accumulatedDamage.TryGetValue(

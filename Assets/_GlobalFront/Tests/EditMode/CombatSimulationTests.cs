@@ -418,6 +418,197 @@ namespace GlobalFront.Tests.EditMode
                 Is.EqualTo(BattleOutcomeKind.Draw));
         }
 
+        // ------------------------------------------------------------------
+        // Step 5.1.2 — damage and armor types on CombatStats, matrix in the resolver
+        // ------------------------------------------------------------------
+
+        [Test]
+        public void CombatStats_LegacyConstructor_AssignsSentinel255()
+        {
+            var legacy = new CombatStats(100, 20, 5000, 3);
+
+            // Pinned against the literal, not against CombatStats.LegacySentinel: an
+            // assertion that reads the same constant the constructor wrote proves nothing.
+            Assert.That(legacy.DamageType, Is.EqualTo((byte)255));
+            Assert.That(legacy.ArmorType, Is.EqualTo((byte)255));
+            Assert.That(CombatStats.LegacySentinel, Is.EqualTo((byte)255));
+            Assert.That(legacy.IsValid, Is.True);
+        }
+
+        [Test]
+        public void CombatStats_RejectsDamageExceedingMax()
+        {
+            Assert.That(CombatStats.MaxDamage, Is.EqualTo(800_000_000));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new CombatStats(100, CombatStats.MaxDamage + 1, 5000, 1));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new CombatStats(100, int.MaxValue, 5000, 1));
+
+            // The boundary itself is legal: x2.5 of it still fits an int, which is the whole
+            // reason for the cap (the calculator narrows a long product back to int).
+            Assert.That(new CombatStats(100, CombatStats.MaxDamage, 5000, 1).IsValid, Is.True);
+        }
+
+        [Test]
+        public void CombatStats_RejectsDamageAndArmorBytesOutsideTheMatrix()
+        {
+            // DamageType.Count is 8 and ArmorType.Count is 7, so the first illegal row and
+            // column must be refused rather than silently read as x1.000.
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new CombatStats(100, 20, 5000, 1, 8, 0));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new CombatStats(100, 20, 5000, 1, 0, 7));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new CombatStats(100, 20, 5000, 1, 99, 99));
+
+            var lastLegal = new CombatStats(100, 20, 5000, 1, 7, 6);
+            Assert.That(lastLegal.DamageType, Is.EqualTo((byte)7));
+            Assert.That(lastLegal.ArmorType, Is.EqualTo((byte)6));
+        }
+
+        [Test]
+        public void CombatStats_SentinelTypesMatchLegacyConstructor()
+        {
+            var legacy = new CombatStats(100, 20, 5000, 3);
+            var explicitSentinel = new CombatStats(100, 20, 5000, 3, 255, 255);
+
+            Assert.That(explicitSentinel, Is.EqualTo(legacy));
+            Assert.That(explicitSentinel.GetHashCode(), Is.EqualTo(legacy.GetHashCode()));
+        }
+
+        [Test]
+        public void CombatStats_EqualsAndHashCodeDistinguishTypeFields()
+        {
+            var smallArms = new CombatStats(100, 20, 5000, 3, 0, 0);
+            var toxin = new CombatStats(100, 20, 5000, 3, 6, 0);
+            var aircraftArmor = new CombatStats(100, 20, 5000, 3, 0, 4);
+
+            // Identical numbers, different archetype: without the new fields in the
+            // comparison, a dictionary or a diff of unit presets would merge them.
+            Assert.That(toxin, Is.Not.EqualTo(smallArms));
+            Assert.That(aircraftArmor, Is.Not.EqualTo(smallArms));
+            Assert.That(toxin.GetHashCode(), Is.Not.EqualTo(smallArms.GetHashCode()));
+            Assert.That(aircraftArmor.GetHashCode(), Is.Not.EqualTo(smallArms.GetHashCode()));
+        }
+
+        [Test]
+        public void CombatTickResolver_LegacyCombatants_DealsExactFlatDamage()
+        {
+            var attacker = CreateState(1, 1, new CombatStats(100, 20, 5000, 3));
+            var target = CreateState(2, 2, new CombatStats(1000, 5, 5000, 3));
+            attacker.TryAssignTarget(target.Entity);
+
+            var result = CombatTickResolver.Resolve(
+                CreatePair(attacker, target, 1000),
+                20);
+
+            Assert.That(result.EventCount, Is.EqualTo(1));
+            Assert.That(result.GetEvent(0).Damage, Is.EqualTo(20));
+            Assert.That(target.CurrentHealth, Is.EqualTo(980));
+        }
+
+        [Test]
+        public void CombatTickResolver_TypedCombatants_AppliesMatrixMultiplier()
+        {
+            // ToxinChemical against Infantry is 2500 permille: 20 becomes 50.
+            var toxinAttacker = CreateState(
+                1,
+                1,
+                new CombatStats(100, 20, 5000, 3, (byte)DamageType.ToxinChemical, (byte)ArmorType.Infantry));
+            var infantryTarget = CreateState(
+                2,
+                2,
+                new CombatStats(1000, 5, 5000, 3, (byte)DamageType.SmallArms, (byte)ArmorType.Infantry));
+            toxinAttacker.TryAssignTarget(infantryTarget.Entity);
+
+            var toxinResult = CombatTickResolver.Resolve(
+                CreatePair(toxinAttacker, infantryTarget, 1000),
+                20);
+
+            Assert.That(toxinResult.GetEvent(0).Damage, Is.EqualTo(50));
+            Assert.That(infantryTarget.CurrentHealth, Is.EqualTo(950));
+
+            // SmallArms against HeavyVehicle is 250 permille: 20 becomes 5.
+            var rifleAttacker = CreateState(
+                3,
+                1,
+                new CombatStats(100, 20, 5000, 3, (byte)DamageType.SmallArms, (byte)ArmorType.Infantry));
+            var tankTarget = CreateState(
+                4,
+                2,
+                new CombatStats(1000, 5, 5000, 3, (byte)DamageType.AntiTankCannon, (byte)ArmorType.HeavyVehicle));
+            rifleAttacker.TryAssignTarget(tankTarget.Entity);
+
+            var rifleResult = CombatTickResolver.Resolve(
+                CreatePair(rifleAttacker, tankTarget, 1000),
+                20);
+
+            Assert.That(rifleResult.GetEvent(0).Damage, Is.EqualTo(5));
+            Assert.That(tankTarget.CurrentHealth, Is.EqualTo(995));
+        }
+
+        [Test]
+        public void CombatTickResolver_OneLegacyOneTyped_BypassesMatrix()
+        {
+            // An untyped shot at typed armor stays flat: the attacker has no damage type,
+            // so no row of the matrix exists to apply.
+            var legacyAttacker = CreateState(1, 1, new CombatStats(100, 20, 5000, 3));
+            var typedTarget = CreateState(
+                2,
+                2,
+                new CombatStats(1000, 5, 5000, 3, (byte)DamageType.SmallArms, (byte)ArmorType.Fortified));
+            legacyAttacker.TryAssignTarget(typedTarget.Entity);
+
+            var legacyShot = CombatTickResolver.Resolve(
+                CreatePair(legacyAttacker, typedTarget, 1000),
+                20);
+
+            Assert.That(legacyShot.GetEvent(0).Damage, Is.EqualTo(20));
+            Assert.That(typedTarget.CurrentHealth, Is.EqualTo(980));
+
+            // A typed shot at an untyped target is flat for the same reason.
+            var typedAttacker = CreateState(
+                3,
+                1,
+                new CombatStats(100, 20, 5000, 3, (byte)DamageType.ToxinChemical, (byte)ArmorType.Infantry));
+            var legacyTarget = CreateState(4, 2, new CombatStats(1000, 5, 5000, 3));
+            typedAttacker.TryAssignTarget(legacyTarget.Entity);
+
+            var typedShot = CombatTickResolver.Resolve(
+                CreatePair(typedAttacker, legacyTarget, 1000),
+                20);
+
+            Assert.That(typedShot.GetEvent(0).Damage, Is.EqualTo(20));
+            Assert.That(legacyTarget.CurrentHealth, Is.EqualTo(980));
+        }
+
+        [Test]
+        public void CombatTickResolver_MatrixZeroCell_DealsNoDamageButStillConsumesTheShot()
+        {
+            // ArtilleryExplosive against Aircraft is 0 permille (R&D §4.2: the aircraft is
+            // above the blast). The volley still fires and still burns its cooldown.
+            var attacker = CreateState(
+                1,
+                1,
+                new CombatStats(100, 20, 5000, 3, (byte)DamageType.ArtilleryExplosive, (byte)ArmorType.Infantry));
+            var target = CreateState(
+                2,
+                2,
+                new CombatStats(1000, 5, 5000, 3, (byte)DamageType.GuidedMissile, (byte)ArmorType.Aircraft));
+            attacker.TryAssignTarget(target.Entity);
+
+            var result = CombatTickResolver.Resolve(
+                CreatePair(attacker, target, 1000),
+                20);
+
+            Assert.That(result.EventCount, Is.EqualTo(1));
+            Assert.That(result.GetEvent(0).Damage, Is.EqualTo(0));
+            Assert.That(target.CurrentHealth, Is.EqualTo(1000));
+            Assert.That(target.IsAlive, Is.True);
+            Assert.That(attacker.CanFire(21), Is.False);
+            Assert.That(attacker.CanFire(23), Is.True);
+        }
+
         private static CombatantState CreateState(
             ulong entity,
             byte owner,
