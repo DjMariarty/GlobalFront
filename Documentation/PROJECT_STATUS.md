@@ -67,8 +67,9 @@ GlobalFront: Phases 1.0 — 2.8 + Phase 3.0 (Шаги 3.1–3.7) + Hardening Pha
 ## Current Phase (In Progress)
 
 **Milestone M2 / Phase 5: Faction Asymmetry & Strategic Combat**
-- Step 5.1: Integer Armor & Damage Matrix (8x7) in `GlobalFront.Core` — [IN PROGRESS] (ADR-015 / OD-51)
-- Steps 5.2–5.6: Structures, Queues, Economy, 5 Factions, 2v2 Topology — [QUEUED]
+- Step 5.1: Integer Armor & Damage Matrix (8x7) in `GlobalFront.Core` — [COMPLETE] (`3aec610`, 1409 green EditMode, 0 B GC.Alloc)
+- Step 5.2: Base Building, 500mm Snap Grid & Power Grid (`PowerLedger`) — [IN PROGRESS]
+- Steps 5.3–5.6: Queues, Economy, 5 Factions, 2v2 Topology — [QUEUED]
 
 ## Связанные документы
 
