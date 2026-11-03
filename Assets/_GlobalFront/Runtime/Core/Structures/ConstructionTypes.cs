@@ -140,7 +140,8 @@ namespace GlobalFront.Core.Structures
         /// <summary>
         /// A DozerWorker site is frozen while no living builder stands in the work
         /// radius: progress neither grows nor decays. The LowPower freeze for
-        /// Modular sites arrives with the Step 5.2.3 PowerLedger.
+        /// Modular sites is enforced separately by the PowerLedger (Step 5.2.3)
+        /// inside AdvanceTick and is not part of this flag.
         /// </summary>
         public bool IsFrozen => Method == ConstructionMethod.DozerWorker && PresentBuilders == 0;
     }

@@ -13,10 +13,13 @@ namespace GlobalFront.Core.Structures
     /// atomically with its refund.
     ///
     /// Progress rules (Generals / Contra X canon):
-    /// - Modular sites self-assemble at the base rate; builder presence is ignored.
+    /// - Modular sites self-assemble at the base rate while the owner's
+    ///   <see cref="PowerLedger"/> reports them powered; a blackout (LowPower)
+    ///   freezes modular frames. Passing no ledger (null) means "always powered".
     /// - DozerWorker sites advance only while at least one living assigned builder
     ///   stands inside the work radius (measured from the snapped site centre,
-    ///   inclusive). Damage never resets progress — it only freezes it.
+    ///   inclusive). Damage never resets progress — it only freezes it. Builders
+    ///   are autonomous: a blackout never slows them.
     /// - GLA multi-build: 1 worker = 1000‰, 2 = 1600‰, 3+ = 2000‰ (diminishing
     ///   returns, capped at three). Dozer sites take exactly one builder.
     /// </summary>
@@ -39,6 +42,8 @@ namespace GlobalFront.Core.Structures
 
         private readonly BuildingPlacementRegistry _placementRegistry;
 
+        private readonly PowerLedger _powerLedger;
+
         private readonly BuilderFsm _fsm;
 
         private readonly SiteRecord[] _sites;
@@ -59,7 +64,8 @@ namespace GlobalFront.Core.Structures
         public ConstructionRegistry(
             BuildingPlacementRegistry placementRegistry,
             int maxActiveConstructions = MaxActiveConstructions,
-            int buildWorkRadiusMm = DefaultBuildWorkRadiusMm)
+            int buildWorkRadiusMm = DefaultBuildWorkRadiusMm,
+            PowerLedger powerLedger = null)
         {
             if (placementRegistry is null)
             {
@@ -79,6 +85,7 @@ namespace GlobalFront.Core.Structures
             }
 
             _placementRegistry = placementRegistry;
+            _powerLedger = powerLedger;
             _fsm = new BuilderFsm();
             _sites = new SiteRecord[maxActiveConstructions];
             _presentBuilders = new int[maxActiveConstructions];
@@ -273,11 +280,20 @@ namespace GlobalFront.Core.Structures
                 int present = _presentBuilders[i];
 
                 // Modular frames ignore presence and self-assemble at the base
-                // rate; DozerWorker frames run the presence ladder, whose zero
-                // entry IS the freeze.
-                int multiplier = site.Method == ConstructionMethod.Modular
-                    ? 1000
-                    : WorkMultiplierPermille(present);
+                // rate while the owner is powered — a blackout (LowPower) freezes
+                // them. DozerWorker frames run the presence ladder, whose zero
+                // entry IS the freeze; builders are autonomous and never consult
+                // the ledger.
+                int multiplier;
+                if (site.Method == ConstructionMethod.Modular)
+                {
+                    bool modularPowered = _powerLedger is null || _powerLedger.IsModularConstructionPowered(site.Owner);
+                    multiplier = modularPowered ? 1000 : 0;
+                }
+                else
+                {
+                    multiplier = WorkMultiplierPermille(present);
+                }
 
                 long scaled = (long)site.BaseWorkPerTick * multiplier;
                 int progress = site.BuildProgressMilli + (int)((scaled + 500) / 1000);
