@@ -123,6 +123,30 @@ namespace GlobalFront.Server
     }
 
     /// <summary>
+    /// Production blueprint for a unit archetype until the full blueprint
+    /// registry (Step 5.5) lands: what the server spawns when a queued order
+    /// finishes. Integer-only fields.
+    /// </summary>
+    public readonly struct ProducedUnitBlueprint
+    {
+        public ProducedUnitBlueprint(CombatStats stats, int speedMmPerTick, byte unitKind, bool autoAcquire = true)
+        {
+            Stats = stats;
+            SpeedMmPerTick = speedMmPerTick;
+            UnitKind = unitKind;
+            AutoAcquire = autoAcquire;
+        }
+
+        public CombatStats Stats { get; }
+
+        public int SpeedMmPerTick { get; }
+
+        public byte UnitKind { get; }
+
+        public bool AutoAcquire { get; }
+    }
+
+    /// <summary>
     /// Headless authoritative match simulation. Owns every unit, validates and
     /// schedules client commands per tick, and resolves movement plus combat
     /// deterministically. Real-time pacing is applied by the hosting layer via
@@ -183,6 +207,31 @@ namespace GlobalFront.Server
         private readonly BuilderTickInput[] _builderInputs =
             new BuilderTickInput[SimulationConstants.MaxUnitsPerMatch];
 
+        /// <summary>
+        /// Production subsystem wired into the tick (Step 5.3.2): factories with
+        /// their ring queues, created per match for scratch isolation.
+        /// </summary>
+        private readonly ProductionQueueRegistry _production;
+
+        /// <summary>Per-tick completion buffer; pre-allocated once (zero-GC tick).</summary>
+        private readonly ProductionCompletedUnit[] _productionCompletionsScratch =
+            new ProductionCompletedUnit[SimulationConstants.MaxProductionBuildings];
+
+        /// <summary>
+        /// Blueprint table for produced units until the full blueprint registry
+        /// (Step 5.5) lands; allocations only on registration events.
+        /// </summary>
+        private readonly Dictionary<ushort, ProducedUnitBlueprint> _blueprints =
+            new Dictionary<ushort, ProducedUnitBlueprint>();
+
+        /// <summary>
+        /// Factories under construction: the exit point they will register with
+        /// once their frame completes. Filled at build start, cleaned on
+        /// cancel, frame death and completion.
+        /// </summary>
+        private readonly Dictionary<ulong, WorldPointMm?> _pendingFactoryExitPoints =
+            new Dictionary<ulong, WorldPointMm?>();
+
         // Hoisted so scheduling never allocates a delegate for the sort (Phase 1.0, P1-4).
         private static readonly Comparison<ScheduledCommand> ScheduledCommandComparison =
             CompareScheduledCommands;
@@ -216,6 +265,7 @@ namespace GlobalFront.Server
             _buildingPlacement = new BuildingPlacementRegistry();
             _powerLedger = new PowerLedger();
             _construction = new ConstructionRegistry(_buildingPlacement, powerLedger: _powerLedger);
+            _production = new ProductionQueueRegistry();
         }
 
         /// <summary>
@@ -303,6 +353,8 @@ namespace GlobalFront.Server
         public PowerLedger PowerLedger => _powerLedger;
 
         public ConstructionRegistry Construction => _construction;
+
+        public ProductionQueueRegistry Production => _production;
 
         /// <summary>
         /// Initializes the match from a <see cref="MatchConfig"/>, creating
@@ -723,7 +775,9 @@ namespace GlobalFront.Server
         ///   4. Move units, with attack-target pursuit overriding move orders.
         ///   5. Advance construction: builders inside a frame's work radius
         ///      grow its progress; completions flow power into the ledger.
-        ///   6. Resolve combat via Core.CombatTickResolver.
+        ///   6. Advance production: factory queues tick down; finished units
+        ///      spawn at the exit point and move to their rally point.
+        ///   7. Resolve combat via Core.CombatTickResolver.
         ///
         /// A server without units advances the tick counter but simulates
         /// nothing and must not report a terminal (draw) outcome before the
@@ -752,6 +806,7 @@ namespace GlobalFront.Server
             AcquireAutomaticTargets();
             MoveUnits();
             AdvanceConstruction();
+            AdvanceProduction(); // Step 5.3.2: factory queues tick down between construction and combat.
             ResolveCombat(CurrentTick);
         }
 
@@ -804,6 +859,7 @@ namespace GlobalFront.Server
                 {
                     _construction.TryCancel(site.BuildingEntityId, out _);
                     _powerLedger.UnregisterBuilding(site.Owner, site.BuildingEntityId);
+                    _pendingFactoryExitPoints.Remove(site.BuildingEntityId);
                 }
             }
 
@@ -827,8 +883,275 @@ namespace GlobalFront.Server
                 if (_units.TryGetValue(new EntityId(buildingEntityId), out var building))
                 {
                     _powerLedger.NotifyBuildingCompleted(building.Combat.Owner, buildingEntityId);
+
+                    // A completed factory frame joins the production registry
+                    // with the exit point chosen at build start (Step 5.3.2).
+                    if (_pendingFactoryExitPoints.TryGetValue(buildingEntityId, out var pendingExit))
+                    {
+                        _production.TryRegisterBuilding(
+                            buildingEntityId, building.Combat.Owner, building.Position, pendingExit);
+                        _pendingFactoryExitPoints.Remove(buildingEntityId);
+                    }
                 }
             }
+        }
+
+        /// <summary>
+        /// Placeholder stats for produced units until the blueprint registry
+        /// (Step 5.5) provides per-blueprint data (Step 5.3.2 defaults).
+        /// </summary>
+        private static readonly CombatStats DefaultProducedUnitStats = new CombatStats(100, 25, 7000, 10);
+
+        private const int DefaultProducedUnitSpeed = 500;
+
+        /// <summary>
+        /// Per-tick production phase (Step 5.3.2, between construction and
+        /// combat). First collapses factories destroyed by combat — Generals
+        /// canon: a destroyed building refunds nobody, the queue burns. Then
+        /// advances every factory queue within the free roster budget and spawns
+        /// finished units; units with a rally point immediately receive their
+        /// march order (the direct-record analogue of executing a Move order).
+        /// Bails immediately while no factory is active.
+        /// </summary>
+        private void AdvanceProduction()
+        {
+            if (_production.Count == 0)
+            {
+                return;
+            }
+
+            // Backward walk — UnregisterBuilding swap-and-pops the factory array.
+            for (var index = _production.Count - 1; index >= 0; index--)
+            {
+                BuildingProductionState factory = _production.GetAt(index);
+                if (_units.TryGetValue(new EntityId(factory.BuildingEntityId), out var building) &&
+                    !building.Combat.IsAlive)
+                {
+                    _production.UnregisterBuilding(factory.BuildingEntityId, out _);
+                    _powerLedger.UnregisterBuilding(factory.Owner, factory.BuildingEntityId);
+                    _buildingPlacement.Unregister(factory.BuildingEntityId);
+                }
+            }
+
+            if (_production.Count == 0)
+            {
+                return;
+            }
+
+            int availableSlots = Math.Max(0, SimulationConstants.MaxUnitsPerMatch - _units.Count);
+            int completedCount = _production.AdvanceTick(
+                _powerLedger, _buildingPlacement, _productionCompletionsScratch, availableSlots);
+
+            for (var index = 0; index < completedCount; index++)
+            {
+                ProductionCompletedUnit completed = _productionCompletionsScratch[index];
+                ProducedUnitBlueprint blueprint = ResolveBlueprint(completed.BlueprintId);
+
+                var entity = new EntityId(_nextEntityValue++);
+                SpawnUnitCore(
+                    entity,
+                    completed.Owner,
+                    blueprint.Stats,
+                    completed.SpawnPosition,
+                    blueprint.SpeedMmPerTick,
+                    blueprint.AutoAcquire,
+                    blueprint.UnitKind);
+
+                if (completed.HasRally && _units.TryGetValue(entity, out var unitRecord))
+                {
+                    // The authoritative analogue of executing a rally Move
+                    // order, straight on the record — no command round-trip.
+                    unitRecord.HasMoveTarget = true;
+                    unitRecord.MoveTarget = completed.RallyPoint;
+                    unitRecord.Combat.ClearTarget();
+                    unitRecord.AutoAcquireEnemies = false;
+                }
+            }
+        }
+
+        private ProducedUnitBlueprint ResolveBlueprint(ushort blueprintId)
+        {
+            if (_blueprints.TryGetValue(blueprintId, out ProducedUnitBlueprint blueprint))
+            {
+                return blueprint;
+            }
+
+            return new ProducedUnitBlueprint(
+                DefaultProducedUnitStats, DefaultProducedUnitSpeed, UnitKinds.Tank);
+        }
+
+        /// <summary>
+        /// Registers an already-completed building as a production factory
+        /// (Step 5.3.2). The building must exist, be alive and leave the
+        /// construction registry (a frame under construction cannot produce).
+        /// </summary>
+        public bool TryRegisterProductionBuilding(ulong buildingEntityId, WorldPointMm? exitPoint = null)
+        {
+            if (!_units.TryGetValue(new EntityId(buildingEntityId), out var building) ||
+                !building.Combat.IsAlive)
+            {
+                return false;
+            }
+
+            if (_construction.TryGet(buildingEntityId, out _))
+            {
+                return false;
+            }
+
+            return _production.TryRegisterBuilding(
+                buildingEntityId, building.Combat.Owner, building.Position, exitPoint);
+        }
+
+        /// <summary>
+        /// Registers produced-unit stats for a blueprint id (Step 5.3.2 bridge
+        /// until the full blueprint registry lands in Step 5.5). Unknown ids
+        /// fall back to the default tank blueprint at spawn time.
+        /// </summary>
+        public void RegisterBlueprint(ushort blueprintId, CombatStats stats, int speedMmPerTick, byte unitKind, bool autoAcquire = true)
+        {
+            _blueprints[blueprintId] = new ProducedUnitBlueprint(stats, speedMmPerTick, unitKind, autoAcquire);
+        }
+
+        /// <summary>
+        /// Authoritative production-order gate (Step 5.3.2). Rejection chain:
+        /// invalid player → unknown building → foreign owner (anti-oracle) →
+        /// dead building → frame under construction → completed building that
+        /// is not a factory → blueprint/queue validation in the registry.
+        /// </summary>
+        public bool TryEnqueueProduce(
+            PlayerId player,
+            ulong buildingEntityId,
+            ushort blueprintId,
+            ushort buildTicks,
+            int cost,
+            out ProductionRejection rejection)
+        {
+            if (!player.IsValid)
+            {
+                rejection = ProductionRejection.InvalidOwner;
+                return false;
+            }
+
+            if (!_units.TryGetValue(new EntityId(buildingEntityId), out var building))
+            {
+                rejection = ProductionRejection.BuildingNotFound;
+                return false;
+            }
+
+            if (building.Combat.Owner.Value != player.Value)
+            {
+                rejection = ProductionRejection.InvalidOwner;
+                return false;
+            }
+
+            if (!building.Combat.IsAlive)
+            {
+                rejection = ProductionRejection.BuildingDead;
+                return false;
+            }
+
+            if (_construction.TryGet(buildingEntityId, out _))
+            {
+                rejection = ProductionRejection.BuildingNotCompleted;
+                return false;
+            }
+
+            if (!_production.TryGetBuildingState(buildingEntityId, out _))
+            {
+                rejection = ProductionRejection.BuildingNotFound;
+                return false;
+            }
+
+            rejection = _production.TryEnqueue(buildingEntityId, player, blueprintId, buildTicks, cost);
+            return rejection == ProductionRejection.None;
+        }
+
+        /// <summary>
+        /// Authoritative production-cancel gate (Step 5.3.2): the same fail-closed
+        /// chain as <see cref="TryEnqueueProduce"/>, then a full (100%) refund of
+        /// the cancelled order.
+        /// </summary>
+        public bool TryCancelProduce(
+            PlayerId player,
+            ulong buildingEntityId,
+            int slotIndex,
+            out int refundCost,
+            out ProductionRejection rejection)
+        {
+            refundCost = 0;
+            if (!player.IsValid)
+            {
+                rejection = ProductionRejection.InvalidOwner;
+                return false;
+            }
+
+            if (!_units.TryGetValue(new EntityId(buildingEntityId), out var building))
+            {
+                rejection = ProductionRejection.BuildingNotFound;
+                return false;
+            }
+
+            if (building.Combat.Owner.Value != player.Value)
+            {
+                rejection = ProductionRejection.InvalidOwner;
+                return false;
+            }
+
+            if (!building.Combat.IsAlive)
+            {
+                rejection = ProductionRejection.BuildingDead;
+                return false;
+            }
+
+            if (_construction.TryGet(buildingEntityId, out _))
+            {
+                rejection = ProductionRejection.BuildingNotCompleted;
+                return false;
+            }
+
+            if (!_production.TryGetBuildingState(buildingEntityId, out _))
+            {
+                rejection = ProductionRejection.BuildingNotFound;
+                return false;
+            }
+
+            rejection = _production.TryCancel(buildingEntityId, player, slotIndex, out refundCost);
+            return rejection == ProductionRejection.None;
+        }
+
+        /// <summary>
+        /// Authoritative rally gate (Step 5.3.2). Fail-closed: an unknown, dead
+        /// or non-factory building all report <see cref="SetRallyRejection.BuildingNotFound"/>;
+        /// the registry then handles bounds and 500 mm snapping.
+        /// </summary>
+        public bool TrySetRallyPoint(
+            PlayerId player,
+            ulong buildingEntityId,
+            WorldPointMm rallyPoint,
+            out SetRallyRejection rejection)
+        {
+            if (!player.IsValid)
+            {
+                rejection = SetRallyRejection.InvalidOwner;
+                return false;
+            }
+
+            if (!_units.TryGetValue(new EntityId(buildingEntityId), out var building) ||
+                !building.Combat.IsAlive ||
+                !_production.TryGetBuildingState(buildingEntityId, out _))
+            {
+                rejection = SetRallyRejection.BuildingNotFound;
+                return false;
+            }
+
+            if (building.Combat.Owner.Value != player.Value)
+            {
+                rejection = SetRallyRejection.InvalidOwner;
+                return false;
+            }
+
+            rejection = _production.TrySetRallyPoint(buildingEntityId, player, rallyPoint);
+            return rejection == SetRallyRejection.None;
         }
 
         /// <summary>
@@ -852,6 +1175,30 @@ namespace GlobalFront.Server
             int baseWorkPerTick,
             int paidCost,
             int powerDelta,
+            out ConstructionStartRejection rejection)
+        {
+            return TryStartBuilding(
+                player, buildingEntityId, center, footprint, method, baseWorkPerTick, paidCost,
+                powerDelta, false, null, out rejection);
+        }
+
+        /// <summary>
+        /// Full Step 5.3.2 overload: <paramref name="isProduction"/> marks the
+        /// building as a future factory — on completion it auto-registers in the
+        /// production registry with <paramref name="exitPoint"/> (null keeps the
+        /// default 3 m south offset).
+        /// </summary>
+        public bool TryStartBuilding(
+            PlayerId player,
+            ulong buildingEntityId,
+            WorldPointMm center,
+            BuildingFootprint footprint,
+            ConstructionMethod method,
+            int baseWorkPerTick,
+            int paidCost,
+            int powerDelta,
+            bool isProduction,
+            WorldPointMm? exitPoint,
             out ConstructionStartRejection rejection)
         {
             if (!player.IsValid)
@@ -906,6 +1253,11 @@ namespace GlobalFront.Server
                 false,
                 UnitKinds.BaseStructure);
 
+            if (isProduction)
+            {
+                _pendingFactoryExitPoints[buildingEntityId] = exitPoint;
+            }
+
             rejection = ConstructionStartRejection.None;
             return true;
         }
@@ -933,6 +1285,7 @@ namespace GlobalFront.Server
             }
 
             _powerLedger.UnregisterBuilding(player, buildingEntityId);
+            _pendingFactoryExitPoints.Remove(buildingEntityId);
             frame.Combat.ApplyDamage(frame.Combat.CurrentHealth);
             return true;
         }

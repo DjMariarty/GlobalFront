@@ -493,7 +493,51 @@ namespace GlobalFront.Tests.EditMode
         }
 
         // ------------------------------------------------------------------
-        // 9 — caller contract and zero-GC hot path
+        // 9 — roster-slot hold (Step 5.3.2 caller budget)
+        // ------------------------------------------------------------------
+
+        [Test]
+        public void AdvanceTick_HoldsTheHead_WhenRosterSlotsAreExhausted()
+        {
+            var registry = new ProductionQueueRegistry();
+            Assert.That(registry.TryRegisterBuilding(100, PlayerOne, new WorldPointMm(0, 0)), Is.True);
+            Assert.That(registry.TryEnqueue(100, PlayerOne, 7, 1, 100), Is.EqualTo(ProductionRejection.None));
+
+            var completions = new ProductionCompletedUnit[SimulationConstants.MaxProductionBuildings];
+            Assert.That(registry.AdvanceTick(null, null, completions, availableRosterSlots: 0), Is.EqualTo(0), "no slot budget — no completion event");
+            Assert.That(registry.TryGetQueueItem(100, 0, out ProductionQueueItem held), Is.True);
+            Assert.That(held.RemainingTicks, Is.EqualTo(0), "the order finished its ticks but stays in the queue");
+            Assert.That(registry.TryGetBuildingState(100, out var state), Is.True);
+            Assert.That(state.QueueCount, Is.EqualTo(1), "a held order must not leave the ring");
+            Assert.That(state.WorkMilliAccumulator, Is.EqualTo(0), "a held building accrues no rate — it is paused");
+
+            Assert.That(registry.AdvanceTick(null, null, completions, availableRosterSlots: 0), Is.EqualTo(0), "a second held tick changes nothing");
+            Assert.That(registry.TryGetBuildingState(100, out state), Is.True);
+            Assert.That(state.WorkMilliAccumulator, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void AdvanceTick_ReleasesTheHeldHead_WhenASlotBecomesAvailable()
+        {
+            var registry = new ProductionQueueRegistry();
+            Assert.That(registry.TryRegisterBuilding(100, PlayerOne, new WorldPointMm(0, 0)), Is.True);
+            Assert.That(registry.TryEnqueue(100, PlayerOne, 7, 1, 100), Is.EqualTo(ProductionRejection.None));
+            Assert.That(registry.TryEnqueue(100, PlayerOne, 8, 3, 200), Is.EqualTo(ProductionRejection.None));
+
+            var completions = new ProductionCompletedUnit[SimulationConstants.MaxProductionBuildings];
+            Assert.That(registry.AdvanceTick(null, null, completions, availableRosterSlots: 0), Is.EqualTo(0));
+            Assert.That(registry.TryGetQueueItem(100, 0, out var held), Is.True);
+            Assert.That(held.RemainingTicks, Is.EqualTo(0));
+
+            Assert.That(registry.AdvanceTick(null, null, completions, availableRosterSlots: 1), Is.EqualTo(1), "the freed slot releases the held order");
+            Assert.That(completions[0].BlueprintId, Is.EqualTo(7));
+            Assert.That(registry.TryGetQueueItem(100, 0, out ProductionQueueItem next), Is.True);
+            Assert.That(next.BlueprintId, Is.EqualTo(8), "the queue compacts on release");
+            Assert.That(next.RemainingTicks, Is.EqualTo(3), "the next item keeps its full tick count");
+        }
+
+        // ------------------------------------------------------------------
+        // 10 — caller contract and zero-GC hot path
         // ------------------------------------------------------------------
 
         [Test]

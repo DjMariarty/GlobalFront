@@ -235,6 +235,25 @@ namespace GlobalFront.Core.Structures
             return true;
         }
 
+        /// <summary>
+        /// Direct slot access in registration order (until a removal shuffles the
+        /// tail). Index must be within [0, <see cref="Count"/>). Added in
+        /// Step 5.3.2 for allocation-free reverse scans in MatchServer.
+        /// </summary>
+        public BuildingProductionState GetAt(int index)
+        {
+            if (index < 0 || index >= _count)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(index), index, $"Index must be within [0, {_count}).");
+            }
+
+            BuildingRecord building = _buildings[index];
+            return new BuildingProductionState(
+                building.EntityId, building.Owner, building.Center, building.ExitPoint,
+                building.RallyPoint, building.HasRally, building.QueueCount, building.WorkMilliAccumulator);
+        }
+
         public bool TryGetQueueItem(ulong buildingEntityId, int slotIndex, out ProductionQueueItem item)
         {
             int index = IndexOfBuilding(buildingEntityId);
@@ -254,8 +273,18 @@ namespace GlobalFront.Core.Structures
         /// span of <see cref="SimulationConstants.MaxProductionBuildings"/> is
         /// always sufficient — a smaller span is a caller bug and throws.
         /// </summary>
+        /// <param name="availableRosterSlots">
+        /// Slot budget the caller grants this tick (Step 5.3.2: the server passes
+        /// its free roster capacity). A finished head is held at zero remaining
+        /// ticks — no completion event, no queue shift, no rate accrual — while
+        /// the budget is exhausted, and released on a later tick.
+        /// </param>
         /// <returns>Number of units completed this tick.</returns>
-        public int AdvanceTick(PowerLedger powerLedger, BuildingPlacementRegistry placement, Span<ProductionCompletedUnit> completedOut)
+        public int AdvanceTick(
+            PowerLedger powerLedger,
+            BuildingPlacementRegistry placement,
+            Span<ProductionCompletedUnit> completedOut,
+            int availableRosterSlots = int.MaxValue)
         {
             if (completedOut.Length < SimulationConstants.MaxProductionBuildings)
             {
@@ -273,22 +302,58 @@ namespace GlobalFront.Core.Structures
                     continue;
                 }
 
+                int baseIndex = index * _stride;
+                ProductionQueueItem head = _queueItems[baseIndex];
+
+                if (head.RemainingTicks == 0)
+                {
+                    // Held from a previous tick by an exhausted slot budget: the
+                    // building pauses (no rate accrues) until the caller frees
+                    // a slot.
+                    if (completedCount < availableRosterSlots)
+                    {
+                        WorldPointMm spawnPosition = ResolveSpawnPosition(building, placement);
+                        completedOut[completedCount++] = new ProductionCompletedUnit(
+                            building.EntityId, building.Owner, head.BlueprintId,
+                            spawnPosition, building.RallyPoint, building.HasRally);
+
+                        for (int slot = 1; slot < queueCount; slot++)
+                        {
+                            _queueItems[baseIndex + slot - 1] = _queueItems[baseIndex + slot];
+                        }
+
+                        _queueItems[baseIndex + queueCount - 1] = default;
+                        queueCount--;
+                        building = building.WithQueue(queueCount, queueCount == 0 ? 0 : building.WorkMilliAccumulator);
+                        _buildings[index] = building;
+                    }
+
+                    continue;
+                }
+
                 bool isLowPower = powerLedger != null
                     && powerLedger.GetPowerState(building.Owner).IsLowPower
                     && !powerLedger.IsPowerExempt(building.Owner);
                 int rateMilli = isLowPower ? LowPowerProductionRatePermille : NormalProductionRatePermille;
                 int accumulator = building.WorkMilliAccumulator + rateMilli;
 
-                int baseIndex = index * _stride;
                 while (accumulator >= 1000 && _queueItems[baseIndex].RemainingTicks > 0)
                 {
-                    ProductionQueueItem head = _queueItems[baseIndex];
-                    _queueItems[baseIndex] = head.WithRemainingTicks((ushort)(head.RemainingTicks - 1));
+                    ProductionQueueItem current = _queueItems[baseIndex];
+                    _queueItems[baseIndex] = current.WithRemainingTicks((ushort)(current.RemainingTicks - 1));
                     accumulator -= 1000;
                 }
 
                 if (_queueItems[baseIndex].RemainingTicks == 0)
                 {
+                    if (completedCount >= availableRosterSlots)
+                    {
+                        // Roster full: hold at zero remaining ticks — the order
+                        // waits instead of leaving the queue.
+                        _buildings[index] = building.WithQueue(queueCount, accumulator);
+                        continue;
+                    }
+
                     ProductionQueueItem finished = _queueItems[baseIndex];
                     WorldPointMm spawnPosition = ResolveSpawnPosition(building, placement);
                     completedOut[completedCount++] = new ProductionCompletedUnit(
