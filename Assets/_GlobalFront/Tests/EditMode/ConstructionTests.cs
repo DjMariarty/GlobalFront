@@ -52,6 +52,9 @@ namespace GlobalFront.Tests.EditMode
             Assert.That((byte)ConstructionStartRejection.OverlapsExistingBuilding, Is.EqualTo(5));
             Assert.That((byte)ConstructionStartRejection.PlacementRegistryFull, Is.EqualTo(6));
             Assert.That((byte)ConstructionStartRejection.ConstructionRegistryFull, Is.EqualTo(7));
+            Assert.That((byte)ConstructionStartRejection.InvalidOwner, Is.EqualTo(8), "added in Step 5.2.4 (server gate)");
+            Assert.That((byte)ConstructionStartRejection.RosterFull, Is.EqualTo(9), "added in Step 5.2.4 (server gate)");
+            Assert.That((byte)ConstructionStartRejection.PowerLedgerFull, Is.EqualTo(10), "added in Step 5.2.4");
             Assert.That((byte)BuilderAssignmentRejection.None, Is.EqualTo(0));
             Assert.That((byte)BuilderAssignmentRejection.BuilderUnknown, Is.EqualTo(1));
             Assert.That((byte)BuilderAssignmentRejection.SiteUnknown, Is.EqualTo(2));
@@ -59,6 +62,8 @@ namespace GlobalFront.Tests.EditMode
             Assert.That((byte)BuilderAssignmentRejection.SiteBuilderLimitReached, Is.EqualTo(4));
             Assert.That((byte)BuilderAssignmentRejection.BuilderKindMismatch, Is.EqualTo(5));
             Assert.That((byte)BuilderAssignmentRejection.BuilderTableFull, Is.EqualTo(6));
+            Assert.That((byte)BuilderAssignmentRejection.OwnerMismatch, Is.EqualTo(7), "added in Step 5.2.4 (server gate)");
+            Assert.That((byte)BuilderAssignmentRejection.BuilderNotAlive, Is.EqualTo(8), "added in Step 5.2.4 (server gate)");
         }
 
         // ------------------------------------------------------------------
@@ -639,6 +644,17 @@ namespace GlobalFront.Tests.EditMode
             var done = new ConstructionSiteState(1, PlayerOne, new WorldPointMm(0, 0), ShedFootprint, 1000, 25, 100, ConstructionMethod.DozerWorker, 1);
             Assert.That(done.IsCompleted, Is.True);
             Assert.That(done.IsFrozen, Is.False, "a completed frame is a building, not a frozen site");
+        }
+
+        [Test]
+        public void ConstructionSiteState_IsPowered_DrivesTheModularFreeze()
+        {
+            var blackedOut = new ConstructionSiteState(1, PlayerOne, new WorldPointMm(0, 0), ShedFootprint, 100, 25, 100, ConstructionMethod.Modular, 0, isPowered: false);
+            Assert.That(blackedOut.IsPowered, Is.False);
+            Assert.That(blackedOut.IsFrozen, Is.True, "a blackout freezes modular frames — Step 5.2.4 makes it observable");
+
+            var powered = new ConstructionSiteState(1, PlayerOne, new WorldPointMm(0, 0), ShedFootprint, 100, 25, 100, ConstructionMethod.Modular, 0, isPowered: true);
+            Assert.That(powered.IsFrozen, Is.False, "a powered modular site with default-true power keeps building");
         }
 
         // ------------------------------------------------------------------

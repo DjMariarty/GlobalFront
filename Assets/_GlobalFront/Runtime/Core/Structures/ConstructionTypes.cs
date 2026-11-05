@@ -59,7 +59,16 @@ namespace GlobalFront.Core.Structures
         MapBounds = 4,
         OverlapsExistingBuilding = 5,
         PlacementRegistryFull = 6,
-        ConstructionRegistryFull = 7
+        ConstructionRegistryFull = 7,
+
+        /// <summary>Added in Step 5.2.4: the owner PlayerId is invalid (0 or out of range).</summary>
+        InvalidOwner = 8,
+
+        /// <summary>Added in Step 5.2.4 (server gate): the unit roster is at MaxUnitsPerMatch.</summary>
+        RosterFull = 9,
+
+        /// <summary>Added in Step 5.2.4: the player's power-ledger table (512 buildings) is full.</summary>
+        PowerLedgerFull = 10
     }
 
     /// <summary>
@@ -79,7 +88,13 @@ namespace GlobalFront.Core.Structures
         BuilderKindMismatch = 5,
 
         /// <summary>The builder table itself is full (never expected at realistic builder counts).</summary>
-        BuilderTableFull = 6
+        BuilderTableFull = 6,
+
+        /// <summary>Added in Step 5.2.4 (server gate): the builder belongs to another player.</summary>
+        OwnerMismatch = 7,
+
+        /// <summary>Added in Step 5.2.4 (server gate): the builder unit is dead.</summary>
+        BuilderNotAlive = 8
     }
 
     /// <summary>
@@ -99,7 +114,8 @@ namespace GlobalFront.Core.Structures
             int baseWorkPerTick,
             int paidCost,
             ConstructionMethod method,
-            int presentBuilders)
+            int presentBuilders,
+            bool isPowered = true)
         {
             BuildingEntityId = buildingEntityId;
             Owner = owner;
@@ -110,6 +126,7 @@ namespace GlobalFront.Core.Structures
             PaidCost = paidCost;
             Method = method;
             PresentBuilders = presentBuilders;
+            IsPowered = isPowered;
         }
 
         public ulong BuildingEntityId { get; }
@@ -135,15 +152,21 @@ namespace GlobalFront.Core.Structures
         /// <summary>Builders that were alive and inside the work radius during the last AdvanceTick.</summary>
         public int PresentBuilders { get; }
 
+        /// <summary>
+        /// Power snapshot of the last AdvanceTick: false means the site is frozen
+        /// by a blackout (Modular frames only — dozers/workers are autonomous and
+        /// their sites always report true).
+        /// </summary>
+        public bool IsPowered { get; }
+
         public bool IsCompleted => BuildProgressMilli >= ConstructionRegistry.CompletedMilli;
 
         /// <summary>
-        /// A DozerWorker site is frozen while no living builder stands in the work
-        /// radius: progress neither grows nor decays. The LowPower freeze for
-        /// Modular sites is enforced separately by the PowerLedger (Step 5.2.3)
-        /// inside AdvanceTick and is not part of this flag.
+        /// True while the site makes no progress: a DozerWorker site with no
+        /// living builder in the work radius, or any site frozen by a blackout.
+        /// Progress neither grows nor decays while frozen.
         /// </summary>
-        public bool IsFrozen => Method == ConstructionMethod.DozerWorker && PresentBuilders == 0;
+        public bool IsFrozen => !IsPowered || (Method == ConstructionMethod.DozerWorker && PresentBuilders == 0);
     }
 
     /// <summary>

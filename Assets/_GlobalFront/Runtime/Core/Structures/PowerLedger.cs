@@ -139,6 +139,22 @@ namespace GlobalFront.Core.Structures
             return true;
         }
 
+        /// <summary>
+        /// Overload for callers that registered the frame's PowerDelta up front
+        /// (Step 5.2.4 MatchServer flow): connects power using the stored delta,
+        /// so the server does not have to carry its own delta bookkeeping.
+        /// </summary>
+        public bool NotifyBuildingCompleted(PlayerId player, ulong buildingEntityId)
+        {
+            if (!TryGetBuildingSlot(player, buildingEntityId, out int playerIndex, out int slot))
+            {
+                return false;
+            }
+
+            PowerBuildingRecord record = _buildings[playerIndex * MaxBuildingsPerPlayer + slot];
+            return NotifyBuildingCompleted(player, buildingEntityId, record.PowerDelta);
+        }
+
         /// <summary>O(1) read of the precomputed per-player snapshot.</summary>
         public PlayerPowerState GetPowerState(PlayerId player)
         {

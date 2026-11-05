@@ -151,6 +151,12 @@ namespace GlobalFront.Core.Structures
                 throw new ArgumentOutOfRangeException(nameof(paidCost), paidCost, "Paid cost must not be negative.");
             }
 
+            if (!owner.IsValid)
+            {
+                rejection = ConstructionStartRejection.InvalidOwner;
+                return false;
+            }
+
             if (buildingEntityId == 0)
             {
                 rejection = ConstructionStartRejection.InvalidEntityId;
@@ -192,7 +198,7 @@ namespace GlobalFront.Core.Structures
             }
 
             _sites[_count] = new SiteRecord(
-                buildingEntityId, owner, snappedCenter, footprint, 0, baseWorkPerTick, paidCost, method, 0);
+                buildingEntityId, owner, snappedCenter, footprint, 0, baseWorkPerTick, paidCost, method, 0, true);
             _count++;
             rejection = ConstructionStartRejection.None;
             return true;
@@ -283,15 +289,17 @@ namespace GlobalFront.Core.Structures
                 // rate while the owner is powered — a blackout (LowPower) freezes
                 // them. DozerWorker frames run the presence ladder, whose zero
                 // entry IS the freeze; builders are autonomous and never consult
-                // the ledger.
+                // the ledger, so their sites always report powered.
+                bool isPowered;
                 int multiplier;
                 if (site.Method == ConstructionMethod.Modular)
                 {
-                    bool modularPowered = _powerLedger is null || _powerLedger.IsModularConstructionPowered(site.Owner);
-                    multiplier = modularPowered ? 1000 : 0;
+                    isPowered = _powerLedger is null || _powerLedger.IsModularConstructionPowered(site.Owner);
+                    multiplier = isPowered ? 1000 : 0;
                 }
                 else
                 {
+                    isPowered = true;
                     multiplier = WorkMultiplierPermille(present);
                 }
 
@@ -302,7 +310,7 @@ namespace GlobalFront.Core.Structures
                     progress = CompletedMilli;
                 }
 
-                site = site.WithProgressAndPresence(progress, present);
+                site = site.WithTickOutcome(progress, present, isPowered);
                 if (progress >= CompletedMilli)
                 {
                     _completedScratch[_completedCount] = site.BuildingEntityId;
@@ -460,7 +468,8 @@ namespace GlobalFront.Core.Structures
                 int baseWorkPerTick,
                 int paidCost,
                 ConstructionMethod method,
-                int presentBuilders)
+                int presentBuilders,
+                bool isPowered)
             {
                 BuildingEntityId = buildingEntityId;
                 Owner = owner;
@@ -471,6 +480,7 @@ namespace GlobalFront.Core.Structures
                 PaidCost = paidCost;
                 Method = method;
                 PresentBuilders = presentBuilders;
+                IsPowered = isPowered;
             }
 
             public ulong BuildingEntityId { get; }
@@ -491,18 +501,20 @@ namespace GlobalFront.Core.Structures
 
             public int PresentBuilders { get; }
 
-            public SiteRecord WithProgressAndPresence(int buildProgressMilli, int presentBuilders)
+            public bool IsPowered { get; }
+
+            public SiteRecord WithTickOutcome(int buildProgressMilli, int presentBuilders, bool isPowered)
             {
                 return new SiteRecord(
                     BuildingEntityId, Owner, Center, Footprint,
-                    buildProgressMilli, BaseWorkPerTick, PaidCost, Method, presentBuilders);
+                    buildProgressMilli, BaseWorkPerTick, PaidCost, Method, presentBuilders, isPowered);
             }
 
             public ConstructionSiteState ToState()
             {
                 return new ConstructionSiteState(
                     BuildingEntityId, Owner, Center, Footprint,
-                    BuildProgressMilli, BaseWorkPerTick, PaidCost, Method, PresentBuilders);
+                    BuildProgressMilli, BaseWorkPerTick, PaidCost, Method, PresentBuilders, IsPowered);
             }
         }
     }

@@ -349,6 +349,8 @@ namespace GlobalFront.Tests.EditMode
 
             Assert.That(construction.TryGet(100, out ConstructionSiteState site), Is.True);
             Assert.That(site.BuildProgressMilli, Is.EqualTo(0), "a blackout freezes modular self-assembly");
+            Assert.That(site.IsPowered, Is.False, "the power snapshot must be observable on the site state (Step 5.2.4)");
+            Assert.That(site.IsFrozen, Is.True, "IsFrozen covers the modular blackout freeze");
             Assert.That(ledger.IsModularConstructionPowered(PlayerOne), Is.False);
         }
 

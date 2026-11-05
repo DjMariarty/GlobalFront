@@ -5,6 +5,7 @@ using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
+using GlobalFront.Core.Structures;
 using GlobalFront.Server.Replication;
 
 namespace GlobalFront.Server
@@ -163,6 +164,25 @@ namespace GlobalFront.Server
         /// </summary>
         private readonly CombatTickResolver _combatResolver = new CombatTickResolver();
 
+        /// <summary>
+        /// Construction foundations wired into the tick (Step 5.2.4): placement
+        /// gate, power ledger and the construction registry they back. Pre-
+        /// allocated and created per match so two servers on different threads
+        /// stay isolated exactly like <see cref="_combatResolver"/>.
+        /// </summary>
+        private readonly BuildingPlacementRegistry _buildingPlacement;
+
+        private readonly PowerLedger _powerLedger;
+
+        private readonly ConstructionRegistry _construction;
+
+        /// <summary>
+        /// Per-tick projection of the roster into <see cref="BuilderTickInput"/>;
+        /// pre-allocated once, reused every tick (zero-GC hot path).
+        /// </summary>
+        private readonly BuilderTickInput[] _builderInputs =
+            new BuilderTickInput[SimulationConstants.MaxUnitsPerMatch];
+
         // Hoisted so scheduling never allocates a delegate for the sort (Phase 1.0, P1-4).
         private static readonly Comparison<ScheduledCommand> ScheduledCommandComparison =
             CompareScheduledCommands;
@@ -193,6 +213,9 @@ namespace GlobalFront.Server
         public MatchServer(ICombatRelation combatRelation = null)
         {
             _combatRelation = combatRelation ?? SkirmishCombatRelation.Instance;
+            _buildingPlacement = new BuildingPlacementRegistry();
+            _powerLedger = new PowerLedger();
+            _construction = new ConstructionRegistry(_buildingPlacement, powerLedger: _powerLedger);
         }
 
         /// <summary>
@@ -268,6 +291,18 @@ namespace GlobalFront.Server
         public BattleOutcome Outcome { get; private set; } = BattleOutcome.InProgress;
 
         public int UnitCount => _units.Count;
+
+        /// <summary>
+        /// Read-only observation surface for the construction foundations
+        /// (Step 5.2.4). The server methods below are the only writers inside the
+        /// simulation; exposing the registries keeps the existing
+        /// test-through-public-API convention without reflection.
+        /// </summary>
+        public BuildingPlacementRegistry Placement => _buildingPlacement;
+
+        public PowerLedger PowerLedger => _powerLedger;
+
+        public ConstructionRegistry Construction => _construction;
 
         /// <summary>
         /// Initializes the match from a <see cref="MatchConfig"/>, creating
@@ -686,7 +721,9 @@ namespace GlobalFront.Server
         ///   2. Clear invalid attack targets (dead or friendly).
         ///   3. Auto-acquire closest enemy for units with the flag set.
         ///   4. Move units, with attack-target pursuit overriding move orders.
-        ///   5. Resolve combat via Core.CombatTickResolver.
+        ///   5. Advance construction: builders inside a frame's work radius
+        ///      grow its progress; completions flow power into the ledger.
+        ///   6. Resolve combat via Core.CombatTickResolver.
         ///
         /// A server without units advances the tick counter but simulates
         /// nothing and must not report a terminal (draw) outcome before the
@@ -714,6 +751,7 @@ namespace GlobalFront.Server
             ClearInvalidAttackTargets();
             AcquireAutomaticTargets();
             MoveUnits();
+            AdvanceConstruction();
             ResolveCombat(CurrentTick);
         }
 
@@ -729,6 +767,206 @@ namespace GlobalFront.Server
             {
                 TickOnce();
             }
+        }
+
+        /// <summary>
+        /// Placeholder stats for construction frames until the blueprint
+        /// registry (Step 5.5) supplies per-blueprint data.
+        /// <see cref="CombatStats.IsValid"/> requires a positive damage; frames
+        /// never acquire targets (<c>autoAcquire = false</c>) and nothing orders
+        /// them to attack in Step 5.2.4, so the damage value is inert.
+        /// </summary>
+        private static readonly CombatStats FrameStats = new CombatStats(500, 1, 0, 1);
+
+        /// <summary>
+        /// Per-tick construction phase (Step 5.2.4, between movement and
+        /// combat). First collapses the sites of frames destroyed by combat —
+        /// un-placed, builders to Idle, power entry dropped, no refund (Generals
+        /// canon: a destroyed construction refunds nobody). Then projects the
+        /// whole roster into pre-allocated builder inputs and advances every
+        /// active site; completions connect power in the ledger. Bails
+        /// immediately while no site is active, so matches without construction
+        /// pay nothing and see no behavior change.
+        /// </summary>
+        private void AdvanceConstruction()
+        {
+            if (_construction.Count == 0)
+            {
+                return;
+            }
+
+            // Backward walk — TryCancel swap-and-pops the site array.
+            for (var index = _construction.Count - 1; index >= 0; index--)
+            {
+                ConstructionSiteState site = _construction.GetAt(index);
+                if (_units.TryGetValue(new EntityId(site.BuildingEntityId), out var frame) &&
+                    !frame.Combat.IsAlive)
+                {
+                    _construction.TryCancel(site.BuildingEntityId, out _);
+                    _powerLedger.UnregisterBuilding(site.Owner, site.BuildingEntityId);
+                }
+            }
+
+            if (_construction.Count == 0)
+            {
+                return;
+            }
+
+            var count = 0;
+            for (var index = 0; index < _orderedUnits.Count; index++)
+            {
+                var unit = _orderedUnits[index];
+                _builderInputs[count++] = new BuilderTickInput(
+                    unit.Combat.Entity.Value, unit.Position, unit.Combat.IsAlive);
+            }
+
+            var result = _construction.AdvanceTick(_builderInputs, count);
+            for (var index = 0; index < result.CompletedCount; index++)
+            {
+                ulong buildingEntityId = _construction.GetCompletedBuildingEntityId(index);
+                if (_units.TryGetValue(new EntityId(buildingEntityId), out var building))
+                {
+                    _powerLedger.NotifyBuildingCompleted(building.Combat.Owner, buildingEntityId);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Server entry point for starting a construction (Step 5.2.4). The
+        /// caller supplies the building's entity id (same convention as
+        /// <see cref="SpawnUnitWithEntity"/>; the future Build command layer will
+        /// allocate ids from the same source). Atomically registers the pending
+        /// power entry, validates geometry through the construction registry and
+        /// spawns the frame as a regular roster unit with its final archetype
+        /// (RND §2.3: a frame owns its archetype from tick 0). Every failure
+        /// path leaves no partial state: the ledger entry is rolled back when
+        /// geometry rejects, and the unit spawn happens last — after all
+        /// pre-checks it cannot fail.
+        /// </summary>
+        public bool TryStartBuilding(
+            PlayerId player,
+            ulong buildingEntityId,
+            WorldPointMm center,
+            BuildingFootprint footprint,
+            ConstructionMethod method,
+            int baseWorkPerTick,
+            int paidCost,
+            int powerDelta,
+            out ConstructionStartRejection rejection)
+        {
+            if (!player.IsValid)
+            {
+                rejection = ConstructionStartRejection.InvalidOwner;
+                return false;
+            }
+
+            if (buildingEntityId == 0 || _units.ContainsKey(new EntityId(buildingEntityId)))
+            {
+                rejection = ConstructionStartRejection.InvalidEntityId;
+                return false;
+            }
+
+            if (_units.Count >= SimulationConstants.MaxUnitsPerMatch)
+            {
+                rejection = ConstructionStartRejection.RosterFull;
+                return false;
+            }
+
+            var powerRejection = _powerLedger.RegisterBuilding(player, buildingEntityId, powerDelta, isComplete: false);
+            if (powerRejection != PowerLedgerRejection.None)
+            {
+                rejection = powerRejection == PowerLedgerRejection.TableFull
+                    ? ConstructionStartRejection.PowerLedgerFull
+                    : ConstructionStartRejection.InvalidEntityId;
+                return false;
+            }
+
+            if (!_construction.TryStartConstruction(
+                    buildingEntityId, player, center, footprint, method, baseWorkPerTick, paidCost, out rejection))
+            {
+                // Rollback: no orphaned power entry may survive a rejected start.
+                _powerLedger.UnregisterBuilding(player, buildingEntityId);
+                return false;
+            }
+
+            // Same high-water discipline as SpawnUnitWithEntity: a caller-supplied
+            // id above the current mark must never collide with a later
+            // server-allocated id.
+            if (_nextEntityValue <= buildingEntityId)
+            {
+                _nextEntityValue = buildingEntityId + 1;
+            }
+
+            SpawnUnitCore(
+                new EntityId(buildingEntityId),
+                player,
+                FrameStats,
+                SnapGrid.SnapPosition(center),
+                0,
+                false,
+                UnitKinds.BaseStructure);
+
+            rejection = ConstructionStartRejection.None;
+            return true;
+        }
+
+        /// <summary>
+        /// Server entry point for cancelling a construction (Step 5.2.4): full
+        /// (100%) refund of the paid cost, un-placement of the frame, builders
+        /// to Idle, power entry dropped and the frame unit dies through the
+        /// regular death flow — health reaches 0 and replication removes it via
+        /// the existing corpse model. Returns false for unknown entities,
+        /// foreign owners and completed buildings.
+        /// </summary>
+        public bool TryCancelBuilding(PlayerId player, ulong buildingEntityId, out int refundCost)
+        {
+            refundCost = 0;
+            if (!_units.TryGetValue(new EntityId(buildingEntityId), out var frame) ||
+                frame.Combat.Owner.Value != player.Value)
+            {
+                return false;
+            }
+
+            if (!_construction.TryCancel(buildingEntityId, out refundCost))
+            {
+                return false;
+            }
+
+            _powerLedger.UnregisterBuilding(player, buildingEntityId);
+            frame.Combat.ApplyDamage(frame.Combat.CurrentHealth);
+            return true;
+        }
+
+        /// <summary>
+        /// Server entry point for assigning a builder to a construction site
+        /// (Step 5.2.4): validates builder ownership and liveness plus site
+        /// ownership (fail-closed anti-oracle, same convention as
+        /// <see cref="ValidateControllable"/>: a missing entity and a foreign
+        /// entity are indistinguishable), then delegates to the FSM.
+        /// </summary>
+        public BuilderAssignmentRejection TryAssignBuilder(
+            PlayerId player,
+            ulong builderEntityId,
+            BuilderKind kind,
+            ulong siteEntityId)
+        {
+            if (!_units.TryGetValue(new EntityId(builderEntityId), out var builder) ||
+                builder.Combat.Owner.Value != player.Value)
+            {
+                return BuilderAssignmentRejection.OwnerMismatch;
+            }
+
+            if (!builder.Combat.IsAlive)
+            {
+                return BuilderAssignmentRejection.BuilderNotAlive;
+            }
+
+            if (!_construction.TryGet(siteEntityId, out var site) || site.Owner.Value != player.Value)
+            {
+                return BuilderAssignmentRejection.SiteUnknown;
+            }
+
+            return _construction.AssignBuilder(builderEntityId, kind, siteEntityId);
         }
 
         public bool TryGetUnit(EntityId entity, out ServerUnitSnapshot snapshot)
