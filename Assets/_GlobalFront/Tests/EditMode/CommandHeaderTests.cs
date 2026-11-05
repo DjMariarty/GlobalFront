@@ -65,5 +65,35 @@ namespace GlobalFront.Tests.EditMode
 
             Assert.That(result, Is.EqualTo(CommandValidationResult.TickTooFarAhead));
         }
+
+        [Test]
+        public void GameCommandType_CarriesTheSetRallyValue()
+        {
+            Assert.That((byte)GameCommandType.SetRally, Is.EqualTo(9), "Step 5.3.1: append-only addition after UseAbility = 8");
+        }
+
+        [Test]
+        public void Validate_AcceptsSetRally_AsTheNewUpperBound()
+        {
+            var header = new CommandHeader(
+                new PlayerId(1),
+                sequence: 1,
+                requestedTick: 100,
+                type: GameCommandType.SetRally);
+
+            Assert.That(header.Validate(100, 2, 5), Is.EqualTo(CommandValidationResult.Accepted));
+        }
+
+        [Test]
+        public void Validate_RejectsTypeBeyondTheSetRallyBound()
+        {
+            var header = new CommandHeader(
+                new PlayerId(1),
+                sequence: 1,
+                requestedTick: 100,
+                type: (GameCommandType)10);
+
+            Assert.That(header.Validate(100, 2, 5), Is.EqualTo(CommandValidationResult.UnknownCommand), "the first byte past SetRally is unknown again");
+        }
     }
 }

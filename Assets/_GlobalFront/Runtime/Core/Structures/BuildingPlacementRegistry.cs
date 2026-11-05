@@ -222,6 +222,26 @@ namespace GlobalFront.Core.Structures
         }
 
         /// <summary>
+        /// True when the point lies inside any placed building's closed AABB
+        /// (touching an edge counts as occupied). Added in Step 5.3.1 as the
+        /// occupancy gate for production exit points; linear scan over the
+        /// compact registry, zero-GC.
+        /// </summary>
+        public bool IsPointOccupied(WorldPointMm point)
+        {
+            for (int i = 0; i < _count; i++)
+            {
+                if (point.X >= _buildings[i].MinX && point.X <= _buildings[i].MaxX
+                    && point.Z >= _buildings[i].MinZ && point.Z <= _buildings[i].MaxZ)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// Direct slot access in insertion order (until a removal shuffles the
         /// tail). Index must be within [0, <see cref="Count"/>).
         /// </summary>

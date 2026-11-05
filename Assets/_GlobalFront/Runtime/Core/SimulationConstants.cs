@@ -33,6 +33,17 @@ namespace GlobalFront.Core.Simulation
         public const int AutoAcquireRangeMm = 18000;
 
         /// <summary>
+        /// Максимальная длина очереди предварительного заказа в одном
+        /// производственном здании (канон C&C Generals).
+        /// </summary>
+        public const int MaxProductionQueueSlots = 9;
+
+        /// <summary>
+        /// Максимальное число активных производственных зданий на матч.
+        /// </summary>
+        public const int MaxProductionBuildings = 128;
+
+        /// <summary>
         /// Edge length in millimetres of one cell of the server-side visibility
         /// uniform grid (2^13 = 8192 mm = 8.192 m). The grid accelerates
         /// sight queries from O(N^2) to O(N * k) by scanning only cells that

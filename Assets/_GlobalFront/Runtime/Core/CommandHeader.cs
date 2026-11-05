@@ -12,7 +12,8 @@ namespace GlobalFront.Core.Commands
         Guard = 5,
         Build = 6,
         Produce = 7,
-        UseAbility = 8
+        UseAbility = 8,
+        SetRally = 9
     }
 
     public enum CommandValidationResult : byte
@@ -67,7 +68,7 @@ namespace GlobalFront.Core.Commands
             }
 
             if (Type == GameCommandType.None ||
-                (byte)Type > (byte)GameCommandType.UseAbility)
+                (byte)Type > (byte)GameCommandType.SetRally)
             {
                 return CommandValidationResult.UnknownCommand;
             }

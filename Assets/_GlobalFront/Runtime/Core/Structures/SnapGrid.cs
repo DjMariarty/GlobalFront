@@ -37,5 +37,16 @@ namespace GlobalFront.Core.Structures
         {
             return new WorldPointMm(SnapCoordinate(point.X, stepMm), SnapCoordinate(point.Z, stepMm));
         }
+
+        /// <summary>
+        /// True when both axes of <paramref name="point"/> sit inside the map
+        /// extent. Pure integer bounds test — added in Step 5.3.1 for rally
+        /// points; default extent is the OD-27 competitive map.
+        /// </summary>
+        public static bool ValidateInBounds(WorldPointMm point, int mapHalfExtentMm = BuildingPlacementRegistry.DefaultHalfExtentMm)
+        {
+            return point.X >= -mapHalfExtentMm && point.X <= mapHalfExtentMm
+                && point.Z >= -mapHalfExtentMm && point.Z <= mapHalfExtentMm;
+        }
     }
 }
