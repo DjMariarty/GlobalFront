@@ -21,8 +21,8 @@
 | 3 | RTS Core + Vertical Slice пяти фракций (RTS Camera, Controls, Visuals, 400-unit slice) | M2 Playable RTS Core | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** |
 | 4 | Multiplayer Gameplay Integration (1v1 Dedicated Server Prototype) | M1 Multiplayer Prototype | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** (`66419a8`, OD-48..OD-50, 1392 green) |
 | 5 | Full Five Factions (Faction Asymmetry & Strategic Combat, 2v2) | M2 (2v2) / M3 Five Factions | **[NEXT]** |
-| 6 | AI | M4 RTS AI | planned |
-| 7 | Content + Maps + Presentation | — | planned |
+| 6 | Content + Maps + Presentation | — | planned |
+| 7 | AI | M4 RTS AI | planned |
 | 8 | Scale / Performance / Reliability | M5 Scale Prototype | planned |
 | 9 | Alpha | M6 Alpha | planned |
 | 10 | Beta | M7 Beta | planned |

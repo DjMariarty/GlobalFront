@@ -10,8 +10,8 @@
 | 3 | [RTS Core + Vertical Slice](Phase_03_RTS_Core.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** (3.1–3.7 + Hardening 3.7.1) | M2 |
 | 4 | [Multiplayer Gameplay Integration](Phase_04_Multiplayer_Integration.md) | **CURRENT / NEXT** | M1 |
 | 5 | [Full Five Factions](Phase_05_Five_Factions.md) | planned | M3 |
-| 6 | [AI](Phase_06_AI.md) | planned | M4 |
-| 7 | [Content + Maps + Presentation](Phase_07_Content_Maps_Presentation.md) | planned | — |
+| 6 | [Content + Maps + Presentation](Phase_06_Content_Maps_Presentation.md) | planned | — |
+| 7 | [AI](Phase_07_AI.md) | planned | M4 |
 | 8 | [Scale / Performance / Reliability](Phase_08_Scale_Performance_Reliability.md) | planned | M5 |
 | 9 | [Alpha](Phase_09_Alpha.md) | planned | M6 |
 | 10 | [Beta](Phase_10_Beta.md) | planned | M7 |

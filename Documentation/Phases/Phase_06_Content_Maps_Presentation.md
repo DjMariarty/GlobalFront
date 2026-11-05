@@ -1,4 +1,4 @@
-# Phase 07 — Content + Maps + Presentation
+# Phase 06 — Content + Maps + Presentation
 
 > Status: planned
 
@@ -8,8 +8,7 @@
 
 ## Dependencies
 
-- M3 Five Factions;
-- применимый M4 AI;
+- M3 Five Factions (Phase 5);
 - утверждённые art/UI/audio directions;
 - production content pipeline и лицензионные правила.
 

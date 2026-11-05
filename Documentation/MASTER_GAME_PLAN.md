@@ -42,8 +42,8 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 | 3 | RTS Core + Vertical Slice | **COMPLETE [APPROVED: ZERO DEFECTS]** (3.1–3.7 + Hardening Phase 3.7.1; OD-28 400-unit CPU benchmark; baseline 1179 EditMode + 16 PlayMode) |
 | 4 | Multiplayer Gameplay Integration | **COMPLETE [APPROVED: ZERO DEFECTS]** (4.1–4.6.5 + M1.1/M1.2, OD-35..OD-50; Milestone M1.2 certified APPROVE на `66419a8`; baseline 1370 EditMode + 22 PlayMode = 1392 теста) |
 | 5 | Full Five Factions | **NEXT** |
-| 6 | AI | planned |
-| 7 | Content + Maps + Presentation | planned |
+| 6 | Content + Maps + Presentation | planned |
+| 7 | AI | planned |
 | 8 | Scale / Performance / Reliability | planned |
 | 9 | Alpha | planned |
 | 10 | Beta | planned |
@@ -60,7 +60,7 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 | M1 | Multiplayer Prototype | **COMPLETE (OD-48..OD-50)**, Phase 4 |
 | M2 | Playable RTS Core & 2v2 Topology | Phase 3 (Core **COMPLETE**) + Phase 5 (2v2 Topology) |
 | M3 | Five Factions | Phase 5 |
-| M4 | RTS AI | Phase 6 |
+| M4 | RTS AI | Phase 7 |
 | M5 | Scale Prototype | Phase 8 |
 | M6 | Alpha | Phase 9 |
 | M7 | Beta | Phase 10 |

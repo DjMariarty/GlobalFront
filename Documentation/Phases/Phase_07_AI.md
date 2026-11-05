@@ -1,4 +1,4 @@
-# Phase 06 — AI
+# Phase 07 — AI
 
 > Status: planned • Milestone M4 RTS AI
 
@@ -10,6 +10,7 @@
 
 - полный утверждённый gameplay foundation;
 - M3 Five Factions;
+- визуальная презентация и карты (Phase 06);
 - authoritative information/visibility rules;
 - map framework и performance benchmarks.
 
