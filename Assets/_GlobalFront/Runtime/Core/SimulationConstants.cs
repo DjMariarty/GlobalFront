@@ -43,6 +43,33 @@ namespace GlobalFront.Core.Simulation
         /// </summary>
         public const int MaxProductionBuildings = 128;
 
+        /// <summary>Насыщающий потолок баланса игрока; прибавление — только Math.Min(MaxCredits, current + income).</summary>
+        public const int MaxCredits = 2_000_000_000;
+
+        /// <summary>Максимум складов снабжения (Supply Dock) на матч.</summary>
+        public const int MaxSupplyDocks = 64;
+
+        /// <summary>Максимум центров снабжения (Supply Center) на матч.</summary>
+        public const int MaxSupplyCenters = 64;
+
+        /// <summary>Максимум сборщиков (Harvester) на матч.</summary>
+        public const int MaxHarvesters = 128;
+
+        /// <summary>Ровно 4 параллельных слота погрузки на склад (канон C&C Generals).</summary>
+        public const int SupplyDockSlots = 4;
+
+        /// <summary>Ёмкость очереди ожидания одного склада.</summary>
+        public const int MaxWaitingHarvestersPerDock = 16;
+
+        /// <summary>Стандартная вместимость грузовика USA/China/GLA/Russia/NATO, долларов за цикл.</summary>
+        public const int DefaultHarvesterCapacityDollars = 300;
+
+        /// <summary>Длительность погрузки, тиков (2.0 секунды при 20 Гц).</summary>
+        public const int DefaultLoadingDurationTicks = 40;
+
+        /// <summary>Радиус взаимодействия склада и радиус разгрузки центра, мм (6 метров).</summary>
+        public const int DefaultEconomyInteractionRadiusMm = 6_000;
+
         /// <summary>
         /// Edge length in millimetres of one cell of the server-side visibility
         /// uniform grid (2^13 = 8192 mm = 8.192 m). The grid accelerates
