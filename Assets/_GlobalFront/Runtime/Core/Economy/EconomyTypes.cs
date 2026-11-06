@@ -152,4 +152,22 @@ namespace GlobalFront.Core.Economy
 
         public int WaitingQueueCount { get; }
     }
+
+    /// <summary>
+    /// One harvester's authoritative position, streamed out of
+    /// <see cref="SupplyEconomyRegistry.CopyHarvesterSync"/> so the server can
+    /// mirror registry-driven movement into its roster (Step 5.4.2).
+    /// </summary>
+    public readonly struct HarvesterSyncEntry
+    {
+        public HarvesterSyncEntry(ulong entityId, WorldPointMm position)
+        {
+            EntityId = entityId;
+            Position = position;
+        }
+
+        public ulong EntityId { get; }
+
+        public WorldPointMm Position { get; }
+    }
 }

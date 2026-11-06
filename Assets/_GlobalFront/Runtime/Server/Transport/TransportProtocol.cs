@@ -59,7 +59,17 @@ namespace GlobalFront.Server.Transport
         /// simulation (OD-20). Standalone fixed-size frame, not the message
         /// envelope; see <see cref="GlobalFront.Core.Reconnect.ClientReadyToResumeCodec"/>.
         /// </summary>
-        ClientReadyToResume = GlobalFront.Core.Reconnect.ClientReadyToResumeCodec.Opcode
+        ClientReadyToResume = GlobalFront.Core.Reconnect.ClientReadyToResumeCodec.Opcode,
+
+        /// <summary>
+        /// Server→client private channel payload carrying the owner-only
+        /// economic digest (credits, power grid, production queue heads;
+        /// Step 5.4.2). Emitted strictly to the owning session so rival
+        /// clients can never observe another player's balance (anti-maphack).
+        /// Fixed-layout body; see
+        /// <see cref="GlobalFront.Core.Economy.PlayerStateSyncCodec"/>.
+        /// </summary>
+        PlayerStateSync = GlobalFront.Core.Economy.PlayerStateSyncCodec.Opcode
     }
 
     /// <summary>Why the server denied a connect request.</summary>

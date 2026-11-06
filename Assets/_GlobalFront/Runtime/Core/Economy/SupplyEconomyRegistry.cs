@@ -381,6 +381,64 @@ namespace GlobalFront.Core.Economy
             return true;
         }
 
+        /// <summary>
+        /// Copies every registered entity id (docks, centers, harvesters) into
+        /// destination in canonical EntityId order. The server uses this for
+        /// the per-tick liveness sweep: an id that is present in the roster and
+        /// dead is unregistered. Zero-GC; returns the number of ids written.
+        /// </summary>
+        public int CopyEntityIds(Span<ulong> destination)
+        {
+            int total = _dockCount + _centerCount + _harvesterCount;
+            if (destination.Length < total)
+            {
+                throw new ArgumentException(
+                    $"Destination span holds {destination.Length} ids, registry has {total}.", nameof(destination));
+            }
+
+            int offset = 0;
+            for (int index = 0; index < _dockCount; index++)
+            {
+                destination[offset++] = _docks[index].EntityId;
+            }
+
+            for (int index = 0; index < _centerCount; index++)
+            {
+                destination[offset++] = _centers[index].EntityId;
+            }
+
+            for (int index = 0; index < _harvesterCount; index++)
+            {
+                destination[offset++] = _harvesters[index].EntityId;
+            }
+
+            return total;
+        }
+
+        /// <summary>
+        /// Copies the authoritative position of every harvester into
+        /// destination. The server mirrors these positions into its roster so
+        /// harvester movement replicates to clients (Step 5.4.2). Zero-GC;
+        /// returns the number of entries written.
+        /// </summary>
+        public int CopyHarvesterSync(Span<HarvesterSyncEntry> destination)
+        {
+            if (destination.Length < _harvesterCount)
+            {
+                throw new ArgumentException(
+                    $"Destination span holds {destination.Length} entries, registry has {_harvesterCount} harvesters.",
+                    nameof(destination));
+            }
+
+            for (int index = 0; index < _harvesterCount; index++)
+            {
+                HarvesterRecord record = _harvesters[index];
+                destination[index] = new HarvesterSyncEntry(record.EntityId, record.Position);
+            }
+
+            return _harvesterCount;
+        }
+
         // ------------------------------------------------------------------
         // per-tick advance
         // ------------------------------------------------------------------
@@ -822,10 +880,15 @@ namespace GlobalFront.Core.Economy
         }
 
         // ------------------------------------------------------------------
-        // sorted storage plumbing (EntityId-ascending)
+        // internals
         // ------------------------------------------------------------------
 
-        private bool IsKnownEntity(ulong entityId)
+        /// <summary>
+        /// Whether any dock, center or harvester already holds the id. Public
+        /// so the server can enforce one global entity-id space across the
+        /// supply and secondary registries (Step 5.4.2).
+        /// </summary>
+        public bool IsKnownEntity(ulong entityId)
         {
             return IndexOfDock(entityId) >= 0 || IndexOfCenter(entityId) >= 0 || IndexOfHarvester(entityId) >= 0;
         }

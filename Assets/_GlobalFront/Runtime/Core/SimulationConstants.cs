@@ -70,6 +70,42 @@ namespace GlobalFront.Core.Simulation
         /// <summary>Радиус взаимодействия склада и радиус разгрузки центра, мм (6 метров).</summary>
         public const int DefaultEconomyInteractionRadiusMm = 6_000;
 
+        /// <summary>Максимум нейтральных нефтяных вышек (Oil Derrick) на матч.</summary>
+        public const int MaxOilDerricks = 32;
+
+        /// <summary>Максимум доходных зданий вторичной экономики (Drop Zone + Black Market) на матч.</summary>
+        public const int MaxSecondaryIncomeBuildings = 64;
+
+        /// <summary>Максимум хакеров (Hacker) на матч.</summary>
+        public const int MaxHackers = 128;
+
+        /// <summary>Длительность оккупации нефтяной вышки пехотинцем, тиков (4 секунды при 20 Гц).</summary>
+        public const int OilDerrickCaptureDurationTicks = 80;
+
+        /// <summary>Интервал выплат нефтяной вышки владельцу, тиков (2 секунды).</summary>
+        public const int OilDerrickPayoutIntervalTicks = 40;
+
+        /// <summary>Выплата нефтяной вышки владельцу, долларов за интервал.</summary>
+        public const int OilDerrickPayoutDollars = 100;
+
+        /// <summary>Интервал выплат Drop Zone (USA), тиков (60 секунд).</summary>
+        public const int DropZonePayoutIntervalTicks = 1200;
+
+        /// <summary>Выплата Drop Zone (USA), долларов за интервал.</summary>
+        public const int DropZonePayoutDollars = 1500;
+
+        /// <summary>Интервал выплат Black Market (GLA), тиков (4 секунды).</summary>
+        public const int BlackMarketPayoutIntervalTicks = 80;
+
+        /// <summary>Выплата Black Market (GLA), долларов за интервал.</summary>
+        public const int BlackMarketPayoutDollars = 50;
+
+        /// <summary>Интервал выплат Hacker (China), тиков (2 секунды).</summary>
+        public const int HackerPayoutIntervalTicks = 40;
+
+        /// <summary>Выплата Hacker (China), долларов за интервал.</summary>
+        public const int HackerPayoutDollars = 20;
+
         /// <summary>
         /// Edge length in millimetres of one cell of the server-side visibility
         /// uniform grid (2^13 = 8192 mm = 8.192 m). The grid accelerates

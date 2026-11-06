@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
+using GlobalFront.Core.Economy;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
@@ -232,6 +233,36 @@ namespace GlobalFront.Server
         private readonly Dictionary<ulong, WorldPointMm?> _pendingFactoryExitPoints =
             new Dictionary<ulong, WorldPointMm?>();
 
+        /// <summary>
+        /// Supply economy wired into the tick (Step 5.4.2): docks with finite
+        /// reserves, supply centers and the harvester FSM, created per match
+        /// for scratch isolation exactly like <see cref="_production"/>.
+        /// </summary>
+        private readonly SupplyEconomyRegistry _economy = new SupplyEconomyRegistry();
+
+        /// <summary>
+        /// Secondary income sources wired into the tick (Step 5.4.2): neutral
+        /// Oil Derricks, Drop Zones, Black Markets and Hackers, created per
+        /// match for scratch isolation.
+        /// </summary>
+        private readonly SecondaryEconomyRegistry _secondaryEconomy = new SecondaryEconomyRegistry();
+
+        /// <summary>Scratch for the per-tick liveness sweep; pre-allocated once (zero-GC tick).</summary>
+        private readonly ulong[] _economyEntityScratch = new ulong[
+            SimulationConstants.MaxSupplyDocks +
+            SimulationConstants.MaxSupplyCenters +
+            SimulationConstants.MaxHarvesters];
+
+        /// <summary>Scratch for the per-tick harvester position sync; pre-allocated once (zero-GC tick).</summary>
+        private readonly HarvesterSyncEntry[] _harvesterSyncScratch =
+            new HarvesterSyncEntry[SimulationConstants.MaxHarvesters];
+
+        /// <summary>
+        /// Single roster adapter the secondary economy probes through; built in
+        /// the constructor (never per tick) so the hot path stays allocation-free.
+        /// </summary>
+        private readonly SecondaryEconomyUnitSourceAdapter _secondaryUnitSource;
+
         // Hoisted so scheduling never allocates a delegate for the sort (Phase 1.0, P1-4).
         private static readonly Comparison<ScheduledCommand> ScheduledCommandComparison =
             CompareScheduledCommands;
@@ -266,6 +297,7 @@ namespace GlobalFront.Server
             _powerLedger = new PowerLedger();
             _construction = new ConstructionRegistry(_buildingPlacement, powerLedger: _powerLedger);
             _production = new ProductionQueueRegistry();
+            _secondaryUnitSource = new SecondaryEconomyUnitSourceAdapter(this);
         }
 
         /// <summary>
@@ -313,6 +345,39 @@ namespace GlobalFront.Server
             public byte UnitKind;
         }
 
+        /// <summary>
+        /// Bridges the server's private unit records into the Core-side probe
+        /// the secondary economy ticks against (Step 5.4.2). One instance per
+        /// match; <see cref="TryProbe"/> is a dictionary lookup and never
+        /// allocates. Dead units remain in the roster with zero health, so a
+        /// corpse probes back with CurrentHealth 0 and is treated as gone.
+        /// </summary>
+        private sealed class SecondaryEconomyUnitSourceAdapter : ISecondaryEconomyUnitSource
+        {
+            private readonly MatchServer _server;
+
+            public SecondaryEconomyUnitSourceAdapter(MatchServer server)
+            {
+                _server = server;
+            }
+
+            public bool TryProbe(ulong entityId, out SecondaryEconomyUnitProbe probe)
+            {
+                if (_server._units.TryGetValue(new EntityId(entityId), out UnitRecord record))
+                {
+                    probe = new SecondaryEconomyUnitProbe(
+                        record.Position,
+                        record.Combat.CurrentHealth,
+                        record.Combat.HasAttackTarget,
+                        record.UnitKind);
+                    return true;
+                }
+
+                probe = default;
+                return false;
+            }
+        }
+
         private sealed class ScheduledCommand
         {
             public CommandHeader Header;
@@ -355,6 +420,16 @@ namespace GlobalFront.Server
         public ConstructionRegistry Construction => _construction;
 
         public ProductionQueueRegistry Production => _production;
+
+        /// <summary>
+        /// Read-only observation surface for the supply economy (Step 5.4.2):
+        /// the registry owns the per-player credit ledger and the harvester
+        /// FSM. Exposed for the test-through-public-API convention.
+        /// </summary>
+        public SupplyEconomyRegistry Economy => _economy;
+
+        /// <summary>Read-only observation surface for the secondary income sources (Step 5.4.2).</summary>
+        public SecondaryEconomyRegistry SecondaryEconomy => _secondaryEconomy;
 
         /// <summary>
         /// Initializes the match from a <see cref="MatchConfig"/>, creating
@@ -804,8 +879,9 @@ namespace GlobalFront.Server
             ExecuteScheduledCommands(CurrentTick);
             ClearInvalidAttackTargets();
             AcquireAutomaticTargets();
+            AdvanceEconomy(); // Step 5.4.2 (RND §1.6): accruals and harvester steps run before general movement.
             MoveUnits();
-            AdvanceConstruction();
+            AdvanceConstruction(); // Step 5.3.2
             AdvanceProduction(); // Step 5.3.2: factory queues tick down between construction and combat.
             ResolveCombat(CurrentTick);
         }
@@ -843,6 +919,53 @@ namespace GlobalFront.Server
         /// immediately while no site is active, so matches without construction
         /// pay nothing and see no behavior change.
         /// </summary>
+        /// <summary>
+        /// Per-tick economy phase (Step 5.4.2, RND §1.6): accruals and
+        /// harvester steps run before general movement. Order inside the
+        /// phase: dead supply entities are swept first (a corpse must never
+        /// collect income), secondary sources advance next (derricks, income
+        /// buildings, hackers), then the harvester FSM, then registry-owned
+        /// harvester positions are mirrored into the roster so harvester
+        /// movement replicates to clients. Zero-GC: scratch buffers were
+        /// pre-allocated in the constructor.
+        /// </summary>
+        private void AdvanceEconomy()
+        {
+            SweepDeadEconomyEntities();
+
+            _secondaryEconomy.AdvanceTick(_secondaryUnitSource, _economy);
+            _economy.AdvanceTick();
+
+            int harvesterCount = _economy.CopyHarvesterSync(_harvesterSyncScratch);
+            for (var index = 0; index < harvesterCount; index++)
+            {
+                HarvesterSyncEntry entry = _harvesterSyncScratch[index];
+                if (_units.TryGetValue(new EntityId(entry.EntityId), out var harvester))
+                {
+                    harvester.Position = entry.Position;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Unregisters every supply-economy entity whose roster unit died
+        /// (harvesters, supply centers; docks booked without a roster unit are
+        /// world objects and survive). The sweep copies the id set first, so
+        /// unregistering never invalidates the walk.
+        /// </summary>
+        private void SweepDeadEconomyEntities()
+        {
+            int registeredCount = _economy.CopyEntityIds(_economyEntityScratch);
+            for (var index = 0; index < registeredCount; index++)
+            {
+                ulong entityId = _economyEntityScratch[index];
+                if (_units.TryGetValue(new EntityId(entityId), out var record) && !record.Combat.IsAlive)
+                {
+                    _economy.UnregisterEntity(entityId);
+                }
+            }
+        }
+
         private void AdvanceConstruction()
         {
             if (_construction.Count == 0)
@@ -892,7 +1015,34 @@ namespace GlobalFront.Server
                             buildingEntityId, building.Combat.Owner, building.Position, pendingExit);
                         _pendingFactoryExitPoints.Remove(buildingEntityId);
                     }
+
+                    RegisterCompletedEconomyBuilding(buildingEntityId, building);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Auto-registers a completed building in the economy registries by its
+        /// archetype (Step 5.4.2). The frame carried its final kind from tick
+        /// 0, so the roster record is the single classification source. A full
+        /// registry leaves the building standing but economically inert —
+        /// completion must never fail because a ledger is full.
+        /// </summary>
+        private void RegisterCompletedEconomyBuilding(ulong buildingEntityId, UnitRecord building)
+        {
+            switch (building.UnitKind)
+            {
+                case UnitKinds.SupplyCenter:
+                    _economy.TryRegisterCenter(buildingEntityId, building.Combat.Owner, building.Position, out _);
+                    break;
+                case UnitKinds.DropZone:
+                    _secondaryEconomy.TryRegisterIncomeBuilding(
+                        buildingEntityId, building.Combat.Owner, SecondaryIncomeKind.DropZone, out _);
+                    break;
+                case UnitKinds.BlackMarket:
+                    _secondaryEconomy.TryRegisterIncomeBuilding(
+                        buildingEntityId, building.Combat.Owner, SecondaryIncomeKind.BlackMarket, out _);
+                    break;
             }
         }
 
@@ -957,6 +1107,8 @@ namespace GlobalFront.Server
                     blueprint.AutoAcquire,
                     blueprint.UnitKind);
 
+                RegisterProducedEconomyUnit(entity, completed, blueprint);
+
                 if (completed.HasRally && _units.TryGetValue(entity, out var unitRecord))
                 {
                     // The authoritative analogue of executing a rally Move
@@ -966,6 +1118,34 @@ namespace GlobalFront.Server
                     unitRecord.Combat.ClearTarget();
                     unitRecord.AutoAcquireEnemies = false;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Auto-registers a produced unit in the economy registries by its
+        /// archetype (Step 5.4.2): harvesters join the supply FSM with the
+        /// canonical capacity, hackers join the secondary income registry. A
+        /// full registry leaves the unit combat-effective but economically
+        /// inert — the spawn itself must never fail on a full ledger.
+        /// </summary>
+        private void RegisterProducedEconomyUnit(
+            EntityId entity,
+            ProductionCompletedUnit completed,
+            ProducedUnitBlueprint blueprint)
+        {
+            if (blueprint.UnitKind == UnitKinds.Harvester)
+            {
+                _economy.TryRegisterHarvester(
+                    entity.Value,
+                    completed.Owner,
+                    completed.SpawnPosition,
+                    blueprint.SpeedMmPerTick,
+                    SimulationConstants.DefaultHarvesterCapacityDollars,
+                    out _);
+            }
+            else if (blueprint.UnitKind == UnitKinds.Hacker)
+            {
+                _secondaryEconomy.TryRegisterHacker(entity.Value, completed.Owner, out _);
             }
         }
 
@@ -1000,6 +1180,72 @@ namespace GlobalFront.Server
 
             return _production.TryRegisterBuilding(
                 buildingEntityId, building.Combat.Owner, building.Position, exitPoint);
+        }
+
+        /// <summary>
+        /// Books a neutral supply dock in the economy registry (Step 5.4.2 test
+        /// and scenario path). The dock is a world object — no roster unit is
+        /// required, so the entity id may point anywhere outside the roster.
+        /// The id must not collide with any other economy entity (one global
+        /// entity-id space across both registries).
+        /// </summary>
+        public bool TryRegisterSupplyDock(
+            ulong entityId,
+            WorldPointMm position,
+            int initialDollars,
+            out EconomyRegistrationRejection rejection)
+        {
+            if (_secondaryEconomy.IsKnownEntity(entityId))
+            {
+                rejection = EconomyRegistrationRejection.DuplicateEntity;
+                return false;
+            }
+
+            return _economy.TryRegisterDock(entityId, position, initialDollars, out rejection);
+        }
+
+        /// <summary>
+        /// Books a neutral Oil Derrick in the secondary economy (Step 5.4.2
+        /// test and scenario path). The derrick is a world object — no roster
+        /// unit is required. The id must not collide with any other economy
+        /// entity (one global entity-id space across both registries).
+        /// </summary>
+        public bool TryRegisterOilDerrick(ulong entityId, WorldPointMm position, out EconomyRegistrationRejection rejection)
+        {
+            if (_economy.IsKnownEntity(entityId))
+            {
+                rejection = EconomyRegistrationRejection.DuplicateEntity;
+                return false;
+            }
+
+            return _secondaryEconomy.TryRegisterOilDerrick(entityId, position, out rejection);
+        }
+
+        /// <summary>
+        /// Authoritative Oil Derrick capture order (Step 5.4.2). Fails closed
+        /// on the roster side — the unit must exist, be alive, belong to the
+        /// player and be an <see cref="UnitKinds.Infantry"/> kind — then hands
+        /// the capture to the secondary registry with the unit's current
+        /// health as the damage baseline for the interruption check.
+        /// </summary>
+        public bool TryOrderCapture(PlayerId player, ulong infantryEntityId, ulong derrickEntityId)
+        {
+            if (!player.IsValid)
+            {
+                return false;
+            }
+
+            if (!_units.TryGetValue(new EntityId(infantryEntityId), out var infantry) ||
+                !infantry.Combat.IsAlive ||
+                infantry.Combat.Owner.Value != player.Value ||
+                infantry.UnitKind != UnitKinds.Infantry)
+            {
+                return false;
+            }
+
+            return _secondaryEconomy.TryOrderCapture(
+                derrickEntityId, player, infantryEntityId, infantry.Combat.CurrentHealth) ==
+                DerrickCaptureRejection.None;
         }
 
         /// <summary>
@@ -1201,6 +1447,32 @@ namespace GlobalFront.Server
             WorldPointMm? exitPoint,
             out ConstructionStartRejection rejection)
         {
+            return TryStartBuilding(
+                player, buildingEntityId, center, footprint, method, baseWorkPerTick, paidCost,
+                powerDelta, isProduction, exitPoint, UnitKinds.BaseStructure, out rejection);
+        }
+
+        /// <summary>
+        /// Full Step 5.4.2 overload: <paramref name="buildingKind"/> is the
+        /// frame's final archetype from tick 0, enabling the economic
+        /// auto-registration on completion — SupplyCenter, DropZone and
+        /// BlackMarket frames classify themselves through the roster record.
+        /// Every existing caller defaults to BaseStructure.
+        /// </summary>
+        public bool TryStartBuilding(
+            PlayerId player,
+            ulong buildingEntityId,
+            WorldPointMm center,
+            BuildingFootprint footprint,
+            ConstructionMethod method,
+            int baseWorkPerTick,
+            int paidCost,
+            int powerDelta,
+            bool isProduction,
+            WorldPointMm? exitPoint,
+            byte buildingKind,
+            out ConstructionStartRejection rejection)
+        {
             if (!player.IsValid)
             {
                 rejection = ConstructionStartRejection.InvalidOwner;
@@ -1251,7 +1523,7 @@ namespace GlobalFront.Server
                 SnapGrid.SnapPosition(center),
                 0,
                 false,
-                UnitKinds.BaseStructure);
+                buildingKind);
 
             if (isProduction)
             {

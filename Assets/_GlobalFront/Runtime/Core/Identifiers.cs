@@ -109,11 +109,29 @@ namespace GlobalFront.Core.Model
         /// <summary>Static economy structure; excluded from unit rings by rules later on.</summary>
         public const byte BaseStructure = 3;
 
+        /// <summary>Foot soldier; the only unit able to occupy an Oil Derrick (Step 5.4.2).</summary>
+        public const byte Infantry = 4;
+
+        /// <summary>Player-owned unload destination for harvesters; auto-registers in the supply economy on completion.</summary>
+        public const byte SupplyCenter = 5;
+
+        /// <summary>Economy truck; autonomously ferries dollars from docks to supply centers.</summary>
+        public const byte Harvester = 6;
+
+        /// <summary>China's income unit; siphons dollars while alive and not attacking.</summary>
+        public const byte Hacker = 7;
+
+        /// <summary>USA income structure; airdrops dollars on a long interval.</summary>
+        public const byte DropZone = 8;
+
+        /// <summary>GLA income structure; steady small payments on a short interval.</summary>
+        public const byte BlackMarket = 9;
+
         /// <summary>
         /// One past the highest defined kind, so <c>UnitKinds.Count</c> is directly
         /// usable as the O(1) catalog array length.
         /// </summary>
-        public const byte Count = 4;
+        public const byte Count = 10;
 
         /// <summary>False for 0 (Unknown) and for anything at or above <see cref="Count"/>.</summary>
         public static bool IsDefined(byte kind) => kind != Unknown && kind < Count;

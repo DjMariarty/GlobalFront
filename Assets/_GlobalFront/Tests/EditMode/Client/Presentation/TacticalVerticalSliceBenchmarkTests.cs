@@ -223,7 +223,7 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             Assert.That(CountOf(tally, UnitKinds.Unknown), Is.EqualTo(0),
                 "every unit in the slice must resolve to an archetype");
 
-            for (var kind = 1; kind < UnitKinds.Count; kind++)
+            for (var kind = (int)UnitKinds.Scout; kind <= UnitKinds.BaseStructure; kind++)
             {
                 Assert.That(runner.Catalog.TryGet((byte)kind, out var definition), Is.True,
                     $"archetype {kind} must resolve in the slice catalog");
