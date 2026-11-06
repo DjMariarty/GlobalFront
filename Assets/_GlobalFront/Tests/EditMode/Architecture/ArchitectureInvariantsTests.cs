@@ -86,6 +86,7 @@ namespace GlobalFront.Tests.EditMode.Architecture
         /// </summary>
         private static readonly string[] AuthoritativeNamespaces =
         {
+            "GlobalFront.Core.Catalog",
             "GlobalFront.Core.Combat",
             "GlobalFront.Core.Model",
             "GlobalFront.Core.Movement",
