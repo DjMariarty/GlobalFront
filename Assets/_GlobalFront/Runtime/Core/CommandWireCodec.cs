@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Core.Catalog;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
@@ -36,6 +37,27 @@ namespace GlobalFront.Core.Commands
         public WorldPointMm Destination;
         public FormationSpec Formation;
         public EntityId Target;
+
+        // Step 5.5.2 (v2): the blueprint-era payloads. Only the fields of the
+        // command's own type are meaningful; the rest stay default.
+
+        /// <summary>Build and Produce: the registry row the command targets.</summary>
+        public BlueprintId Blueprint;
+
+        /// <summary>Build: origin cell on the construction grid, X axis.</summary>
+        public int GridCellX;
+
+        /// <summary>Build: origin cell on the construction grid, Z axis.</summary>
+        public int GridCellZ;
+
+        /// <summary>
+        /// Build: the builder entity (0 = modular/global build). Produce and
+        /// SetRally: the factory entity (never 0).
+        /// </summary>
+        public EntityId SubjectEntity;
+
+        /// <summary>SetRally: the rally point in world millimetres.</summary>
+        public WorldPointMm RallyPoint;
     }
 
     /// <summary>
@@ -56,12 +78,23 @@ namespace GlobalFront.Core.Commands
     ///          | i32 columns | i32 spacingMm | u8 facing
     /// Attack:  u8 count | count * u64 attackers | u64 target
     /// Stop:    u8 count | count * u64 entities
+    /// Build:   u16 blueprintId | i32 gridCellX | i32 gridCellZ | u64 builder
+    ///          (builder 0 = modular/global build; Step 5.5.2)
+    /// Produce: u64 factory | u16 blueprintId (Step 5.5.2)
+    /// SetRally: u64 factory | i32 rallyX | i32 rallyZ (Step 5.5.2)
     /// </code>
     /// </summary>
     public static class CommandWireCodec
     {
-        /// <summary>Wire format version; bump on any layout change.</summary>
-        public const byte Version = 1;
+        /// <summary>
+        /// Wire format version; bump on any layout change. Version 2 (Step
+        /// 5.5.2) adds the Build/Produce/SetRally payloads; the Move/Attack/Stop
+        /// layouts are byte-for-byte those of version 1, but the header carries
+        /// the version byte, so a v1 peer and a v2 peer reject each other's
+        /// packets with <see cref="CommandWireError.BadVersion"/> rather than
+        /// mis-read the payload.
+        /// </summary>
+        public const byte Version = 2;
 
         /// <summary>Fixed size of the common command header on the wire.</summary>
         public const int HeaderSizeBytes = 15;
@@ -74,6 +107,15 @@ namespace GlobalFront.Core.Commands
 
         public static int GetStopSize(int entityCount) =>
             HeaderSizeBytes + 1 + entityCount * 8;
+
+        /// <summary>Header 15 + blueprint 2 + cells 8 + builder 8.</summary>
+        public static int GetBuildSize() => HeaderSizeBytes + 2 + 4 + 4 + 8;
+
+        /// <summary>Header 15 + factory 8 + blueprint 2.</summary>
+        public static int GetProduceSize() => HeaderSizeBytes + 8 + 2;
+
+        /// <summary>Header 15 + factory 8 + rally 8.</summary>
+        public static int GetSetRallySize() => HeaderSizeBytes + 8 + 4 + 4;
 
         public static int EncodeMove(
             byte[] buffer,
@@ -110,6 +152,51 @@ namespace GlobalFront.Core.Commands
         }
 
         /// <summary>
+        /// Step 5.5.2: build placement. <paramref name="builder"/> may be
+        /// <c>default</c> (0) — the modular/global build that needs no builder
+        /// unit on the wire.
+        /// </summary>
+        public static int EncodeBuild(
+            byte[] buffer,
+            CommandHeader header,
+            BlueprintId blueprint,
+            int gridCellX,
+            int gridCellZ,
+            EntityId builder)
+        {
+            var offset = WriteHeader(buffer, header);
+            offset = WriteUInt16(buffer, offset, blueprint.Value);
+            offset = WriteInt32(buffer, offset, gridCellX);
+            offset = WriteInt32(buffer, offset, gridCellZ);
+            return WriteUInt64(buffer, offset, builder.Value);
+        }
+
+        /// <summary>Step 5.5.2: production queue entry for a completed factory.</summary>
+        public static int EncodeProduce(
+            byte[] buffer,
+            CommandHeader header,
+            EntityId factory,
+            BlueprintId blueprint)
+        {
+            var offset = WriteHeader(buffer, header);
+            offset = WriteUInt64(buffer, offset, factory.Value);
+            return WriteUInt16(buffer, offset, blueprint.Value);
+        }
+
+        /// <summary>Step 5.5.2: rally point override for a factory.</summary>
+        public static int EncodeSetRally(
+            byte[] buffer,
+            CommandHeader header,
+            EntityId factory,
+            WorldPointMm rallyPoint)
+        {
+            var offset = WriteHeader(buffer, header);
+            offset = WriteUInt64(buffer, offset, factory.Value);
+            offset = WriteInt32(buffer, offset, rallyPoint.X);
+            return WriteInt32(buffer, offset, rallyPoint.Z);
+        }
+
+        /// <summary>
         /// Decodes and structurally validates a wire command starting at
         /// <paramref name="offset"/> for <paramref name="length"/> bytes.
         /// Structural validation only: gameplay authority (ownership, tick
@@ -142,7 +229,10 @@ namespace GlobalFront.Core.Commands
             var type = (GameCommandType)data[offset++];
             if (type != GameCommandType.Move &&
                 type != GameCommandType.Attack &&
-                type != GameCommandType.Stop)
+                type != GameCommandType.Stop &&
+                type != GameCommandType.Build &&
+                type != GameCommandType.Produce &&
+                type != GameCommandType.SetRally)
             {
                 error = CommandWireError.UnknownCommandType;
                 return false;
@@ -211,6 +301,59 @@ namespace GlobalFront.Core.Commands
                         return false;
                     }
 
+                    break;
+
+                case GameCommandType.Build:
+                    if (offset + 18 > end)
+                    {
+                        error = CommandWireError.TruncatedPayload;
+                        return false;
+                    }
+
+                    command.Blueprint = new BlueprintId(ReadUInt16(data, ref offset));
+                    command.GridCellX = ReadInt32(data, ref offset);
+                    command.GridCellZ = ReadInt32(data, ref offset);
+                    // A 0 builder is the modular/global build: legal on the wire,
+                    // ownership and geometry stay with the authoritative server.
+                    command.SubjectEntity = new EntityId(ReadUInt64(data, ref offset));
+                    break;
+
+                case GameCommandType.Produce:
+                    if (offset + 10 > end)
+                    {
+                        error = CommandWireError.TruncatedPayload;
+                        return false;
+                    }
+
+                    var factoryEntity = ReadUInt64(data, ref offset);
+                    if (factoryEntity == 0)
+                    {
+                        error = CommandWireError.InvalidEntity;
+                        return false;
+                    }
+
+                    command.SubjectEntity = new EntityId(factoryEntity);
+                    command.Blueprint = new BlueprintId(ReadUInt16(data, ref offset));
+                    break;
+
+                case GameCommandType.SetRally:
+                    if (offset + 16 > end)
+                    {
+                        error = CommandWireError.TruncatedPayload;
+                        return false;
+                    }
+
+                    var rallyFactory = ReadUInt64(data, ref offset);
+                    if (rallyFactory == 0)
+                    {
+                        error = CommandWireError.InvalidEntity;
+                        return false;
+                    }
+
+                    command.SubjectEntity = new EntityId(rallyFactory);
+                    var rallyX = ReadInt32(data, ref offset);
+                    var rallyZ = ReadInt32(data, ref offset);
+                    command.RallyPoint = new WorldPointMm(rallyX, rallyZ);
                     break;
             }
 
@@ -313,6 +456,20 @@ namespace GlobalFront.Core.Commands
 
         private static int WriteInt32(byte[] buffer, int offset, int value) =>
             WriteUInt32(buffer, offset, (uint)value);
+
+        private static int WriteUInt16(byte[] buffer, int offset, ushort value)
+        {
+            buffer[offset++] = (byte)(value & 0xFF);
+            buffer[offset++] = (byte)((value >> 8) & 0xFF);
+            return offset;
+        }
+
+        private static ushort ReadUInt16(byte[] data, ref int offset)
+        {
+            var value = (ushort)(data[offset] | (data[offset + 1] << 8));
+            offset += 2;
+            return value;
+        }
 
         private static uint ReadUInt32(byte[] data, ref int offset)
         {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using GlobalFront.Core.Catalog;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Economy;
@@ -47,7 +48,32 @@ namespace GlobalFront.Server
         /// Phase 4 (ADR-014, OD-41): The attack target is hidden in the fog of
         /// war for the commanding player at the time of order submission.
         /// </summary>
-        TargetInFogOfWar = 12
+        TargetInFogOfWar = 12,
+
+        /// <summary>
+        /// Step 5.5.2: the wire command carried a BlueprintId the blueprint
+        /// catalog does not know (or BlueprintId.None).
+        /// </summary>
+        UnknownBlueprint = 13,
+
+        /// <summary>
+        /// Step 5.5.2: the factory's production queue is full
+        /// (<see cref="ProductionRejection.QueueFull"/>).
+        /// </summary>
+        ProductionQueueFull = 14,
+
+        /// <summary>
+        /// Step 5.5.2: the target building has not finished construction
+        /// (<see cref="ProductionRejection.BuildingNotCompleted"/>).
+        /// </summary>
+        BuildingNotCompleted = 15,
+
+        /// <summary>
+        /// Step 5.5.2: construction could not start — geometry, funds, roster
+        /// or power refused the placement (<see cref="ConstructionStartRejection"/>
+        /// other than None).
+        /// </summary>
+        ConstructionRejected = 16
     }
 
     /// <summary>
@@ -65,7 +91,8 @@ namespace GlobalFront.Server
             WorldPointMm moveTarget,
             EntityId attackTarget,
             bool autoAcquireEnemies,
-            byte unitKind = UnitKinds.Unknown)
+            byte unitKind = UnitKinds.Unknown,
+            ushort blueprintId = 0)
         {
             Entity = entity;
             Owner = owner;
@@ -76,6 +103,7 @@ namespace GlobalFront.Server
             AttackTarget = attackTarget;
             AutoAcquireEnemies = autoAcquireEnemies;
             UnitKind = unitKind;
+            BlueprintId = blueprintId;
         }
 
         public EntityId Entity { get; }
@@ -102,6 +130,15 @@ namespace GlobalFront.Server
         /// </summary>
         public byte UnitKind { get; }
 
+        /// <summary>
+        /// Step 5.5.2 blueprint registry identity this entity was produced from,
+        /// 0 when the spawn path never resolved a blueprint (initial rosters,
+        /// construction frames). Carried for replication only, like
+        /// <see cref="UnitKind"/>: not deterministic state, never mixed into
+        /// <c>StateChecksum</c>.
+        /// </summary>
+        public ushort BlueprintId { get; }
+
         public bool Equals(ServerUnitSnapshot other) =>
             Entity == other.Entity &&
             Owner == other.Owner &&
@@ -111,7 +148,8 @@ namespace GlobalFront.Server
             MoveTarget == other.MoveTarget &&
             AttackTarget == other.AttackTarget &&
             AutoAcquireEnemies == other.AutoAcquireEnemies &&
-            UnitKind == other.UnitKind;
+            UnitKind == other.UnitKind &&
+            BlueprintId == other.BlueprintId;
 
         public override bool Equals(object obj) =>
             obj is ServerUnitSnapshot other && Equals(other);
@@ -282,6 +320,12 @@ namespace GlobalFront.Server
         /// </summary>
         private IReplicationFilter _visibilityFilter;
 
+        /// <summary>
+        /// Blueprint registry behind the Step 5.5.2 wire gates. Never null after
+        /// the constructor; never mutated by the simulation.
+        /// </summary>
+        private readonly IBlueprintCatalog _blueprintCatalog;
+
         /// <param name="combatRelation">
         /// Hostility and termination policy for this match, defaulting to
         /// <see cref="SkirmishCombatRelation.Instance"/> so every existing
@@ -290,9 +334,16 @@ namespace GlobalFront.Server
         /// acquire each other and a match whose survivors share a team but not
         /// an owner never terminates.
         /// </param>
-        public MatchServer(ICombatRelation combatRelation = null)
+        /// <param name="blueprintCatalog">
+        /// Blueprint registry behind the Step 5.5.2 wire gates (Build/Produce);
+        /// defaults to <see cref="DefaultBlueprintCatalog.Create"/>. The catalog
+        /// supplies build times, costs, footprints and power deltas the wire
+        /// commands do not carry.
+        /// </param>
+        public MatchServer(ICombatRelation combatRelation = null, IBlueprintCatalog blueprintCatalog = null)
         {
             _combatRelation = combatRelation ?? SkirmishCombatRelation.Instance;
+            _blueprintCatalog = blueprintCatalog ?? DefaultBlueprintCatalog.Create();
             _buildingPlacement = new BuildingPlacementRegistry();
             _powerLedger = new PowerLedger();
             _construction = new ConstructionRegistry(_buildingPlacement, powerLedger: _powerLedger);
@@ -343,6 +394,13 @@ namespace GlobalFront.Server
             /// perturb deterministic simulation state.
             /// </summary>
             public byte UnitKind;
+
+            /// <summary>
+            /// Step 5.5.2 blueprint registry identity forwarded to clients, 0 when
+            /// the spawn path never resolved a blueprint. Replication-only like
+            /// <see cref="UnitKind"/>, never read by the simulation.
+            /// </summary>
+            public ushort BlueprintId;
         }
 
         /// <summary>
@@ -520,14 +578,15 @@ namespace GlobalFront.Server
             WorldPointMm position,
             int speedMmPerTick,
             bool autoAcquire = false,
-            byte unitKind = UnitKinds.Unknown)
+            byte unitKind = UnitKinds.Unknown,
+            ushort blueprintId = 0)
         {
             ValidateUnitSpec(owner, stats, position, speedMmPerTick);
             ValidateCapacity();
 
             var entity = new EntityId(_nextEntityValue++);
             return SpawnUnitCore(
-                entity, owner, stats, position, speedMmPerTick, autoAcquire, unitKind);
+                entity, owner, stats, position, speedMmPerTick, autoAcquire, unitKind, blueprintId);
         }
 
         /// <summary>
@@ -558,7 +617,8 @@ namespace GlobalFront.Server
             WorldPointMm position,
             int speedMmPerTick,
             bool autoAcquire = false,
-            byte unitKind = UnitKinds.Unknown)
+            byte unitKind = UnitKinds.Unknown,
+            ushort blueprintId = 0)
         {
             if (!entity.IsValid)
             {
@@ -580,7 +640,7 @@ namespace GlobalFront.Server
             }
 
             return SpawnUnitCore(
-                entity, owner, stats, position, speedMmPerTick, autoAcquire, unitKind);
+                entity, owner, stats, position, speedMmPerTick, autoAcquire, unitKind, blueprintId);
         }
 
         /// <summary>
@@ -611,7 +671,8 @@ namespace GlobalFront.Server
             WorldPointMm position,
             int speedMmPerTick,
             bool autoAcquire,
-            byte unitKind)
+            byte unitKind,
+            ushort blueprintId = 0)
         {
             // Defence in depth: both public entrances already run this gate before they
             // consume an identifier, so the only way to reach a throw here is a future
@@ -625,7 +686,8 @@ namespace GlobalFront.Server
                 Position = position,
                 SpeedMmPerTick = speedMmPerTick,
                 AutoAcquireEnemies = autoAcquire,
-                UnitKind = unitKind
+                UnitKind = unitKind,
+                BlueprintId = blueprintId
             };
 
             _units.Add(entity, record);
@@ -1105,7 +1167,8 @@ namespace GlobalFront.Server
                     completed.SpawnPosition,
                     blueprint.SpeedMmPerTick,
                     blueprint.AutoAcquire,
-                    blueprint.UnitKind);
+                    blueprint.UnitKind,
+                    completed.BlueprintId);
 
                 RegisterProducedEconomyUnit(entity, completed, blueprint);
 
@@ -1401,6 +1464,207 @@ namespace GlobalFront.Server
         }
 
         /// <summary>
+        /// Wire-level build gate (Step 5.5.2, CommandWireCodec v2
+        /// <c>GameCommandType.Build</c>). Follows the TryEnqueueMove pattern:
+        /// common header validation, per-command gates, sequence commit — and
+        /// on success the construction frame actually starts through
+        /// <see cref="TryStartBuilding"/>. The wire payload names the blueprint
+        /// and the origin cell only; every numeric input (footprint, cost,
+        /// power delta, work rate, final archetype) is resolved from the
+        /// blueprint catalog server-side, so a client cannot understate a cost
+        /// or oversize a footprint.
+        ///
+        /// <paramref name="builder"/> may be 0 — the modular/global build that
+        /// assembles itself (<see cref="ConstructionMethod.Modular"/>); a
+        /// non-zero builder must be a living unit owned by the player
+        /// (<see cref="ConstructionMethod.DozerWorker"/>). The grid cell maps to
+        /// the centre of that 500 mm cell; the placement registry still applies
+        /// its own snapping, bounds and overlap checks.
+        /// </summary>
+        public MatchCommandRejection TryOrderBuild(
+            CommandHeader header,
+            EntityId builder,
+            BlueprintId blueprint,
+            int gridCellX,
+            int gridCellZ)
+        {
+            var headerRejection = ValidateCommonHeader(header, GameCommandType.Build);
+            if (headerRejection != MatchCommandRejection.None)
+            {
+                return headerRejection;
+            }
+
+            if (!_blueprintCatalog.TryGet(blueprint, out var definition))
+            {
+                return MatchCommandRejection.UnknownBlueprint;
+            }
+
+            if (builder.IsValid)
+            {
+                var builderRejection = ValidateControllable(builder, header.Player);
+                if (builderRejection != MatchCommandRejection.None)
+                {
+                    return builderRejection;
+                }
+            }
+
+            var stepMm = SnapGrid.DefaultSnapStepMm;
+            var center = new WorldPointMm(
+                gridCellX * stepMm + stepMm / 2,
+                gridCellZ * stepMm + stepMm / 2);
+            var footprint = new BuildingFootprint(
+                definition.FootprintWidthCells * stepMm,
+                definition.FootprintHeightCells * stepMm);
+            var method = builder.IsValid ? ConstructionMethod.DozerWorker : ConstructionMethod.Modular;
+            var powerDelta = definition.PowerConsumption - definition.PowerProduction;
+
+            // TryStartBuilding refuses a zero entity id, so the gate allocates
+            // one from the same high-water source as every other spawn. The
+            // capacity pre-check keeps a rejected build from consuming it.
+            if (_units.Count >= SimulationConstants.MaxUnitsPerMatch)
+            {
+                return MatchCommandRejection.ConstructionRejected;
+            }
+
+            var buildingEntityId = new EntityId(_nextEntityValue++);
+            var started = TryStartBuilding(
+                header.Player,
+                buildingEntityId.Value,
+                center,
+                footprint,
+                method,
+                ConstructionRegistry.DefaultWorkPerTick,
+                definition.Cost,
+                powerDelta,
+                false,
+                null,
+                definition.LegacyKind,
+                out _);
+
+            if (!started)
+            {
+                return MatchCommandRejection.ConstructionRejected;
+            }
+
+            CommitSequence(header.Player, header.Sequence);
+            return MatchCommandRejection.None;
+        }
+
+        /// <summary>
+        /// Wire-level production gate (Step 5.5.2, CommandWireCodec v2
+        /// <c>GameCommandType.Produce</c>). Resolves build time and cost from
+        /// the blueprint catalog — the wire carries only the blueprint id — and
+        /// enqueues through <see cref="TryEnqueueProduce"/>. The sequence commits
+        /// even on a rejection: the client saw this sequence number, so a retry
+        /// must not be answered as a replay.
+        /// </summary>
+        public MatchCommandRejection TryScheduleProduction(
+            CommandHeader header,
+            EntityId factory,
+            BlueprintId blueprint)
+        {
+            var headerRejection = ValidateCommonHeader(header, GameCommandType.Produce);
+            if (headerRejection != MatchCommandRejection.None)
+            {
+                return headerRejection;
+            }
+
+            CommitSequence(header.Player, header.Sequence);
+
+            if (!_blueprintCatalog.TryGet(blueprint, out var definition))
+            {
+                return MatchCommandRejection.UnknownBlueprint;
+            }
+
+            if (definition.BuildTimeTicks > ushort.MaxValue)
+            {
+                return MatchCommandRejection.InvalidPayload;
+            }
+
+            var produced = TryEnqueueProduce(
+                header.Player,
+                factory.Value,
+                blueprint.Value,
+                (ushort)definition.BuildTimeTicks,
+                definition.Cost,
+                out var rejection);
+
+            if (!produced)
+            {
+                return MapProductionRejection(rejection);
+            }
+
+            return MatchCommandRejection.None;
+        }
+
+        /// <summary>
+        /// Wire-level rally gate (Step 5.5.2, CommandWireCodec v2
+        /// <c>GameCommandType.SetRally</c>). The registry's bounds check and
+        /// 500 mm snapping stay authoritative
+        /// (<see cref="SetRallyRejection.OutOfBounds"/>).
+        /// </summary>
+        public MatchCommandRejection TryOrderSetRally(
+            CommandHeader header,
+            EntityId factory,
+            WorldPointMm rallyPoint)
+        {
+            var headerRejection = ValidateCommonHeader(header, GameCommandType.SetRally);
+            if (headerRejection != MatchCommandRejection.None)
+            {
+                return headerRejection;
+            }
+
+            var accepted = TrySetRallyPoint(header.Player, factory.Value, rallyPoint, out var rejection);
+            CommitSequence(header.Player, header.Sequence);
+            if (!accepted)
+            {
+                return MapSetRallyRejection(rejection);
+            }
+
+            return MatchCommandRejection.None;
+        }
+
+        /// <summary>Maps the production registry's typed rejection for the ack path.</summary>
+        private static MatchCommandRejection MapProductionRejection(ProductionRejection rejection)
+        {
+            switch (rejection)
+            {
+                case ProductionRejection.None:
+                    return MatchCommandRejection.None;
+                case ProductionRejection.BuildingNotFound:
+                    return MatchCommandRejection.UnknownEntity;
+                case ProductionRejection.InvalidOwner:
+                    return MatchCommandRejection.NotEntityOwner;
+                case ProductionRejection.BuildingNotCompleted:
+                    return MatchCommandRejection.BuildingNotCompleted;
+                case ProductionRejection.BuildingDead:
+                    return MatchCommandRejection.EntityNotAlive;
+                case ProductionRejection.QueueFull:
+                    return MatchCommandRejection.ProductionQueueFull;
+                case ProductionRejection.InvalidBlueprint:
+                default:
+                    return MatchCommandRejection.InvalidPayload;
+            }
+        }
+
+        /// <summary>Maps the rally registry's typed rejection for the ack path.</summary>
+        private static MatchCommandRejection MapSetRallyRejection(SetRallyRejection rejection)
+        {
+            switch (rejection)
+            {
+                case SetRallyRejection.None:
+                    return MatchCommandRejection.None;
+                case SetRallyRejection.BuildingNotFound:
+                    return MatchCommandRejection.UnknownEntity;
+                case SetRallyRejection.InvalidOwner:
+                    return MatchCommandRejection.NotEntityOwner;
+                case SetRallyRejection.OutOfBounds:
+                default:
+                    return MatchCommandRejection.InvalidPayload;
+            }
+        }
+
+        /// <summary>
         /// Server entry point for starting a construction (Step 5.2.4). The
         /// caller supplies the building's entity id (same convention as
         /// <see cref="SpawnUnitWithEntity"/>; the future Build command layer will
@@ -1676,7 +1940,8 @@ namespace GlobalFront.Server
                 record.MoveTarget,
                 record.Combat.AttackTarget,
                 record.AutoAcquireEnemies,
-                record.UnitKind);
+                record.UnitKind,
+                record.BlueprintId);
 
         private MatchCommandRejection ValidateCommonHeader(
             CommandHeader header,

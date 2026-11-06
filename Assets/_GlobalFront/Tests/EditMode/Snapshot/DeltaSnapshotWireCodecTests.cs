@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Core.Catalog;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Snapshot;
@@ -404,7 +405,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
 
             Assert.That(packet.Length, Is.GreaterThanOrEqualTo(HeaderSize));
             Assert.That(packet[MessageTypeOffset], Is.EqualTo(0x03));
-            Assert.That(packet[VersionOffset], Is.EqualTo(2));
+            Assert.That(packet[VersionOffset], Is.EqualTo(3));
             Assert.That(BitConverter.ToUInt64(packet, TickOffset), Is.EqualTo(0x1112131415161718UL));
             Assert.That(BitConverter.ToUInt64(packet, BaseTickOffset), Is.EqualTo(0x0102030405060708UL));
             Assert.That(packet[PartIndexOffset], Is.Zero);
@@ -480,7 +481,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
 
             var max = DeltaSnapshotWireCodec.GetMaxEncodedSize(adds.Length, updates.Length, removes.Length);
             Assert.That(max, Is.GreaterThanOrEqualTo(size), "the worst-case bound must cover the exact size");
-            Assert.That(max, Is.EqualTo(HeaderSize + (3 * 40) + (2 * 44) + (2 * 11)));
+            Assert.That(max, Is.EqualTo(HeaderSize + (3 * 42) + (2 * 44) + (2 * 11)));
         }
 
         [Test]
@@ -496,8 +497,8 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         {
             Assert.That(
                 DeltaSnapshotProtocol.AddRecordSizeBytes,
-                Is.EqualTo(SnapshotProtocol.SnapshotSizeBytes + 1),
-                "version 2 appends exactly the OD-29 archetype byte to the v1 unit record");
+                Is.EqualTo(SnapshotProtocol.SnapshotSizeBytes + 3),
+                "version 3 appends the OD-29 archetype byte and the Step 5.5.2 blueprint id to the v1 unit record");
 
             var unit = new ServerUnitSnapshot(
                 new EntityId(7),
@@ -516,7 +517,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
             var add = new DeltaAddRecord(
                 unit.Entity, unit.Owner, unit.Position, unit.CurrentHealth,
                 unit.HasMoveTarget, unit.MoveTarget, unit.AttackTarget,
-                unit.AutoAcquireEnemies, UnitKinds.Tank);
+                unit.AutoAcquireEnemies, UnitKinds.Tank, new BlueprintId(0x0201));
             var deltaPacket = EncodeOk(new[] { add }, Array.Empty<DeltaUpdateRecord>(), Array.Empty<DeltaRemoveRecord>());
 
             Assert.That(
@@ -528,6 +529,10 @@ namespace GlobalFront.Tests.EditMode.Snapshot
                 deltaPacket[HeaderSize + SnapshotProtocol.SnapshotSizeBytes],
                 Is.EqualTo(UnitKinds.Tank),
                 "the archetype travels in the byte right after the v1 record");
+            Assert.That(
+                BitConverter.ToUInt16(deltaPacket, HeaderSize + SnapshotProtocol.SnapshotSizeBytes + 1),
+                Is.EqualTo(0x0201),
+                "the blueprint id travels as a little-endian u16 right after the archetype byte");
         }
 
         [Test]
@@ -558,6 +563,58 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         }
 
         [Test]
+        public void DeltaSnapshotWireCodec_Version3_RoundtripsBlueprintId()
+        {
+            var adds = new[]
+            {
+                new DeltaAddRecord(
+                    new EntityId(1), new PlayerId(1), new WorldPointMm(0, 0), 100,
+                    false, new WorldPointMm(0, 0), new EntityId(0), false,
+                    UnitKinds.Infantry, new BlueprintId(400)),
+                new DeltaAddRecord(
+                    new EntityId(2), new PlayerId(2), new WorldPointMm(1000, 0), 100,
+                    false, new WorldPointMm(0, 0), new EntityId(0), false,
+                    UnitKinds.Tank, new BlueprintId(0xFFFF)),
+            };
+
+            var packet = EncodeOk(adds, Array.Empty<DeltaUpdateRecord>(), Array.Empty<DeltaRemoveRecord>());
+            Assert.That(
+                packet.Length,
+                Is.EqualTo(HeaderSize + (2 * DeltaSnapshotProtocol.AddRecordSizeBytes)),
+                "each ADD record carries the full 42-byte v3 layout");
+
+            DecodeOk(packet, out _, out var decoded, out _, out _);
+
+            Assert.That(decoded.Length, Is.EqualTo(2));
+            Assert.That(decoded[0].Blueprint, Is.EqualTo(new BlueprintId(400)),
+                "the Russia infantry row rides the ADD record");
+            Assert.That(decoded[1].Blueprint, Is.EqualTo(new BlueprintId(0xFFFF)),
+                "the full u16 range must survive the wire");
+
+            // default records and kind-less ADDs stay blueprint-less: pooled
+            // records and pre-5.5.2 producers must not invent a registry row.
+            Assert.That(default(DeltaAddRecord).Blueprint, Is.EqualTo(BlueprintId.None));
+            Assert.That(MakeAdd(9).Blueprint, Is.EqualTo(BlueprintId.None));
+        }
+
+        [Test]
+        public void DeltaSnapshotWireCodec_RejectsVersion2AndVersion1Packets()
+        {
+            // A v1 or v2 ADD run is 2 or 3 bytes per record short of the v3
+            // layout: refusing the whole packet outright is the only safe
+            // answer, never a partial parse.
+            foreach (var version in new uint[] { 1u, 2u })
+            {
+                var packet = BuildReferencePacket();
+                PatchUInt32(packet, VersionOffset, version);
+
+                Assert.That(Decode(packet, out _, out _, out _, out _),
+                    Is.EqualTo(DeltaCodecResult.UnsupportedVersion),
+                    $"a v{version} snapshot must be refused, not re-based silently");
+            }
+        }
+
+        [Test]
         public void AddRecord_UnknownIsTheDefaultAndATruncatedV1RunIsRefused()
         {
             var legacy = new DeltaAddRecord(
@@ -572,8 +629,9 @@ namespace GlobalFront.Tests.EditMode.Snapshot
             var packet = EncodeOk(
                 new[] { legacy }, Array.Empty<DeltaUpdateRecord>(), Array.Empty<DeltaRemoveRecord>());
 
-            // Drop the appended byte: the run is now v1-sized and must fail as
-            // truncated rather than decode into a guessed archetype.
+            // Drop one appended byte: the run no longer matches the declared
+            // record size and must fail as truncated rather than decode into a
+            // guessed archetype or blueprint.
             var shortened = new byte[packet.Length - 1];
             Array.Copy(packet, shortened, shortened.Length);
             Assert.That(
@@ -1237,16 +1295,17 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         [Test]
         public void Encode_AcceptsPayloadExactlyAtTheBudget()
         {
-            // 204 ADD records (8160 bytes) + 16 REMOVE records with a 1-byte id
-            // delta (2 bytes each) = 8192 exactly. The counts follow the 40-byte
-            // OD-29 ADD record: with 39 bytes the same budget landed on 210 adds.
-            var adds = new DeltaAddRecord[204];
+            // 194 ADD records (8148 bytes) + 22 REMOVE records with a 1-byte id
+            // delta (2 bytes each) = 8192 exactly. The counts follow the 42-byte
+            // Step 5.5.2 ADD record: with 40 bytes the same budget landed on
+            // 204 adds.
+            var adds = new DeltaAddRecord[194];
             for (var index = 0; index < adds.Length; index++)
             {
                 adds[index] = MakeAdd((ulong)(index + 1));
             }
 
-            var removes = new DeltaRemoveRecord[16];
+            var removes = new DeltaRemoveRecord[22];
             for (var index = 0; index < removes.Length; index++)
             {
                 removes[index] = MakeRemove((ulong)(index + 1));
@@ -1269,7 +1328,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
                 Array.Empty<DeltaUpdateRecord>(), removeSink);
 
             Assert.That(decode, Is.EqualTo(DeltaCodecResult.Ok));
-            Assert.That(decodedHeader.AddCount, Is.EqualTo(204));
+            Assert.That(decodedHeader.AddCount, Is.EqualTo(194));
             Assert.That(addSink, Is.EqualTo(adds));
             Assert.That(removeSink, Is.EqualTo(removes));
         }
@@ -1277,8 +1336,9 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         [Test]
         public void Encode_RejectsPayloadAboveTheBudget()
         {
-            // 211 ADD records = 8440 payload bytes under the 40-byte OD-29 record,
-            // comfortably above the 8 KB budget (205 records would already exceed it).
+            // 211 ADD records = 8862 payload bytes under the 42-byte Step 5.5.2
+            // record, comfortably above the 8 KB budget (196 records would
+            // already exceed it).
             var adds = new DeltaAddRecord[211];
             for (var index = 0; index < adds.Length; index++)
             {
@@ -1412,9 +1472,10 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         [Test]
         public void Decode_RejectsUnsupportedProtocolVersion()
         {
-            // 1u is the pre-OD-29 layout: a v1 peer and a v2 peer share no record
-            // size, so the pair must refuse each other outright.
-            foreach (var version in new uint[] { 0u, 1u, uint.MaxValue })
+            // 1u is the pre-OD-29 layout and 2u the pre-5.5.2 layout: neither
+            // peer shares the v3 record size, so the pair must refuse each
+            // other outright.
+            foreach (var version in new uint[] { 0u, 1u, 2u, uint.MaxValue })
             {
                 var packet = BuildReferencePacket();
                 PatchUInt32(packet, VersionOffset, version);
@@ -1566,7 +1627,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
                 ("wrong message type",
                     new DeltaSnapshotHeader(0x01, version, 120, 100, 0, 1, 0, 0, 1, 0, 0), 1),
                 ("wrong delta protocol version",
-                    new DeltaSnapshotHeader(0x03, 1u, 120, 100, 0, 1, 0, 0, 1, 0, 0), 1),
+                    new DeltaSnapshotHeader(0x03, 2u, 120, 100, 0, 1, 0, 0, 1, 0, 0), 1),
                 ("zero part count",
                     new DeltaSnapshotHeader(0x03, version, 120, 100, 0, 0, 0, 0, 1, 0, 0), 1),
                 ("part index outside the part count",

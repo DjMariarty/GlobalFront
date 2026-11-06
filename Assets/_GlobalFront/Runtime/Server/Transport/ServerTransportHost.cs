@@ -617,6 +617,19 @@ namespace GlobalFront.Server.Transport
                 case GameCommandType.Stop:
                     result = _server.TryEnqueueStop(wire.Header, wire.Entities);
                     break;
+                case GameCommandType.Build:
+                    result = _server.TryOrderBuild(
+                        wire.Header, wire.SubjectEntity, wire.Blueprint,
+                        wire.GridCellX, wire.GridCellZ);
+                    break;
+                case GameCommandType.Produce:
+                    result = _server.TryScheduleProduction(
+                        wire.Header, wire.SubjectEntity, wire.Blueprint);
+                    break;
+                case GameCommandType.SetRally:
+                    result = _server.TryOrderSetRally(
+                        wire.Header, wire.SubjectEntity, wire.RallyPoint);
+                    break;
                 default:
                     _carrier.Metrics.DroppedMalformed++;
                     return;

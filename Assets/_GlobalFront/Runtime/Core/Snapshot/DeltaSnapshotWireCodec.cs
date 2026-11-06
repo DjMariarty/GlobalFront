@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Core.Catalog;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 
@@ -70,11 +71,11 @@ namespace GlobalFront.Core.Snapshot
     ///                                 (OD-14 apply-gating reference)
     /// Sections, in this order: ADD | UPDATE | REMOVE
     ///
-    /// ADD record, fixed 40 bytes: the 39-byte v1 unit record with the OD-29
-    /// archetype byte appended:
+    /// ADD record, fixed 42 bytes: the 39-byte v1 unit record with the OD-29
+    /// archetype byte appended, then the Step 5.5.2 blueprint id appended:
     ///   u64 Entity | u8 Owner | i32 PosX | i32 PosZ | i32 Health |
     ///   u8 HasMoveTarget | i32 MoveTargetX | i32 MoveTargetZ |
-    ///   u64 AttackTarget | u8 AutoAcquire | u8 UnitKind
+    ///   u64 AttackTarget | u8 AutoAcquire | u8 UnitKind | u16 BlueprintId
     ///
     /// UPDATE record, variable:
     ///   varint-zigzag EntityIdDelta   delta from the previous record of the
@@ -382,8 +383,9 @@ namespace GlobalFront.Core.Snapshot
         }
 
         /// <summary>
-        /// Encodes a run of ADD records without a packet header (40 bytes each,
-        /// the v1 unit record plus the OD-29 archetype byte), which is the record
+        /// Encodes a run of ADD records without a packet header (42 bytes each,
+        /// the v1 unit record plus the OD-29 archetype byte plus the Step 5.5.2
+        /// blueprint id), which is the record
         /// framing of the keyframe slice codec (step 2.6.4): a baseline streams as
         /// one slice header followed by fixed-size record runs, so no second
         /// decoder exists beside the delta one.
@@ -732,6 +734,10 @@ namespace GlobalFront.Core.Snapshot
                 // OD-29: appended last so the leading 39 bytes remain exactly the
                 // Snapshot Protocol v1 unit record.
                 writer.WriteUInt8(record.UnitKind);
+
+                // Step 5.5.2: appended after the OD-29 byte so the leading 40 bytes
+                // remain exactly the version 2 ADD record. Little-endian u16.
+                writer.WriteUInt16(record.Blueprint.Value);
             }
         }
 
@@ -850,6 +856,14 @@ namespace GlobalFront.Core.Snapshot
                     return DeltaCodecResult.BufferTooSmall;
                 }
 
+                // Version 3 only: a v1 or v2 run is one to three bytes per record
+                // short here and lands in BufferTooSmall rather than inventing a
+                // blueprint row.
+                if (!reader.TryReadUInt16(out var blueprintValue))
+                {
+                    return DeltaCodecResult.BufferTooSmall;
+                }
+
                 adds[index] = new DeltaAddRecord(
                     new EntityId(entityValue),
                     new PlayerId(owner),
@@ -859,7 +873,8 @@ namespace GlobalFront.Core.Snapshot
                     new WorldPointMm(moveTargetX, moveTargetZ),
                     new EntityId(attackTargetValue),
                     autoAcquire,
-                    unitKind);
+                    unitKind,
+                    new BlueprintId(blueprintValue));
             }
 
             return DeltaCodecResult.Ok;

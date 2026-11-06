@@ -76,7 +76,14 @@ namespace GlobalFront.Client.Replication
     {
         public const int DefaultMaxKeyframeUnits = ClientReplicationWorld.DefaultCapacity;
         public const int DefaultMaxParts = 256;
-        public const int DefaultMaxSlicePayloadBytes = 16384;
+
+        /// <summary>
+        /// Mirrors the server's slice budget
+        /// (<see cref="ServerReplicationEmitterConfig.DefaultMaxSlicePayloadBytes"/>):
+        /// both sides scale with the Step 5.5.2 42-byte ADD record so the
+        /// 400-unit baseline stays a single part.
+        /// </summary>
+        public const int DefaultMaxSlicePayloadBytes = 17408;
 
         // Must match the server's merged-delta capacities: a legal establishing
         // delta can declare up to ServerReplicationEmitterConfig.DefaultAddCapacity

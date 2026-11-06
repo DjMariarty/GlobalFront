@@ -425,7 +425,11 @@ namespace GlobalFront.Server.Replication
                 // place: folding an update into an ADD must carry it over, or the
                 // merged ADD would hand the client an Unknown kind for a unit whose
                 // kind the original ADD already stated.
-                add.UnitKind);
+                add.UnitKind,
+
+                // Same for the Step 5.5.2 blueprint id: immutable, no dirty bit,
+                // carried over verbatim.
+                add.Blueprint);
         }
 
         /// <summary>

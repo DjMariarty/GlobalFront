@@ -1,3 +1,4 @@
+using GlobalFront.Core.Catalog;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
@@ -75,6 +76,158 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void CommandWireCodec_BuildCommand_EncodesAndDecodesCorrectly()
+        {
+            // The Step 5.5.2 layout is fixed: 15 header + 2 blueprint
+            // + 4 + 4 cells + 8 builder = 33 bytes.
+            Assert.That(CommandWireCodec.GetBuildSize(), Is.EqualTo(33));
+
+            var buffer = new byte[CommandWireCodec.GetBuildSize()];
+            var length = CommandWireCodec.EncodeBuild(
+                buffer,
+                Header(GameCommandType.Build),
+                new BlueprintId(101),
+                gridCellX: 12,
+                gridCellZ: -7,
+                new EntityId(55));
+
+            Assert.That(length, Is.EqualTo(33));
+            Assert.That(
+                CommandWireCodec.TryDecode(buffer, 0, length, out var wire, out var error),
+                Is.True, error.ToString());
+            Assert.That(wire.Header.Type, Is.EqualTo(GameCommandType.Build));
+            Assert.That(wire.Blueprint, Is.EqualTo(new BlueprintId(101)));
+            Assert.That(wire.GridCellX, Is.EqualTo(12));
+            Assert.That(wire.GridCellZ, Is.EqualTo(-7));
+            Assert.That(wire.SubjectEntity, Is.EqualTo(new EntityId(55)));
+
+            // Builder 0 is the modular/global build: legal on the wire, and the
+            // decoder must not confuse it with the list-based InvalidEntity rule.
+            var modular = new byte[CommandWireCodec.GetBuildSize()];
+            var modularLength = CommandWireCodec.EncodeBuild(
+                modular, Header(GameCommandType.Build), new BlueprintId(110), 3, 4, default);
+            Assert.That(
+                CommandWireCodec.TryDecode(modular, 0, modularLength, out var modularWire, out _),
+                Is.True);
+            Assert.That(modularWire.SubjectEntity, Is.EqualTo(default(EntityId)));
+            Assert.That(modularWire.Blueprint, Is.EqualTo(new BlueprintId(110)));
+        }
+
+        [Test]
+        public void CommandWireCodec_ProduceCommand_EncodesAndDecodesCorrectly()
+        {
+            // 15 header + 8 factory + 2 blueprint = 25 bytes.
+            Assert.That(CommandWireCodec.GetProduceSize(), Is.EqualTo(25));
+
+            var buffer = new byte[CommandWireCodec.GetProduceSize()];
+            var length = CommandWireCodec.EncodeProduce(
+                buffer, Header(GameCommandType.Produce), new EntityId(77), new BlueprintId(200));
+
+            Assert.That(length, Is.EqualTo(25));
+            Assert.That(
+                CommandWireCodec.TryDecode(buffer, 0, length, out var wire, out var error),
+                Is.True, error.ToString());
+            Assert.That(wire.Header.Type, Is.EqualTo(GameCommandType.Produce));
+            Assert.That(wire.SubjectEntity, Is.EqualTo(new EntityId(77)));
+            Assert.That(wire.Blueprint, Is.EqualTo(new BlueprintId(200)));
+        }
+
+        [Test]
+        public void CommandWireCodec_SetRallyCommand_EncodesAndDecodesCorrectly()
+        {
+            // 15 header + 8 factory + 4 + 4 rally = 31 bytes.
+            Assert.That(CommandWireCodec.GetSetRallySize(), Is.EqualTo(31));
+
+            var buffer = new byte[CommandWireCodec.GetSetRallySize()];
+            var length = CommandWireCodec.EncodeSetRally(
+                buffer, Header(GameCommandType.SetRally), new EntityId(31), new WorldPointMm(-12000, 4500));
+
+            Assert.That(length, Is.EqualTo(31));
+            Assert.That(
+                CommandWireCodec.TryDecode(buffer, 0, length, out var wire, out var error),
+                Is.True, error.ToString());
+            Assert.That(wire.Header.Type, Is.EqualTo(GameCommandType.SetRally));
+            Assert.That(wire.SubjectEntity, Is.EqualTo(new EntityId(31)));
+            Assert.That(wire.RallyPoint, Is.EqualTo(new WorldPointMm(-12000, 4500)));
+        }
+
+        [Test]
+        public void CommandWireCodec_RejectsVersion1Command_ReturnsBadVersion()
+        {
+            // A v1 peer's packets start with the byte 0x01; the v2 codec must
+            // refuse them outright instead of reading a v2 payload behind a v1
+            // header.
+            var buffer = new byte[CommandWireCodec.GetMoveSize(1)];
+            var length = CommandWireCodec.EncodeMove(
+                buffer,
+                Header(GameCommandType.Move),
+                new[] { new EntityId(1) },
+                new WorldPointMm(0, 0),
+                new FormationSpec(0, 2000, CardinalFacing.North));
+            buffer[0] = 0x01;
+
+            Assert.That(
+                CommandWireCodec.TryDecode(buffer, 0, length, out _, out var error), Is.False);
+            Assert.That(error, Is.EqualTo(CommandWireError.BadVersion));
+        }
+
+        [Test]
+        public void CommandWireCodec_TruncatedNewCommands_ReturnsTruncatedPayload()
+        {
+            var build = new byte[CommandWireCodec.GetBuildSize()];
+            var buildLength = CommandWireCodec.EncodeBuild(
+                build, Header(GameCommandType.Build), new BlueprintId(101), 1, 2, new EntityId(3));
+            Assert.That(
+                CommandWireCodec.TryDecode(build, 0, buildLength - 1, out _, out var buildError),
+                Is.False);
+            Assert.That(buildError, Is.EqualTo(CommandWireError.TruncatedPayload));
+
+            var produce = new byte[CommandWireCodec.GetProduceSize()];
+            var produceLength = CommandWireCodec.EncodeProduce(
+                produce, Header(GameCommandType.Produce), new EntityId(3), new BlueprintId(200));
+            Assert.That(
+                CommandWireCodec.TryDecode(produce, 0, produceLength - 1, out _, out var produceError),
+                Is.False);
+            Assert.That(produceError, Is.EqualTo(CommandWireError.TruncatedPayload));
+
+            var rally = new byte[CommandWireCodec.GetSetRallySize()];
+            var rallyLength = CommandWireCodec.EncodeSetRally(
+                rally, Header(GameCommandType.SetRally), new EntityId(3), new WorldPointMm(0, 0));
+            Assert.That(
+                CommandWireCodec.TryDecode(rally, 0, rallyLength - 1, out _, out var rallyError),
+                Is.False);
+            Assert.That(rallyError, Is.EqualTo(CommandWireError.TruncatedPayload));
+        }
+
+        [Test]
+        public void CommandWireCodec_TrailingBytesInNewCommands_ReturnsTrailingBytes()
+        {
+            var build = new byte[CommandWireCodec.GetBuildSize() + 2];
+            var buildLength = CommandWireCodec.EncodeBuild(
+                build, Header(GameCommandType.Build), new BlueprintId(101), 1, 2, new EntityId(3));
+            Assert.That(
+                CommandWireCodec.TryDecode(build, 0, buildLength + 2, out _, out var buildError),
+                Is.False);
+            Assert.That(buildError, Is.EqualTo(CommandWireError.TrailingBytes));
+
+            var produce = new byte[CommandWireCodec.GetProduceSize() + 2];
+            var produceLength = CommandWireCodec.EncodeProduce(
+                produce, Header(GameCommandType.Produce), new EntityId(3), new BlueprintId(200));
+            Assert.That(
+                CommandWireCodec.TryDecode(produce, 0, produceLength + 2, out _, out var produceError),
+                Is.False);
+            Assert.That(produceError, Is.EqualTo(CommandWireError.TrailingBytes));
+
+            var rally = new byte[CommandWireCodec.GetSetRallySize() + 2];
+            var rallyLength = CommandWireCodec.EncodeSetRally(
+                rally, Header(GameCommandType.SetRally), new EntityId(3), new WorldPointMm(0, 0));
+            Assert.That(
+                CommandWireCodec.TryDecode(rally, 0, rallyLength + 2, out _, out var rallyError),
+                Is.False);
+            Assert.That(rallyError, Is.EqualTo(CommandWireError.TrailingBytes));
+        }
+
+        [Test]
         public void GoldenBytes_MoveLayout_IsStable()
         {
             var buffer = new byte[CommandWireCodec.GetMoveSize(1)];
@@ -87,7 +240,7 @@ namespace GlobalFront.Tests.EditMode
 
             var expected = new byte[]
             {
-                0x01,                               // version
+                0x02,                               // version (v2, Step 5.5.2)
                 0x01,                               // Move
                 0x02,                               // PlayerId 2
                 0x05, 0x00, 0x00, 0x00,             // sequence 5

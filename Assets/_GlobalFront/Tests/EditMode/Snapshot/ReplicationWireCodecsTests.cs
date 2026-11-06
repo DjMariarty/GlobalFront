@@ -45,7 +45,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
         {
             Assert.That(KeyframeSliceCodec.HeaderSizeBytes, Is.EqualTo(24));
             Assert.That(KeyframeSliceCodec.GetSliceSize(0), Is.EqualTo(24));
-            Assert.That(KeyframeSliceCodec.GetSliceSize(3), Is.EqualTo(24 + 3 * 40));
+            Assert.That(KeyframeSliceCodec.GetSliceSize(3), Is.EqualTo(24 + 3 * 42));
             Assert.That(KeyframeSliceCodec.GetSliceSize(-1), Is.EqualTo(-1));
             Assert.That(
                 KeyframeSliceCodec.GetSliceSize(ushort.MaxValue + 1), Is.EqualTo(-1));
@@ -58,18 +58,18 @@ namespace GlobalFront.Tests.EditMode.Snapshot
                 KeyframeSliceCodec.MaxRecordsForSliceBudget(KeyframeSliceCodec.HeaderSizeBytes),
                 Is.EqualTo(0));
             Assert.That(
-                KeyframeSliceCodec.MaxRecordsForSliceBudget(KeyframeSliceCodec.HeaderSizeBytes + 38),
+                KeyframeSliceCodec.MaxRecordsForSliceBudget(KeyframeSliceCodec.HeaderSizeBytes + 40),
                 Is.EqualTo(0));
             Assert.That(
-                KeyframeSliceCodec.MaxRecordsForSliceBudget(KeyframeSliceCodec.HeaderSizeBytes + 39),
+                KeyframeSliceCodec.MaxRecordsForSliceBudget(KeyframeSliceCodec.HeaderSizeBytes + 41),
                 Is.EqualTo(0),
-                "OD-29 grew the framed record to 40 bytes: a v1-sized budget no longer fits one record");
+                "Step 5.5.2 grew the framed record to 42 bytes: a v2-sized budget no longer fits one record");
             Assert.That(
-                KeyframeSliceCodec.MaxRecordsForSliceBudget(KeyframeSliceCodec.HeaderSizeBytes + 40),
+                KeyframeSliceCodec.MaxRecordsForSliceBudget(KeyframeSliceCodec.HeaderSizeBytes + 42),
                 Is.EqualTo(1));
             Assert.That(
                 KeyframeSliceCodec.MaxRecordsForSliceBudget(16384),
-                Is.EqualTo((16384 - 24) / 40));
+                Is.EqualTo((16384 - 24) / 42));
         }
 
         // ------------------------------------------------------------------
@@ -115,7 +115,7 @@ namespace GlobalFront.Tests.EditMode.Snapshot
             // A resync rebuilds the client world from keyframe ADD records only, so
             // a kind that survives deltas but not the slice path would leave every
             // re-attached client without meshes or health denominators.
-            Assert.That(KeyframeSliceCodec.SliceVersion, Is.EqualTo((byte)2),
+            Assert.That(KeyframeSliceCodec.SliceVersion, Is.EqualTo((byte)3),
                 "the framing version moved with the record it frames");
 
             var adds = new[]

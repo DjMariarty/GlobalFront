@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Core.Catalog;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 
@@ -221,7 +222,8 @@ namespace GlobalFront.Core.Snapshot
     /// <summary>
     /// Canonical ADD record: a unit that appeared in the authoritative world.
     /// Its first <c>SnapshotProtocol.SnapshotSizeBytes</c> bytes are the Snapshot
-    /// Protocol v1 unit record and version 2 appends <c>UnitKind</c>
+    /// Protocol v1 unit record, version 2 appends <c>UnitKind</c> and version 3
+    /// appends <c>BlueprintId</c>
     /// (<see cref="DeltaSnapshotProtocol.AddRecordSizeBytes"/>), so a keyframe and
     /// a delta ADD section are still produced by the same writer.
     /// </summary>
@@ -236,7 +238,8 @@ namespace GlobalFront.Core.Snapshot
             WorldPointMm moveTarget,
             EntityId attackTarget,
             bool autoAcquireEnemies,
-            byte unitKind = UnitKinds.Unknown)
+            byte unitKind = UnitKinds.Unknown,
+            BlueprintId blueprint = default)
         {
             Entity = entity;
             Owner = owner;
@@ -247,6 +250,7 @@ namespace GlobalFront.Core.Snapshot
             AttackTarget = attackTarget;
             AutoAcquireEnemies = autoAcquireEnemies;
             UnitKind = unitKind;
+            Blueprint = blueprint;
         }
 
         /// <summary>Entity identity; strictly ascending inside the ADD section.</summary>
@@ -276,6 +280,18 @@ namespace GlobalFront.Core.Snapshot
         /// </summary>
         public byte UnitKind { get; }
 
+        /// <summary>
+        /// Step 5.5.2 registry identity (<see cref="BlueprintId"/>) of the
+        /// blueprint this entity was produced from, resolved server-side against
+        /// the blueprint catalog. Rides the wire exactly like
+        /// <see cref="UnitKind"/>: immutable for the life of the entity, ADD and
+        /// keyframes only, no <see cref="UnitDirtyMask"/> bit, and excluded from
+        /// the state checksum. <see cref="BlueprintId.None"/> means the entity
+        /// has no registry row yet (structures placed before the catalog wiring,
+        /// or spawn paths that never resolved a blueprint).
+        /// </summary>
+        public BlueprintId Blueprint { get; }
+
         public bool Equals(DeltaAddRecord other) =>
             Entity == other.Entity &&
             Owner == other.Owner &&
@@ -285,7 +301,8 @@ namespace GlobalFront.Core.Snapshot
             MoveTarget == other.MoveTarget &&
             AttackTarget == other.AttackTarget &&
             AutoAcquireEnemies == other.AutoAcquireEnemies &&
-            UnitKind == other.UnitKind;
+            UnitKind == other.UnitKind &&
+            Blueprint == other.Blueprint;
 
         public override bool Equals(object obj) =>
             obj is DeltaAddRecord other && Equals(other);
@@ -302,13 +319,14 @@ namespace GlobalFront.Core.Snapshot
             hash.Add(AttackTarget);
             hash.Add(AutoAcquireEnemies);
             hash.Add(UnitKind);
+            hash.Add(Blueprint);
             return hash.ToHashCode();
         }
 
         public override string ToString() =>
             $"Add(entity={Entity}, owner={Owner}, pos={Position}, hp={CurrentHealth}, " +
             $"moveTarget={(HasMoveTarget ? MoveTarget.ToString() : "none")}, attackTarget={AttackTarget}, " +
-            $"autoAcquire={AutoAcquireEnemies}, kind={UnitKind})";
+            $"autoAcquire={AutoAcquireEnemies}, kind={UnitKind}, blueprint={Blueprint})";
 
         public static bool operator ==(DeltaAddRecord left, DeltaAddRecord right) => left.Equals(right);
 

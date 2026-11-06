@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Core.Catalog;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Snapshot;
@@ -258,8 +259,10 @@ namespace GlobalFront.Server.Replication
 
         /// <summary>
         /// Full state of a newly visible entity as an ADD record. Values are passed
-        /// through unchanged, including the OD-29 archetype: the ADD section is the
-        /// only place a client can learn a unit's kind, so dropping it here would
+        /// through unchanged, including the OD-29 archetype and the Step 5.5.2
+        /// blueprint id: the ADD section is the
+        /// only place a client can learn a unit's kind and registry row, so dropping
+        /// either here would
         /// silently degrade every presentation slot that later depends on it.
         /// </summary>
         public static DeltaAddRecord ToAddRecord(in ServerUnitSnapshot snapshot)
@@ -273,7 +276,8 @@ namespace GlobalFront.Server.Replication
                 snapshot.MoveTarget,
                 snapshot.AttackTarget,
                 snapshot.AutoAcquireEnemies,
-                snapshot.UnitKind);
+                snapshot.UnitKind,
+                new BlueprintId(snapshot.BlueprintId));
         }
 
         /// <summary>

@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Core.Catalog;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Snapshot;
@@ -27,7 +28,8 @@ namespace GlobalFront.Client.Replication
             int moveTargetZ,
             EntityId attackTarget,
             bool autoAcquire,
-            byte unitKind = UnitKinds.Unknown)
+            byte unitKind = UnitKinds.Unknown,
+            BlueprintId blueprint = default)
         {
             Entity = entity;
             Owner = owner;
@@ -40,6 +42,7 @@ namespace GlobalFront.Client.Replication
             AttackTarget = attackTarget;
             AutoAcquire = autoAcquire;
             UnitKind = unitKind;
+            Blueprint = blueprint;
         }
 
         /// <summary>Builds the client state of a freshly spawned unit.</summary>
@@ -56,7 +59,8 @@ namespace GlobalFront.Client.Replication
                 add.MoveTarget.Z,
                 add.AttackTarget,
                 add.AutoAcquireEnemies,
-                add.UnitKind);
+                add.UnitKind,
+                add.Blueprint);
         }
 
         public EntityId Entity { get; }
@@ -92,6 +96,15 @@ namespace GlobalFront.Client.Replication
         /// </summary>
         public byte UnitKind { get; }
 
+        /// <summary>
+        /// Step 5.5.2 blueprint registry identity as it arrived on the ADD or
+        /// keyframe record, unchanged for the life of the entity;
+        /// <see cref="BlueprintId.None"/> when the server never resolved a row.
+        /// Presentation uses it for the blueprint-keyed catalog lookups; it is
+        /// never mixed into the state checksum, like <see cref="UnitKind"/>.
+        /// </summary>
+        public BlueprintId Blueprint { get; }
+
         public WorldPointMm Position => new WorldPointMm(PosX, PosZ);
 
         public WorldPointMm MoveTarget => new WorldPointMm(MoveTargetX, MoveTargetZ);
@@ -110,7 +123,8 @@ namespace GlobalFront.Client.Replication
             MoveTargetZ == other.MoveTargetZ &&
             AttackTarget == other.AttackTarget &&
             AutoAcquire == other.AutoAcquire &&
-            UnitKind == other.UnitKind;
+            UnitKind == other.UnitKind &&
+            Blueprint == other.Blueprint;
 
         public override bool Equals(object obj) => obj is ClientUnitState other && Equals(other);
 
@@ -128,13 +142,14 @@ namespace GlobalFront.Client.Replication
             hash.Add(AttackTarget);
             hash.Add(AutoAcquire);
             hash.Add(UnitKind);
+            hash.Add(Blueprint);
             return hash.ToHashCode();
         }
 
         public override string ToString() =>
             $"ClientUnit(entity={Entity}, owner={Owner}, pos={Position}, hp={Health}, " +
             $"moveTarget={(HasMoveTarget ? MoveTarget.ToString() : "none")}, attackTarget={AttackTarget}, " +
-            $"autoAcquire={AutoAcquire}, kind={UnitKind})";
+            $"autoAcquire={AutoAcquire}, kind={UnitKind}, blueprint={Blueprint})";
 
         public static bool operator ==(ClientUnitState left, ClientUnitState right) => left.Equals(right);
 
@@ -638,7 +653,11 @@ namespace GlobalFront.Client.Replication
                 // No dirty bit for the archetype: an UPDATE that dropped this line
                 // would silently turn a known unit into UnitKinds.Unknown and strip
                 // the client's mesh and health denominator on the next packet.
-                existing.UnitKind);
+                existing.UnitKind,
+
+                // Same for the Step 5.5.2 blueprint id: immutable, no dirty bit,
+                // carried over verbatim.
+                existing.Blueprint);
         }
 
         private static bool HasFlag(byte mask, UnitDirtyMask flag) => (mask & (byte)flag) == (byte)flag;

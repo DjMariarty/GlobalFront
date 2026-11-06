@@ -22,11 +22,22 @@ namespace GlobalFront.Server.Replication
         /// <summary>Per-tick pacing refill, ~40 KB/s (40,960 B/s) at the 20 Hz tick (2048 B × 20 Hz).</summary>
         public const int DefaultPacingRefillBytesPerTick = 2048;
 
-        /// <summary>Per-tick burst cap, R&amp;D §3.4 (≤ 16 KB per replication tick).</summary>
-        public const int DefaultPacingBurstCapBytes = 16384;
+        /// <summary>
+        /// Per-tick burst cap, R&amp;D §3.4 (≤ 16 KB per replication tick) scaled
+        /// with the Step 5.5.2 42-byte ADD record so a full 400-unit baseline
+        /// still leaves the gate in one tick (a part must fit the burst, or the
+        /// pacing window can strand its tail forever).
+        /// </summary>
+        public const int DefaultPacingBurstCapBytes = 17408;
 
-        /// <summary>Keyframe slice payload budget; R&amp;D §11 recommends 8–16 KB.</summary>
-        public const int DefaultMaxSlicePayloadBytes = 16384;
+        /// <summary>
+        /// Keyframe slice payload budget; R&amp;D §11 recommends 8–16 KB, scaled
+        /// with the Step 5.5.2 42-byte ADD record: (17408 − 24) / 42 = 414
+        /// records per slice keeps the design's 400-unit baseline in ONE slice
+        /// part, which the impairment-parity integration contracts are tuned
+        /// against (a multipart baseline loses convergence under burst loss).
+        /// </summary>
+        public const int DefaultMaxSlicePayloadBytes = 17408;
 
         /// <summary>0 disables periodic keyframes (ADR-010 leaves the interval to the owner).</summary>
         public const int DefaultPeriodicKeyframeTicks = 0;
@@ -310,9 +321,11 @@ namespace GlobalFront.Server.Replication
             public ulong LastChecksumTick;
 
             /// <summary>
-            /// Preallocated 163,840 bytes (SnapshotCapacity 4096 * 40-byte ADD
-            /// records) staging buffer for zero-GC keyframe re-attachment (D6 fix).
-            /// Sized from the delta ADD record, so it grew with the OD-29 kind byte.
+            /// Preallocated staging buffer (SnapshotCapacity 4096 ADD records at
+            /// the live <see cref="DeltaSnapshotProtocol.AddRecordSizeBytes"/> —
+            /// 172,032 bytes at the Step 5.5.2 record size) for zero-GC keyframe
+            /// re-attachment (D6 fix). Sized from the delta ADD record, so it grew
+            /// with the OD-29 kind byte and again with the blueprint id.
             /// </summary>
             public const int DefaultKeyframeStagingBytes =
                 ServerReplicationEmitterConfig.DefaultSnapshotCapacity *

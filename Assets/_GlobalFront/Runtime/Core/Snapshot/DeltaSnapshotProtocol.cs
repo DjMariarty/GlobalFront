@@ -10,8 +10,8 @@ namespace GlobalFront.Core.Snapshot
     /// from the carrier envelope version and from the message version. The ADD
     /// record keeps the byte layout of the v1 unit record as its leading
     /// <c>SnapshotProtocol.SnapshotSizeBytes</c> bytes so a keyframe/delta stream
-    /// can be re-based without a second decoder, and version 2 appends one further
-    /// byte to it.
+    /// can be re-based without a second decoder, version 2 (OD-29) appends one
+    /// further byte to it, and version 3 (Step 5.5.2) appends two more.
     ///
     /// All values are protocol-significant constants: changing any of them
     /// requires a compatibility review and an ADR (DEVELOPMENT_STANDARD).
@@ -22,13 +22,17 @@ namespace GlobalFront.Core.Snapshot
         /// Delta wire-format version carried by every delta packet header.
         /// Bump on any change of the delta layout; never bump Snapshot Protocol v1.
         ///
-        /// Version 2 (OD-29) appends <c>UnitKind u8</c> to the ADD record. It is a
-        /// hard break, not an extension: a v1 peer and a v2 peer cannot share a
-        /// connection, because the record run length no longer matches the declared
-        /// count on either side, so both codecs reject the other's packets rather
-        /// than mis-parse them.
+        /// Version 2 (OD-29) appended <c>UnitKind u8</c> to the ADD record.
+        /// Version 3 (Step 5.5.2, RND §6.1) appends <c>BlueprintId u16</c>
+        /// (little-endian) to the tail of the ADD record, so the blueprint
+        /// registry row rides the wire next to its legacy archetype byte. Both
+        /// changes are hard breaks, not extensions: a v1 or v2 peer and a v3
+        /// peer cannot share a connection, because the record run length no
+        /// longer matches the declared count on either side, so the codecs
+        /// reject the other's packets with <see cref="DeltaCodecResult.UnsupportedVersion"/>
+        /// rather than mis-parse them.
         /// </summary>
-        public const uint Version = 2;
+        public const uint Version = 3;
 
         /// <summary>
         /// C2 message type of an establishing delta packet
@@ -59,10 +63,12 @@ namespace GlobalFront.Core.Snapshot
         /// record (<c>Entity u64, Owner u8, PosX i32, PosZ i32, Health i32,
         /// HasMoveTarget u8, MoveTargetX i32, MoveTargetZ i32, AttackTarget u64,
         /// AutoAcquire u8</c>) plus the OD-29 <c>UnitKind u8</c> appended in
-        /// version 2. The kind is last so the v1 prefix stays byte-for-byte the
-        /// record a v1 peer writes.
+        /// version 2 plus the Step 5.5.2 <c>BlueprintId u16</c> (little-endian)
+        /// appended in version 3. The kind and blueprint stay last so the v1
+        /// prefix remains byte-for-byte the record a v1 peer writes, and the
+        /// archetype byte remains byte-for-byte the v2 tail.
         /// </summary>
-        public const int AddRecordSizeBytes = 40;
+        public const int AddRecordSizeBytes = 42;
 
         /// <summary>Smallest UPDATE record: 1 id varint byte + 1 dirty-mask byte.</summary>
         public const int UpdateRecordMinSizeBytes = 2;
