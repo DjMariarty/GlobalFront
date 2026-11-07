@@ -95,6 +95,37 @@ namespace GlobalFront.Tests.EditMode.Server
         }
 
         [Test]
+        public void TryOrderBuild_AutoAssignsTheBuilder_ToTheSite()
+        {
+            var server = CreateServer();
+
+            // The USA Barracks (113) through the wire gate, with the builder
+            // already inside the 15 m work radius of the site cell: the builder
+            // the gate just validated must land in the site's builder slot, or
+            // the DozerWorker site would freeze forever with zero builders.
+            Assert.That(
+                server.SpawnUnitWithEntity(
+                    BuilderEntity, PlayerOne, new CombatStats(100, 1, 0, 1),
+                    new WorldPointMm(2_750, -1_000), 500, false, UnitKinds.Tank),
+                Is.EqualTo(BuilderEntity),
+                "scenario setup: the builder spawns inside the work radius");
+            Assert.That(
+                server.TryOrderBuild(
+                    BuildHeader(1), BuilderEntity, new BlueprintId(113), 5, 0),
+                Is.EqualTo(MatchCommandRejection.None));
+
+            // PresentBuilders is projected during the construction tick.
+            server.ExecuteTicks(1);
+
+            Assert.That(server.Construction.Count, Is.EqualTo(1));
+            var site = server.Construction.GetAt(0);
+            Assert.That(site.PresentBuilders, Is.EqualTo(1),
+                "the wire-ordered building's builder is assigned to the site it ordered");
+            Assert.That(site.IsFrozen, Is.False,
+                "a builder-assigned site actually progresses");
+        }
+
+        [Test]
         public void ProducedUnit_AndCompletedBuilding_CarryCatalogStats()
         {
             var server = CreateServer();

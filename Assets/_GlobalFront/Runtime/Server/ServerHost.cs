@@ -134,6 +134,17 @@ namespace GlobalFront.Server
         {
         }
 
+        /// <summary>
+        /// Creates a headless host whose server runs under the given hostility
+        /// policy (Step 5.6.1): the dedicated host passes
+        /// Team2v2CombatRelation.Instance for a team match and keeps the null
+        /// skirmish default otherwise.
+        /// </summary>
+        public ServerHost(int tickRate, ICombatRelation combatRelation)
+            : this(new MatchServer(combatRelation), new TickDriver(tickRate), DefaultDisconnectGraceTicks)
+        {
+        }
+
         protected ServerHost(MatchServer server, TickDriver tickDriver, int disconnectGraceTicks)
         {
             _server = server ?? throw new ArgumentNullException(nameof(server));

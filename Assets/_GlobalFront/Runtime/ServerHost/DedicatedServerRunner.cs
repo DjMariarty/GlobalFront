@@ -33,10 +33,12 @@ namespace GlobalFront.DedicatedServer
         public const int DedicatedServerTargetFramerate = 120;
 
         /// <summary>
-        /// Players a 1v1 dedicated match waits for before spawning the armies
-        /// (Milestone M1 scope: 1v1 dedicated prototype; 2v2 is Milestone M2).
+        /// Players a 1v1 dedicated match waits for before spawning the armies.
+        /// A team match waits for the four <see cref="MatchTopology2v2"/> slots
+        /// instead (Step 5.6.1).
         /// </summary>
-        public const int RequiredPlayersForStart = 2;
+        public int RequiredPlayersForStart =>
+            TopologyMode == MatchTopologyMode.Team2v2 ? MatchTopology2v2.SlotCount : 2;
 
         /// <summary>Units per player in the default 1v1 roster.</summary>
         public const int UnitsPerArmy = 6;
@@ -45,6 +47,21 @@ namespace GlobalFront.DedicatedServer
         // other's sight radius; contact is a played-out event, not a freebie.
         private const int ArmySeparationMm = 60_000;
         private const int ArmyColumnSpacingMm = 2_000;
+
+        /// <summary>
+        /// Team base points of the 2v2 spawn geometry (Step 5.6.1), indexed by
+        /// <see cref="MatchTopology2v2"/> slot: Team Red (players 1, 2) holds
+        /// the west — north-west and south-west — against Team Blue's east.
+        /// Enemy bases sit 70 000 mm apart (outside the 20 000 mm initial sight
+        /// radius), allied bases 40 000 mm apart.
+        /// </summary>
+        private static readonly WorldPointMm[] TeamBasePositions =
+        {
+            new WorldPointMm(-35_000, 20_000),  // slot 0: north-west
+            new WorldPointMm(-35_000, -20_000), // slot 1: south-west
+            new WorldPointMm(35_000, 20_000),   // slot 2: north-east
+            new WorldPointMm(35_000, -20_000),  // slot 3: south-east
+        };
 
         private static readonly CombatStats DefaultUnitStats =
             new CombatStats(maximumHealth: 100, damage: 25, rangeMm: 7000, cooldownTicks: 10);
@@ -57,6 +74,30 @@ namespace GlobalFront.DedicatedServer
         private ITransportClock _clock;
         private MatchId _match;
         private long _lastPumpMs;
+        private FogOfWarReplicationFilter _fogFilter;
+
+        /// <summary>
+        /// The match layout this host fills (Step 5.6.1): a two-player skirmish
+        /// or the four-slot 2v2 team match. Must be set before
+        /// <see cref="Initialize"/> — the combat relation is fixed when the
+        /// server core is constructed.
+        /// </summary>
+        public MatchTopologyMode TopologyMode
+        {
+            get => _topologyMode;
+            set
+            {
+                if (_host != null)
+                {
+                    throw new InvalidOperationException(
+                        "TopologyMode must be set before Initialize: the combat relation is fixed at host construction.");
+                }
+
+                _topologyMode = value;
+            }
+        }
+
+        private MatchTopologyMode _topologyMode;
 
         /// <summary>The hosted server core, or null before initialization / after shutdown.</summary>
         public ServerHost Host => _host;
@@ -169,10 +210,22 @@ namespace GlobalFront.DedicatedServer
 
             _clock = clock;
             _carrier = carrier;
-            _host = new ServerHost(tickRate);
+
+            // Step 5.6.1: the topology decides the hostility policy. A team
+            // match runs Team2v2CombatRelation (players 1,2 vs 3,4); a skirmish
+            // keeps the null skirmish default.
+            var combatRelation = TopologyMode == MatchTopologyMode.Team2v2
+                ? Team2v2CombatRelation.Instance
+                : null;
+            _host = new ServerHost(tickRate, combatRelation);
             _transportHost = new ServerTransportHost(_carrier, _host.Sessions, _host.Server);
 
-            _match = _host.CreateSessionMatch(maxPlayers);
+            // The forming match admits exactly the players the topology needs:
+            // SessionManager.TryStartMatch requires the template owners to
+            // cover the assigned players exactly, so an over-full lobby would
+            // deadlock the start forever.
+            var lobbyCapacity = Math.Min(maxPlayers, RequiredPlayersForStart);
+            _match = _host.CreateSessionMatch(lobbyCapacity);
             _transportHost.AutoJoinMatch = _match;
             _transportHost.SessionAttached += OnSessionAttached;
             _transportHost.SessionDetached += OnSessionDetached;
@@ -188,10 +241,14 @@ namespace GlobalFront.DedicatedServer
             // delivers the status and detaches the socket (M1.1 F3/F5).
             _host.SessionTerminated += OnHostSessionTerminated;
 
+            // Step 5.6.1: the filter is kept so a team match can map the four
+            // slots onto their teams at start (allies see each other through
+            // the fog; unmapped players stay enemies-of-everyone).
+            _fogFilter = new FogOfWarReplicationFilter();
             _host.AttachReplication(
                 new TransportReplicationAdapter(_transportHost),
                 ServerReplicationEmitterConfig.Default,
-                new FogOfWarReplicationFilter());
+                _fogFilter);
 
             // StartServer is idempotent: the port overload above already
             // started LiteNetLib, while an injected carrier starts here.
@@ -315,11 +372,12 @@ namespace GlobalFront.DedicatedServer
         }
 
         /// <summary>
-        /// Builds the base 1v1 roster from the players currently in the lobby
-        /// and hands it to the authoritative start path (M1.1 F1): the match
-        /// starts only when exactly the two required players are present. A
-        /// lobby that waits too long keeps waiting — a one-army match would
-        /// declare an instant victory and permanently close the second slot.
+        /// Builds the base roster from the players currently in the lobby and
+        /// hands it to the authoritative start path (M1.1 F1): the match starts
+        /// only when exactly the required players are present. A lobby that
+        /// waits too long keeps waiting — a one-army match would declare an
+        /// instant victory and permanently close the second slot. A team match
+        /// additionally maps the four slots onto their fog teams (Step 5.6.1).
         /// </summary>
         private bool TryStartMatchWhenReady()
         {
@@ -334,7 +392,83 @@ namespace GlobalFront.DedicatedServer
 
             var owners = _joinedPlayers.ToArray();
             Array.Sort(owners, (left, right) => left.Value.CompareTo(right.Value));
-            return _host.TryStartSessionMatch(_match, BuildDefaultMatchConfig(owners), out _);
+            var config = TopologyMode == MatchTopologyMode.Team2v2
+                ? BuildTeamMatchConfig(owners)
+                : BuildDefaultMatchConfig(owners);
+            if (!_host.TryStartSessionMatch(_match, config, out _))
+            {
+                return false;
+            }
+
+            if (TopologyMode == MatchTopologyMode.Team2v2)
+            {
+                // Step 5.6.1: same-team units are always visible to each other,
+                // but only once the filter knows the teams. Without this map a
+                // 2v2 lobby spawns four mutually blind armies.
+                for (var slot = 0; slot < owners.Length; slot++)
+                {
+                    _fogFilter.SetPlayerTeam(owners[slot], MatchTopology2v2.GetTeamForSlot(slot));
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Step 5.6.1 team geometry: exactly four owners in
+        /// <see cref="MatchTopology2v2"/> slot order, Team Red (slots 0, 1) on
+        /// the west against Team Blue (slots 2, 3) on the east. Each army keeps
+        /// the <see cref="UnitsPerArmy"/> roster shape — the HQ sits exactly on
+        /// the slot's base point, the rest form a column beside it. Enemy bases
+        /// are 70 000 mm apart, allied bases 40 000 mm.
+        /// </summary>
+        public static MatchConfig BuildTeamMatchConfig(IReadOnlyList<PlayerId> owners)
+        {
+            if (owners == null)
+            {
+                throw new ArgumentNullException(nameof(owners));
+            }
+
+            if (owners.Count != MatchTopology2v2.SlotCount)
+            {
+                throw new ArgumentException(
+                    $"a 2v2 roster needs exactly {MatchTopology2v2.SlotCount} players", nameof(owners));
+            }
+
+            var units = new UnitSpawnSpec[MatchTopology2v2.SlotCount * UnitsPerArmy];
+            var count = 0;
+            for (var slot = 0; slot < MatchTopology2v2.SlotCount; slot++)
+            {
+                if (!owners[slot].IsValid)
+                {
+                    throw new ArgumentException("owner must be valid", nameof(owners));
+                }
+
+                var basePoint = TeamBasePositions[slot];
+                for (var unitIndex = 0; unitIndex < UnitsPerArmy; unitIndex++)
+                {
+                    var kind = unitIndex == 0
+                        ? UnitKinds.BaseStructure
+                        : (unitIndex & 1) == 0 ? UnitKinds.Tank : UnitKinds.Scout;
+
+                    // The HQ (unit 0) sits exactly on the base point; the rest
+                    // form a column pushing east of it, clear of the base cell.
+                    var position = unitIndex == 0
+                        ? basePoint
+                        : new WorldPointMm(
+                            basePoint.X + (((unitIndex + 1) / 2) * ArmyColumnSpacingMm),
+                            basePoint.Z + ((unitIndex % 2 == 1) ? -1 : 1) * (ArmyColumnSpacingMm / 2));
+
+                    units[count++] = new UnitSpawnSpec(
+                        owners[slot],
+                        position,
+                        speedMmPerTick: 350,
+                        autoAcquireEnemies: true,
+                        kind);
+                }
+            }
+
+            return new MatchConfig(DefaultUnitStats, units);
         }
 
         /// <summary>

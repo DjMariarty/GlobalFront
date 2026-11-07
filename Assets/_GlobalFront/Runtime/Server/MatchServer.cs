@@ -531,6 +531,14 @@ namespace GlobalFront.Server
         public ProductionQueueRegistry Production => _production;
 
         /// <summary>
+        /// The hostility/termination policy this match runs under (Step 5.5.3
+        /// ctor injection): SkirmishCombatRelation by default,
+        /// Team2v2CombatRelation for a team match. Read-only observability for
+        /// hosts and tests.
+        /// </summary>
+        public ICombatRelation CombatRelation => _combatRelation;
+
+        /// <summary>
         /// Read-only observation surface for the supply economy (Step 5.4.2):
         /// the registry owns the per-player credit ledger and the harvester
         /// FSM. Exposed for the test-through-public-API convention.
@@ -1637,6 +1645,19 @@ namespace GlobalFront.Server
                 return MatchCommandRejection.ConstructionRejected;
             }
 
+            // Step 5.6.1 (the wired-build debt from Step 5.5.3): the validated
+            // builder is assigned to the fresh site immediately — a DozerWorker
+            // site with zero assigned builders freezes forever, and the wire
+            // path has no separate assign command yet. GLA fields Worker
+            // builders (cap 3 per site), everyone else Dozers (cap 1). A failed
+            // assignment is not fatal: the site stands and another builder may
+            // be assigned later through the direct gate.
+            TryAssignBuilder(
+                header.Player,
+                builder.Value,
+                IsGlaPlayer(header.Player) ? BuilderKind.Worker : BuilderKind.Dozer,
+                buildingEntityId.Value);
+
             CommitSequence(header.Player, header.Sequence);
             return MatchCommandRejection.None;
         }
@@ -2415,6 +2436,16 @@ namespace GlobalFront.Server
             }
 
             return _playerFactions[player.Value] == FactionId.China;
+        }
+
+        private bool IsGlaPlayer(PlayerId player)
+        {
+            if (!player.IsValid || _playerFactions == null || player.Value >= _playerFactions.Length)
+            {
+                return false;
+            }
+
+            return _playerFactions[player.Value] == FactionId.GLA;
         }
 
         /// <summary>

@@ -242,6 +242,242 @@ namespace GlobalFront.Tests.EditMode
             }
         }
 
+        // ------------------------------------------------------------------
+        // Step 5.6.1: MatchTopologyMode — 1v1 default, 2v2 team match
+        // ------------------------------------------------------------------
+
+        [Test]
+        public void DedicatedServerRunner_TopologyMode_DefaultsTo1v1()
+        {
+            _runner.Initialize(_carrier, _clock);
+
+            Assert.That(_runner.TopologyMode, Is.EqualTo(MatchTopologyMode.Skirmish1v1),
+                "the dedicated host must keep its 1v1 prototype behavior unless asked otherwise");
+            Assert.That(_runner.RequiredPlayersForStart, Is.EqualTo(2));
+
+            // The topology is a pre-Initialize decision: the combat relation is
+            // fixed when the server core is constructed.
+            Assert.Throws<InvalidOperationException>(
+                () => _runner.TopologyMode = MatchTopologyMode.Team2v2);
+        }
+
+        [Test]
+        public void DedicatedServerRunner_In2v2Mode_RequiresFourPlayersToStart()
+        {
+            RunTeam2v2(
+                joinedClients: 4,
+                (runner, pipe, clock, clients) =>
+                {
+                    Assert.That(runner.RequiredPlayersForStart, Is.EqualTo(4));
+                    Assert.That(runner.IsMatchActive, Is.True,
+                        "the fourth handshake must complete the team lobby");
+                    Assert.That(runner.JoinedPlayerCount, Is.EqualTo(4));
+                    Assert.That(
+                        runner.Host.UnitCount,
+                        Is.EqualTo(DedicatedServerRunner.UnitsPerArmy * 4),
+                        "all four team armies must spawn from the server-owned roster");
+                });
+        }
+
+        [Test]
+        public void DedicatedServerRunner_In2v2Mode_WaitsAtThreePlayers()
+        {
+            RunTeam2v2(
+                joinedClients: 3,
+                (runner, pipe, clock, clients) =>
+                {
+                    Assert.That(runner.IsMatchActive, Is.False,
+                        "a three-player lobby must not start a four-slot team match");
+                    Assert.That(runner.Host.UnitCount, Is.Zero);
+                });
+        }
+
+        [Test]
+        public void DedicatedServerRunner_In2v2Mode_UsesTeam2v2CombatRelation()
+        {
+            RunTeam2v2(
+                joinedClients: 4,
+                (runner, pipe, clock, clients) =>
+                {
+                    Assert.That(
+                        runner.Host.Server.CombatRelation,
+                        Is.EqualTo(Team2v2CombatRelation.Instance),
+                        "a 2v2 match must run the team hostility policy, not skirmish");
+                });
+        }
+
+        [Test]
+        public void DedicatedServerRunner_In2v2Mode_SpawnsFourArmiesWithCorrectTeamGeometry()
+        {
+            RunTeam2v2(
+                joinedClients: 4,
+                (runner, pipe, clock, clients) =>
+                {
+                    var snapshots = new ServerUnitSnapshot[SimulationConstants.MaxUnitsPerMatch];
+                    var count = runner.Host.CopySnapshots(snapshots);
+                    Assert.That(count, Is.EqualTo(DedicatedServerRunner.UnitsPerArmy * 4));
+
+                    var expectedBases = new[]
+                    {
+                        new WorldPointMm(-35_000, 20_000),  // slot 0: north-west
+                        new WorldPointMm(-35_000, -20_000), // slot 1: south-west
+                        new WorldPointMm(35_000, 20_000),   // slot 2: north-east
+                        new WorldPointMm(35_000, -20_000),  // slot 3: south-east
+                    };
+
+                    // Join order is slot order: the first four PlayerIds map
+                    // one-to-one onto the topology slots.
+                    for (var slot = 0; slot < 4; slot++)
+                    {
+                        var owner = clients[slot].Endpoint.Player;
+                        Assert.That(
+                            owner,
+                            Is.EqualTo(MatchTopology2v2.GetPlayerForSlot(slot)),
+                            "the join order must fill the topology slots in sequence");
+                        Assert.That(
+                            MatchTopology2v2.GetTeamForPlayer(owner),
+                            Is.EqualTo(MatchTopology2v2.GetTeamForSlot(slot)));
+
+                        var hq = FindUnit(snapshots, count, owner, UnitKinds.BaseStructure);
+                        Assert.That(hq.Position, Is.EqualTo(expectedBases[slot]),
+                            $"slot {slot}'s HQ must sit exactly on its team base point");
+                    }
+
+                    // Allied bases 40 m apart, enemy bases 70 m apart.
+                    var northWest = expectedBases[0];
+                    var southWest = expectedBases[1];
+                    var northEast = expectedBases[2];
+                    Assert.That(
+                        Math.Abs(northWest.Z - southWest.Z), Is.EqualTo(40_000));
+                    Assert.That(
+                        Math.Abs(northWest.X - northEast.X), Is.EqualTo(70_000));
+                });
+        }
+
+        [Test]
+        public void DedicatedServerRunner_In2v2Mode_AlliesSeeEachOtherThroughFog()
+        {
+            RunTeam2v2(
+                joinedClients: 4,
+                (runner, pipe, clock, clients) =>
+                {
+                    var allyOne = clients[0].Endpoint.Player;
+                    var allyTwo = clients[1].Endpoint.Player;
+
+                    // The fog filter serves masks from its per-tick history, so
+                    // the query needs a completed tick that was recorded after
+                    // the host mapped the four slots onto their teams.
+                    PumpUntil(
+                        runner,
+                        pipe,
+                        clock,
+                        () => runner.Host.CurrentTick >= 3,
+                        "the match must complete a few ticks after the team mapping",
+                        clients);
+
+                    var snapshots = new ServerUnitSnapshot[SimulationConstants.MaxUnitsPerMatch];
+                    var count = runner.Host.CopySnapshots(snapshots);
+                    var allyUnit = FindUnit(snapshots, count, allyTwo, UnitKinds.Scout);
+
+                    var lastCompletedTick = runner.Host.CurrentTick - 1;
+                    Assert.That(
+                        runner.Host.Server.VisibilityFilter.IsVisible(
+                            lastCompletedTick, allyOne, allyUnit.Entity),
+                        Is.True,
+                        "the host must map the four slots onto fog teams: allies are always visible to each other");
+                });
+        }
+
+        /// <summary>
+        /// Boots a Team2v2 dedicated runner over the virtual pipe, joins
+        /// <paramref name="joinedClients"/> clients (join order == slot order)
+        /// and hands everything to the body. Disposal follows the file's
+        /// try/finally convention.
+        /// </summary>
+        private static void RunTeam2v2(
+            int joinedClients,
+            Action<DedicatedServerRunner, VirtualNetworkPipe, VirtualTransportClock, RemoteSliceSession[]> body)
+        {
+            var savedTargetFrameRate = Application.targetFrameRate;
+            var pipe = new VirtualNetworkPipe(new ImpairmentProfile());
+            var clock = new VirtualTransportClock();
+            var serverAddress = pipe.CreateEndpoint();
+            var serverCarrier = OwnDatagramCarrier.CreateServer(pipe, serverAddress, clock);
+            var runnerObject = new GameObject("DedicatedServerRunner_Team2v2");
+            DedicatedServerRunner runner = null;
+            var clients = new RemoteSliceSession[joinedClients];
+
+            try
+            {
+                runner = runnerObject.AddComponent<DedicatedServerRunner>();
+                runner.TopologyMode = MatchTopologyMode.Team2v2;
+                runner.Initialize(serverCarrier, clock);
+                Assert.That(runner.IsMatchActive, Is.False,
+                    "a team match must not start before the lobby fills");
+
+                for (var index = 0; index < joinedClients; index++)
+                {
+                    clients[index] = new RemoteSliceSession(
+                        OwnDatagramCarrier.CreateClient(
+                            pipe, pipe.CreateEndpoint(), serverAddress, clock), clock);
+                    clients[index].Connect("virtual", 0);
+                }
+
+                PumpUntil(
+                    runner,
+                    pipe,
+                    clock,
+                    () =>
+                    {
+                        for (var index = 0; index < joinedClients; index++)
+                        {
+                            if (clients[index] == null || !clients[index].IsConnected)
+                            {
+                                return false;
+                            }
+                        }
+
+                        return joinedClients == 4
+                            ? runner.IsMatchActive
+                            : runner.JoinedPlayerCount == joinedClients;
+                    },
+                    $"{joinedClients} client handshakes must complete (and 4 must start the team match)",
+                    clients);
+
+                body(runner, pipe, clock, clients);
+            }
+            finally
+            {
+                for (var index = 0; index < clients.Length; index++)
+                {
+                    clients[index]?.Dispose();
+                }
+
+                runner?.Shutdown();
+                if (runnerObject != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(runnerObject);
+                }
+
+                Application.targetFrameRate = savedTargetFrameRate;
+            }
+        }
+
+        private static ServerUnitSnapshot FindUnit(
+            ServerUnitSnapshot[] snapshots, int count, PlayerId owner, byte unitKind)
+        {
+            for (var index = 0; index < count; index++)
+            {
+                if (snapshots[index].Owner == owner && snapshots[index].UnitKind == unitKind)
+                {
+                    return snapshots[index];
+                }
+            }
+
+            Assert.Fail($"no {unitKind} unit belongs to player {owner.Value}");
+            return default;
+        }
+
         /// <summary>
         /// M1.1 F1: the old 30-second safety deadline started a one-army match
         /// whose instant victory permanently closed the second slot. A lobby
