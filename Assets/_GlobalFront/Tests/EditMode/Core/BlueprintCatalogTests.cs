@@ -248,18 +248,29 @@ namespace GlobalFront.Tests.EditMode.Core
                 (100, FactionId.USA, BlueprintCategory.Infantry, UnitKinds.Infantry),
                 (101, FactionId.USA, BlueprintCategory.Vehicle, UnitKinds.Tank),
                 (110, FactionId.USA, BlueprintCategory.Building, UnitKinds.BaseStructure),
+                (160, FactionId.USA, BlueprintCategory.Building, UnitKinds.DropZone),
+                (174, FactionId.USA, BlueprintCategory.Vehicle, UnitKinds.Tank),
                 (200, FactionId.China, BlueprintCategory.Infantry, UnitKinds.Infantry),
                 (201, FactionId.China, BlueprintCategory.Vehicle, UnitKinds.Tank),
                 (210, FactionId.China, BlueprintCategory.Building, UnitKinds.BaseStructure),
+                (215, FactionId.China, BlueprintCategory.Building, UnitKinds.InternetCenter),
+                (219, FactionId.China, BlueprintCategory.Infantry, UnitKinds.Hacker),
+                (224, FactionId.China, BlueprintCategory.Vehicle, UnitKinds.Tank),
                 (300, FactionId.GLA, BlueprintCategory.Infantry, UnitKinds.Infantry),
                 (301, FactionId.GLA, BlueprintCategory.Vehicle, UnitKinds.Tank),
                 (310, FactionId.GLA, BlueprintCategory.Building, UnitKinds.BaseStructure),
+                (358, FactionId.GLA, BlueprintCategory.Building, UnitKinds.BlackMarket),
+                (373, FactionId.GLA, BlueprintCategory.Infantry, UnitKinds.Infantry),
                 (400, FactionId.Russia, BlueprintCategory.Infantry, UnitKinds.Infantry),
                 (401, FactionId.Russia, BlueprintCategory.Vehicle, UnitKinds.Tank),
                 (410, FactionId.Russia, BlueprintCategory.Building, UnitKinds.BaseStructure),
+                (415, FactionId.Russia, BlueprintCategory.Building, UnitKinds.OilRig),
+                (424, FactionId.Russia, BlueprintCategory.Vehicle, UnitKinds.Tank),
                 (500, FactionId.NATO, BlueprintCategory.Infantry, UnitKinds.Infantry),
                 (501, FactionId.NATO, BlueprintCategory.Vehicle, UnitKinds.Tank),
                 (510, FactionId.NATO, BlueprintCategory.Building, UnitKinds.BaseStructure),
+                (515, FactionId.NATO, BlueprintCategory.Building, UnitKinds.LogisticsHub),
+                (524, FactionId.NATO, BlueprintCategory.Vehicle, UnitKinds.Tank),
             };
 
             for (var index = 0; index < rows.Length; index++)
@@ -382,6 +393,16 @@ namespace GlobalFront.Tests.EditMode.Core
 
             Assert.That(FactionId.IsValid(FactionId.Count), Is.False, "Count is the ceiling, not a faction");
             Assert.That(FactionId.IsValid(255), Is.False, "stray bytes stay invalid");
+        }
+
+        [Test]
+        public void DefaultBlueprintCatalog_PassesTheRosterValidator()
+        {
+            // Step 5.5.3: the shipped roster is the contract — it must pass the
+            // completeness gate the build/hosting path leans on.
+            Assert.That(
+                FactionRosterCompletenessValidator.Validate(DefaultBlueprintCatalog.Create(), out var error),
+                Is.True, error ?? "the default roster must be complete");
         }
 
         /// <summary>Canonical mobile row for ctor-rejection tests.</summary>

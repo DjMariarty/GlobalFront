@@ -4,7 +4,8 @@ namespace GlobalFront.Core.Catalog
 {
     /// <summary>
     /// Read side of the blueprint registry: O(1), allocation-free row lookup by
-    /// typed or raw id. Consumers in Server (production, construction, the
+    /// typed or raw id, plus an allocation-free id enumeration for tools and
+    /// validators. Consumers in Server (production, construction, the
     /// future roster digests) and Client (presentation bridges) program against
     /// this interface, not the concrete table, so a data-driven or
     /// server-published catalog can replace the compiled one without touching
@@ -20,6 +21,17 @@ namespace GlobalFront.Core.Catalog
         /// <c>ushort</c> (production queues, wire codecs).
         /// </summary>
         bool TryGet(ushort id, out BlueprintDefinition definition);
+
+        /// <summary>Number of rows the catalog carries.</summary>
+        int Count { get; }
+
+        /// <summary>
+        /// Copies every row id into <paramref name="destination"/> in ascending
+        /// id order. Zero-GC; throws when the span cannot hold them all. Pair
+        /// with <see cref="TryGet(BlueprintId, out BlueprintDefinition)"/> to
+        /// walk the whole table without allocations.
+        /// </summary>
+        int CopyBlueprintIds(Span<ushort> destination);
     }
 
     /// <summary>
@@ -51,6 +63,7 @@ namespace GlobalFront.Core.Catalog
     public sealed class BlueprintCatalog : IBlueprintCatalog
     {
         private readonly BlueprintDefinition[] _byId;
+        private readonly int _count;
 
         /// <summary>
         /// Builds a table from hand-authored or data-driven rows. Rejects a row
@@ -95,6 +108,8 @@ namespace GlobalFront.Core.Catalog
 
                 _byId[definition.Id.Value] = definition;
             }
+
+            _count = definitions.Length;
         }
 
         public bool TryGet(BlueprintId id, out BlueprintDefinition definition)
@@ -115,6 +130,29 @@ namespace GlobalFront.Core.Catalog
         public bool TryGet(ushort id, out BlueprintDefinition definition)
         {
             return TryGet(new BlueprintId(id), out definition);
+        }
+
+        public int Count => _count;
+
+        public int CopyBlueprintIds(Span<ushort> destination)
+        {
+            if (destination.Length < _count)
+            {
+                throw new ArgumentException(
+                    $"Destination span holds {destination.Length} ids, catalog has {_count}.",
+                    nameof(destination));
+            }
+
+            var written = 0;
+            for (var value = 0; value < _byId.Length; value++)
+            {
+                if (_byId[value].Id.IsValid)
+                {
+                    destination[written++] = (ushort)value;
+                }
+            }
+
+            return written;
         }
 
         private static void ValidateRow(BlueprintDefinition definition, string paramName)

@@ -14,11 +14,17 @@ namespace GlobalFront.Core.Combat
         /// (a ground-only weapon firing at an aircraft); otherwise at least 1, because a
         /// nonzero hit cannot be rounded away by the matrix.
         /// </summary>
+        /// <param name="bonusMultiplierPermille">
+        /// Extra permille composed after the matrix cell (Step 5.5.3 Horde
+        /// Bonus: 1250 for a qualifying China horde). 1000 keeps the value
+        /// bit-for-bit identical to the unbonused path.
+        /// </param>
         public static int CalculateDamage(
             int baseDamage,
             DamageType damageType,
             ArmorType armorType,
-            int flatReduction = 0)
+            int flatReduction = 0,
+            int bonusMultiplierPermille = 1000)
         {
             if (baseDamage <= 0)
             {
@@ -37,10 +43,12 @@ namespace GlobalFront.Core.Combat
                 return 0;
             }
 
-            // long holds the widest legal product (int.MaxValue x 2500) without overflow,
-            // and +500 before the truncating divide is the deterministic round-half-up.
-            long scaled = (long)effectiveBase * multiplierPermille;
-            int finalDamage = (int)((scaled + 500) / 1000);
+            // long holds the widest legal product (int.MaxValue x 2500 x 1250 ≈ 2.5e15)
+            // without overflow. The two permille factors compose into one round-half-up
+            // at the 1e6 scale: with bonus == 1000 the result is bit-for-bit the
+            // unbonused path ((x*m + 500) / 1000).
+            long scaled = (long)effectiveBase * multiplierPermille * bonusMultiplierPermille;
+            int finalDamage = (int)((scaled + 500_000) / 1_000_000);
 
             return Math.Max(finalDamage, 1);
         }

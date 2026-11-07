@@ -127,11 +127,20 @@ namespace GlobalFront.Core.Model
         /// <summary>GLA income structure; steady small payments on a short interval.</summary>
         public const byte BlackMarket = 9;
 
+        /// <summary>Russia income structure; heavy industrial drilling complex (Step 5.5.3, cap 4 per player).</summary>
+        public const byte OilRig = 10;
+
+        /// <summary>China secondary-income host; pays through its hackers, never directly (Step 5.5.3, cap 4 per player).</summary>
+        public const byte InternetCenter = 11;
+
+        /// <summary>NATO income structure; alliance logistics subsidies (Step 5.5.3, cap 4 per player).</summary>
+        public const byte LogisticsHub = 12;
+
         /// <summary>
         /// One past the highest defined kind, so <c>UnitKinds.Count</c> is directly
         /// usable as the O(1) catalog array length.
         /// </summary>
-        public const byte Count = 10;
+        public const byte Count = 13;
 
         /// <summary>False for 0 (Unknown) and for anything at or above <see cref="Count"/>.</summary>
         public static bool IsDefined(byte kind) => kind != Unknown && kind < Count;

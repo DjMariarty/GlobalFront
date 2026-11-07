@@ -22,11 +22,20 @@ namespace GlobalFront.Core.Economy
         OccupiedByOther = 7
     }
 
-    /// <summary>Income-building archetype of the secondary economy.</summary>
+    /// <summary>
+    /// Income-building archetype of the secondary economy. Values are
+    /// append-only: renumbering would re-target stored payout timers.
+    /// </summary>
     public enum SecondaryIncomeKind : byte
     {
         DropZone = 0,
-        BlackMarket = 1
+        BlackMarket = 1,
+
+        /// <summary>Russia's Буровой комплекс (Step 5.5.3): heavy industrial drilling, power-hungry.</summary>
+        OilRig = 2,
+
+        /// <summary>NATO's Coalition Logistics Hub (Step 5.5.3): alliance logistics subsidies.</summary>
+        LogisticsHub = 3
     }
 
     /// <summary>
@@ -492,23 +501,39 @@ namespace GlobalFront.Core.Economy
                     continue;
                 }
 
-                building.TicksSincePayout++;
-                if (building.Kind == SecondaryIncomeKind.DropZone)
+            building.TicksSincePayout++;
+            if (building.Kind == SecondaryIncomeKind.DropZone)
+            {
+                if (building.TicksSincePayout >= SimulationConstants.DropZonePayoutIntervalTicks)
                 {
-                    if (building.TicksSincePayout >= SimulationConstants.DropZonePayoutIntervalTicks)
-                    {
-                        building.TicksSincePayout = 0;
-                        economy.AddCredits(building.Owner, SimulationConstants.DropZonePayoutDollars);
-                    }
+                    building.TicksSincePayout = 0;
+                    economy.AddCredits(building.Owner, SimulationConstants.DropZonePayoutDollars);
                 }
-                else
+            }
+            else if (building.Kind == SecondaryIncomeKind.OilRig)
+            {
+                if (building.TicksSincePayout >= SimulationConstants.OilRigPayoutIntervalTicks)
                 {
-                    if (building.TicksSincePayout >= SimulationConstants.BlackMarketPayoutIntervalTicks)
-                    {
-                        building.TicksSincePayout = 0;
-                        economy.AddCredits(building.Owner, SimulationConstants.BlackMarketPayoutDollars);
-                    }
+                    building.TicksSincePayout = 0;
+                    economy.AddCredits(building.Owner, SimulationConstants.OilRigPayoutDollars);
                 }
+            }
+            else if (building.Kind == SecondaryIncomeKind.LogisticsHub)
+            {
+                if (building.TicksSincePayout >= SimulationConstants.LogisticsHubPayoutIntervalTicks)
+                {
+                    building.TicksSincePayout = 0;
+                    economy.AddCredits(building.Owner, SimulationConstants.LogisticsHubPayoutDollars);
+                }
+            }
+            else
+            {
+                if (building.TicksSincePayout >= SimulationConstants.BlackMarketPayoutIntervalTicks)
+                {
+                    building.TicksSincePayout = 0;
+                    economy.AddCredits(building.Owner, SimulationConstants.BlackMarketPayoutDollars);
+                }
+            }
 
                 _incomeBuildings[index] = building;
             }

@@ -106,6 +106,39 @@ namespace GlobalFront.Core.Simulation
         /// <summary>Выплата Hacker (China), долларов за интервал.</summary>
         public const int HackerPayoutDollars = 20;
 
+        /// <summary>Интервал выплат Бурового комплекса (Russia), тиков (60 секунд).</summary>
+        public const int OilRigPayoutIntervalTicks = 1200;
+
+        /// <summary>Выплата Бурового комплекса (Russia), долларов за интервал.</summary>
+        public const int OilRigPayoutDollars = 1000;
+
+        /// <summary>Интервал выплат Coalition Logistics Hub (NATO), тиков (20 секунд).</summary>
+        public const int LogisticsHubPayoutIntervalTicks = 400;
+
+        /// <summary>Выплата Coalition Logistics Hub (NATO), долларов за интервал.</summary>
+        public const int LogisticsHubPayoutDollars = 200;
+
+        /// <summary>Потолок зданий вторичного дохода одного типа на игрока (Step 5.5.3).</summary>
+        public const int MaxSecondaryBuildingsPerPlayer = 4;
+
+        /// <summary>Суммарный потолок хакеров на игрока: 4 Интернет-центра × 4 хакера (Step 5.5.3).</summary>
+        public const int MaxHackersPerPlayer = 16;
+
+        /// <summary>
+        /// Радиус орды Horde Bonus (Китай), мм (10 м, черновик 1.0): от этого
+        /// числа юнитов одной категории в радиусе действует бонус.
+        /// </summary>
+        public const int HordeRadiusMm = 10_000;
+
+        /// <summary>Порог орды Horde Bonus (Китай): юнитов одной категории в радиусе.</summary>
+        public const int HordeThreshold = 5;
+
+        /// <summary>Бонус урона орды, ‰ (+25%).</summary>
+        public const int HordeDamagePermille = 1250;
+
+        /// <summary>Бонус скорости орды, ‰ (+10%).</summary>
+        public const int HordeSpeedPermille = 1100;
+
         /// <summary>
         /// Edge length in millimetres of one cell of the server-side visibility
         /// uniform grid (2^13 = 8192 mm = 8.192 m). The grid accelerates

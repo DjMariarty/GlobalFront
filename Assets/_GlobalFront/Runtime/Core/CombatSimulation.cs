@@ -266,15 +266,26 @@ namespace GlobalFront.Core.Combat
 
     public readonly struct CombatantTickInput : IComparable<CombatantTickInput>
     {
-        public CombatantTickInput(CombatantState state, WorldPointMm position)
+        /// <summary>Damage multiplier applied on top of the matrix cell, ‰ (1000 = none).</summary>
+        public const int DefaultDamagePermille = 1000;
+
+        public CombatantTickInput(CombatantState state, WorldPointMm position, int hordeDamagePermille = DefaultDamagePermille)
         {
             State = state ?? throw new ArgumentNullException(nameof(state));
             Position = position;
+            HordeDamagePermille = hordeDamagePermille;
         }
 
         public CombatantState State { get; }
 
         public WorldPointMm Position { get; }
+
+        /// <summary>
+        /// Step 5.5.3 Horde Bonus: 1250 for an attacker whose China same-
+        /// category horde qualifies, 1000 otherwise. Travels with the input
+        /// through the resolver's canonical sort.
+        /// </summary>
+        public int HordeDamagePermille { get; }
 
         public int CompareTo(CombatantTickInput other) =>
             State.Entity.Value.CompareTo(other.State.Entity.Value);
@@ -610,10 +621,13 @@ namespace GlobalFront.Core.Combat
 
                     // The matrix is applied here and nowhere else: the DamageEvent carries
                     // the final value, so clients present it without recalculating (R&D §4.3).
+                    // The horde permille rides the attacker input (1000 = no bonus).
                     var appliedDamage = DamageCalculator.CalculateDamage(
                         attacker.Stats.Damage,
                         (DamageType)attacker.Stats.DamageType,
-                        (ArmorType)targetInput.State.Stats.ArmorType);
+                        (ArmorType)targetInput.State.Stats.ArmorType,
+                        flatReduction: 0,
+                        attackerInput.HordeDamagePermille);
 
                     var damageEvent = new DamageEvent(
                         attacker.Entity,

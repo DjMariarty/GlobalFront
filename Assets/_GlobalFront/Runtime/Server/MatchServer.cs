@@ -73,7 +73,19 @@ namespace GlobalFront.Server
         /// or power refused the placement (<see cref="ConstructionStartRejection"/>
         /// other than None).
         /// </summary>
-        ConstructionRejected = 16
+        ConstructionRejected = 16,
+
+        /// <summary>
+        /// Step 5.5.3: the wire Build command names a builder, and the roster
+        /// has one for every faction — building from thin air is refused.
+        /// </summary>
+        BuilderRequired = 17,
+
+        /// <summary>
+        /// Step 5.5.3: China's hacker roster is capped at the 4-Internet-Center
+        /// ceiling (4 centers x 4 hackers).
+        /// </summary>
+        HackerCapacityReached = 18
     }
 
     /// <summary>
@@ -326,6 +338,16 @@ namespace GlobalFront.Server
         /// </summary>
         private readonly IBlueprintCatalog _blueprintCatalog;
 
+        /// <summary>
+        /// Faction per player indexed by <see cref="PlayerId.Value"/>
+        /// (Step 5.5.3); null when the host does not declare factions, which
+        /// disables faction-gated rules such as the Horde Bonus.
+        /// </summary>
+        private readonly byte[] _playerFactions;
+
+        /// <summary>True while any declared player is China: gates the horde recount walk.</summary>
+        private bool _hordeFactionPresent;
+
         /// <param name="combatRelation">
         /// Hostility and termination policy for this match, defaulting to
         /// <see cref="SkirmishCombatRelation.Instance"/> so every existing
@@ -340,10 +362,31 @@ namespace GlobalFront.Server
         /// supplies build times, costs, footprints and power deltas the wire
         /// commands do not carry.
         /// </param>
-        public MatchServer(ICombatRelation combatRelation = null, IBlueprintCatalog blueprintCatalog = null)
+        /// <param name="playerFactionsByPlayerId">
+        /// Faction of each player indexed by <see cref="PlayerId.Value"/>
+        /// (Step 5.5.3): the simulation does not otherwise know factions. Null
+        /// disables faction-gated rules (the Horde Bonus); a slot of
+        /// <see cref="FactionId.None"/> means that player has no faction.
+        /// </param>
+        public MatchServer(
+            ICombatRelation combatRelation = null,
+            IBlueprintCatalog blueprintCatalog = null,
+            byte[] playerFactionsByPlayerId = null)
         {
             _combatRelation = combatRelation ?? SkirmishCombatRelation.Instance;
             _blueprintCatalog = blueprintCatalog ?? DefaultBlueprintCatalog.Create();
+            if (playerFactionsByPlayerId != null)
+            {
+                _playerFactions = (byte[])playerFactionsByPlayerId.Clone();
+                for (var index = 0; index < _playerFactions.Length; index++)
+                {
+                    if (_playerFactions[index] == FactionId.China)
+                    {
+                        _hordeFactionPresent = true;
+                    }
+                }
+            }
+
             _buildingPlacement = new BuildingPlacementRegistry();
             _powerLedger = new PowerLedger();
             _construction = new ConstructionRegistry(_buildingPlacement, powerLedger: _powerLedger);
@@ -396,11 +439,19 @@ namespace GlobalFront.Server
             public byte UnitKind;
 
             /// <summary>
-            /// Step 5.5.2 blueprint registry identity forwarded to clients, 0 when
+            /// Step 5.5.3 blueprint registry identity forwarded to clients, 0 when
             /// the spawn path never resolved a blueprint. Replication-only like
             /// <see cref="UnitKind"/>, never read by the simulation.
             /// </summary>
             public ushort BlueprintId;
+
+            /// <summary>
+            /// Step 5.5.3 Horde Bonus: same-owner, same-category, same-faction
+            /// neighbors within the horde radius (the unit itself included),
+            /// recounted every tick in canonical roster order. 0 for everyone
+            /// when no player faction is China.
+            /// </summary>
+            public int HordeNeighborCount;
         }
 
         /// <summary>
@@ -1069,6 +1120,16 @@ namespace GlobalFront.Server
                 {
                     _powerLedger.NotifyBuildingCompleted(building.Combat.Owner, buildingEntityId);
 
+                    // Step 5.5.3: a catalog-built frame completes at its real
+                    // blueprint stats (full health — Generals canon). Frames
+                    // built outside the catalog keep the legacy FrameStats line.
+                    if (building.BlueprintId != 0 &&
+                        _blueprintCatalog.TryGet(building.BlueprintId, out var definition))
+                    {
+                        building.Combat = new CombatantState(
+                            building.Combat.Entity, building.Combat.Owner, definition.Stats);
+                    }
+
                     // A completed factory frame joins the production registry
                     // with the exit point chosen at build start (Step 5.3.2).
                     if (_pendingFactoryExitPoints.TryGetValue(buildingEntityId, out var pendingExit))
@@ -1104,6 +1165,14 @@ namespace GlobalFront.Server
                 case UnitKinds.BlackMarket:
                     _secondaryEconomy.TryRegisterIncomeBuilding(
                         buildingEntityId, building.Combat.Owner, SecondaryIncomeKind.BlackMarket, out _);
+                    break;
+                case UnitKinds.OilRig:
+                    _secondaryEconomy.TryRegisterIncomeBuilding(
+                        buildingEntityId, building.Combat.Owner, SecondaryIncomeKind.OilRig, out _);
+                    break;
+                case UnitKinds.LogisticsHub:
+                    _secondaryEconomy.TryRegisterIncomeBuilding(
+                        buildingEntityId, building.Combat.Owner, SecondaryIncomeKind.LogisticsHub, out _);
                     break;
             }
         }
@@ -1214,9 +1283,19 @@ namespace GlobalFront.Server
 
         private ProducedUnitBlueprint ResolveBlueprint(ushort blueprintId)
         {
+            // An explicit registration is an override: the economy tests (and
+            // any future integration) pin custom archetypes on ids the catalog
+            // also carries, and the override must win. The catalog is the
+            // Step 5.5.3 source of truth for everything not overridden.
             if (_blueprints.TryGetValue(blueprintId, out ProducedUnitBlueprint blueprint))
             {
                 return blueprint;
+            }
+
+            if (_blueprintCatalog.TryGet(blueprintId, out var definition))
+            {
+                return new ProducedUnitBlueprint(
+                    definition.Stats, definition.SpeedMmPerTick, definition.LegacyKind);
             }
 
             return new ProducedUnitBlueprint(
@@ -1465,21 +1544,25 @@ namespace GlobalFront.Server
 
         /// <summary>
         /// Wire-level build gate (Step 5.5.2, CommandWireCodec v2
-        /// <c>GameCommandType.Build</c>). Follows the TryEnqueueMove pattern:
-        /// common header validation, per-command gates, sequence commit — and
-        /// on success the construction frame actually starts through
-        /// <see cref="TryStartBuilding"/>. The wire payload names the blueprint
-        /// and the origin cell only; every numeric input (footprint, cost,
-        /// power delta, work rate, final archetype) is resolved from the
-        /// blueprint catalog server-side, so a client cannot understate a cost
-        /// or oversize a footprint.
+        /// <c>GameCommandType.Build</c>; Step 5.5.3 tightened). Follows the
+        /// TryEnqueueMove pattern: common header validation, per-command gates,
+        /// sequence commit — and on success the construction frame actually
+        /// starts through <see cref="TryStartBuilding"/>. The wire payload names
+        /// the blueprint and the origin cell only; every numeric input
+        /// (footprint, cost, power delta, work rate, final archetype) is
+        /// resolved from the blueprint catalog server-side, so a client cannot
+        /// understate a cost or oversize a footprint.
         ///
-        /// <paramref name="builder"/> may be 0 — the modular/global build that
-        /// assembles itself (<see cref="ConstructionMethod.Modular"/>); a
-        /// non-zero builder must be a living unit owned by the player
-        /// (<see cref="ConstructionMethod.DozerWorker"/>). The grid cell maps to
-        /// the centre of that 500 mm cell; the placement registry still applies
-        /// its own snapping, bounds and overlap checks.
+        /// Step 5.5.3: a builder entity is REQUIRED — every faction fields a
+        /// physical builder, and building from thin air is refused
+        /// (<see cref="MatchCommandRejection.BuilderRequired"/>); the gate then
+        /// validates it as a living owned unit
+        /// (<see cref="ConstructionMethod.DozerWorker"/>). The secondary-income
+        /// classes (DropZone, BlackMarket, OilRig, InternetCenter, LogisticsHub)
+        /// are capped at four per player, counting completed buildings and
+        /// in-progress frames alike — frames carry their final kind from tick 0.
+        /// The grid cell maps to the centre of that 500 mm cell; the placement
+        /// registry still applies its own snapping, bounds and overlap checks.
         /// </summary>
         public MatchCommandRejection TryOrderBuild(
             CommandHeader header,
@@ -1499,13 +1582,22 @@ namespace GlobalFront.Server
                 return MatchCommandRejection.UnknownBlueprint;
             }
 
-            if (builder.IsValid)
+            if (!builder.IsValid)
             {
-                var builderRejection = ValidateControllable(builder, header.Player);
-                if (builderRejection != MatchCommandRejection.None)
-                {
-                    return builderRejection;
-                }
+                return MatchCommandRejection.BuilderRequired;
+            }
+
+            var builderRejection = ValidateControllable(builder, header.Player);
+            if (builderRejection != MatchCommandRejection.None)
+            {
+                return builderRejection;
+            }
+
+            if (FactionRosterCompletenessValidator.IsSecondaryIncomeKind(definition.LegacyKind) &&
+                CountPlayerUnitsOfKind(header.Player, definition.LegacyKind) >=
+                SimulationConstants.MaxSecondaryBuildingsPerPlayer)
+            {
+                return MatchCommandRejection.ConstructionRejected;
             }
 
             var stepMm = SnapGrid.DefaultSnapStepMm;
@@ -1515,8 +1607,6 @@ namespace GlobalFront.Server
             var footprint = new BuildingFootprint(
                 definition.FootprintWidthCells * stepMm,
                 definition.FootprintHeightCells * stepMm);
-            var method = builder.IsValid ? ConstructionMethod.DozerWorker : ConstructionMethod.Modular;
-            var powerDelta = definition.PowerConsumption - definition.PowerProduction;
 
             // TryStartBuilding refuses a zero entity id, so the gate allocates
             // one from the same high-water source as every other spawn. The
@@ -1532,13 +1622,14 @@ namespace GlobalFront.Server
                 buildingEntityId.Value,
                 center,
                 footprint,
-                method,
+                ConstructionMethod.DozerWorker,
                 ConstructionRegistry.DefaultWorkPerTick,
                 definition.Cost,
-                powerDelta,
+                definition.PowerConsumption - definition.PowerProduction,
                 false,
                 null,
                 definition.LegacyKind,
+                blueprint.Value,
                 out _);
 
             if (!started)
@@ -1579,6 +1670,16 @@ namespace GlobalFront.Server
             if (definition.BuildTimeTicks > ushort.MaxValue)
             {
                 return MatchCommandRejection.InvalidPayload;
+            }
+
+            // Step 5.5.3: China's hacker roster is capped at the 4-Internet-
+            // Center ceiling (4 centers x 4 hackers). The per-center
+            // distribution is not tracked yet — the ceiling is per player.
+            if (definition.LegacyKind == UnitKinds.Hacker &&
+                CountPlayerUnitsOfKind(header.Player, UnitKinds.Hacker) >=
+                SimulationConstants.MaxHackersPerPlayer)
+            {
+                return MatchCommandRejection.HackerCapacityReached;
             }
 
             var produced = TryEnqueueProduce(
@@ -1713,7 +1814,7 @@ namespace GlobalFront.Server
         {
             return TryStartBuilding(
                 player, buildingEntityId, center, footprint, method, baseWorkPerTick, paidCost,
-                powerDelta, isProduction, exitPoint, UnitKinds.BaseStructure, out rejection);
+                powerDelta, isProduction, exitPoint, UnitKinds.BaseStructure, 0, out rejection);
         }
 
         /// <summary>
@@ -1721,7 +1822,9 @@ namespace GlobalFront.Server
         /// frame's final archetype from tick 0, enabling the economic
         /// auto-registration on completion — SupplyCenter, DropZone and
         /// BlackMarket frames classify themselves through the roster record.
-        /// Every existing caller defaults to BaseStructure.
+        /// Every existing caller defaults to BaseStructure. Builds outside the
+        /// blueprint catalog: the completed building keeps the legacy
+        /// FrameStats line.
         /// </summary>
         public bool TryStartBuilding(
             PlayerId player,
@@ -1735,6 +1838,36 @@ namespace GlobalFront.Server
             bool isProduction,
             WorldPointMm? exitPoint,
             byte buildingKind,
+            out ConstructionStartRejection rejection)
+        {
+            return TryStartBuilding(
+                player, buildingEntityId, center, footprint, method, baseWorkPerTick, paidCost,
+                powerDelta, isProduction, exitPoint, buildingKind, 0, out rejection);
+        }
+
+        /// <summary>
+        /// Full Step 5.5.3 overload: <paramref name="buildingKind"/> is the
+        /// frame's final archetype from tick 0, enabling the economic
+        /// auto-registration on completion — SupplyCenter, DropZone and
+        /// BlackMarket frames classify themselves through the roster record —
+        /// and <paramref name="blueprintId"/> ties the frame to its catalog row
+        /// so completion re-arms it with the row's real stats. A zero
+        /// blueprint id keeps the legacy FrameStats line (callers that build
+        /// outside the catalog).
+        /// </summary>
+        public bool TryStartBuilding(
+            PlayerId player,
+            ulong buildingEntityId,
+            WorldPointMm center,
+            BuildingFootprint footprint,
+            ConstructionMethod method,
+            int baseWorkPerTick,
+            int paidCost,
+            int powerDelta,
+            bool isProduction,
+            WorldPointMm? exitPoint,
+            byte buildingKind,
+            ushort blueprintId,
             out ConstructionStartRejection rejection)
         {
             if (!player.IsValid)
@@ -1787,7 +1920,8 @@ namespace GlobalFront.Server
                 SnapGrid.SnapPosition(center),
                 0,
                 false,
-                buildingKind);
+                buildingKind,
+                blueprintId);
 
             if (isProduction)
             {
@@ -1972,6 +2106,30 @@ namespace GlobalFront.Server
             return MatchCommandRejection.None;
         }
 
+        /// <summary>
+        /// Counts the player's living roster units of one legacy kind (Step
+        /// 5.5.3): the per-player ceiling check for secondary-income buildings
+        /// and the China hacker roster. Frames carry their final kind from
+        /// tick 0, so in-progress buildings count against the cap. Command-path
+        /// only — a linear walk is fine where a wire command lands.
+        /// </summary>
+        private int CountPlayerUnitsOfKind(PlayerId player, byte kind)
+        {
+            var count = 0;
+            for (var index = 0; index < _orderedUnits.Count; index++)
+            {
+                var unit = _orderedUnits[index];
+                if (unit.Combat.Owner == player &&
+                    unit.UnitKind == kind &&
+                    unit.Combat.IsAlive)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
         private MatchCommandRejection ValidateControllable(EntityId entity, PlayerId player)
         {
             // Fail-closed (M1.1 P1-1): a foreign id and a nonexistent id must
@@ -2118,6 +2276,8 @@ namespace GlobalFront.Server
         /// </summary>
         private void MoveUnits()
         {
+            RecountHordeNeighbors();
+
             _startPositionsCache.Clear();
             for (var index = 0; index < _orderedUnits.Count; index++)
             {
@@ -2170,16 +2330,91 @@ namespace GlobalFront.Server
                     continue;
                 }
 
+                var stepSpeed = unit.SpeedMmPerTick;
+                if (unit.HordeNeighborCount > 0)
+                {
+                    // Step 5.5.3 Horde Bonus: a qualifying China horde marches
+                    // faster; the calculator keeps the step positive.
+                    stepSpeed = HordeBonusCalculator.ApplyToSpeed(
+                        unit.SpeedMmPerTick, unit.HordeNeighborCount);
+                }
+
                 unit.Position = PlanarMovement.StepTowards(
                     unit.Position,
                     unit.MoveTarget,
-                    unit.SpeedMmPerTick);
+                    stepSpeed);
 
                 if (unit.Position == unit.MoveTarget)
                 {
                     unit.HasMoveTarget = false;
                 }
             }
+        }
+
+        /// <summary>
+        /// Step 5.5.3 Horde Bonus recount (RND: the horde state is re-derived
+        /// every tick in canonical roster order). For each living China-owned
+        /// infantry or vehicle unit the walk counts same-owner, same-kind,
+        /// living units within <see cref="SimulationConstants.HordeRadiusMm"/> —
+        /// the unit itself included. O(chinaUnits x roster) squared-distance
+        /// checks, zero allocations; everything skips out when no declared
+        /// player is China.
+        /// </summary>
+        private void RecountHordeNeighbors()
+        {
+            if (!_hordeFactionPresent)
+            {
+                return;
+            }
+
+            var hordeSquaredRadius = (ulong)SimulationConstants.HordeRadiusMm * SimulationConstants.HordeRadiusMm;
+            for (var index = 0; index < _orderedUnits.Count; index++)
+            {
+                var unit = _orderedUnits[index];
+                if (!IsHordeCandidate(unit))
+                {
+                    unit.HordeNeighborCount = 0;
+                    continue;
+                }
+
+                var count = 0;
+                for (var other = 0; other < _orderedUnits.Count; other++)
+                {
+                    var candidate = _orderedUnits[other];
+                    if (candidate.Combat.Owner != unit.Combat.Owner ||
+                        candidate.UnitKind != unit.UnitKind ||
+                        !candidate.Combat.IsAlive)
+                    {
+                        continue;
+                    }
+
+                    if (CombatMath.SquaredDistance(unit.Position, candidate.Position) <= hordeSquaredRadius)
+                    {
+                        count++;
+                    }
+                }
+
+                unit.HordeNeighborCount = count;
+            }
+        }
+
+        /// <summary>Living China-owned mobile-combat unit of a horde category.</summary>
+        private bool IsHordeCandidate(UnitRecord unit)
+        {
+            return _hordeFactionPresent &&
+                   unit.Combat.IsAlive &&
+                   (unit.UnitKind == UnitKinds.Infantry || unit.UnitKind == UnitKinds.Tank) &&
+                   IsChinaPlayer(unit.Combat.Owner);
+        }
+
+        private bool IsChinaPlayer(PlayerId player)
+        {
+            if (!player.IsValid || _playerFactions == null || player.Value >= _playerFactions.Length)
+            {
+                return false;
+            }
+
+            return _playerFactions[player.Value] == FactionId.China;
         }
 
         /// <summary>
@@ -2295,7 +2530,10 @@ namespace GlobalFront.Server
             for (var index = 0; index < count; index++)
             {
                 var unit = _orderedUnits[index];
-                _combatantInputsCache[index] = new CombatantTickInput(unit.Combat, unit.Position);
+                _combatantInputsCache[index] = new CombatantTickInput(
+                    unit.Combat,
+                    unit.Position,
+                    HordeBonusCalculator.DamagePermille(unit.HordeNeighborCount));
             }
 
             var result = _combatResolver.Resolve(
