@@ -121,7 +121,8 @@ namespace GlobalFront.Core.Catalog
                     speedMmPerTick: 750, visionRangeMm: 11000, lightArmor: true, damageType: DamageType.GuidedMissile),
                 Vehicle(new BlueprintId(108), FactionId.USA,
                     cost: 1300, buildTimeTicks: 500, health: 300, damage: 110, rangeMm: 14000, cooldownTicks: 120,
-                    speedMmPerTick: 550, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive),
+                    speedMmPerTick: 550, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive,
+                    splashRadiusMm: 8_000),
                 Builder(new BlueprintId(174), FactionId.USA,
                     cost: 500, buildTimeTicks: 150, health: 600, speedMmPerTick: 500, visionRangeMm: 8000),
 
@@ -164,7 +165,8 @@ namespace GlobalFront.Core.Catalog
                     legacyKind: UnitKinds.DropZone),
                 Attacking(new BlueprintId(118), FactionId.USA, BlueprintCategory.Superweapon,
                     cost: 5000, buildTimeTicks: 900, health: 3000, damage: 500, rangeMm: 20000, cooldownTicks: 300,
-                    DamageType.HighTechLaser, ArmorType.Fortified, 6, 6, powerConsumption: 10, visionRangeMm: 12000),
+                    DamageType.HighTechLaser, ArmorType.Fortified, 6, 6, powerConsumption: 10, visionRangeMm: 12000,
+                    splashRadiusMm: 10_000),
             };
         }
 
@@ -205,13 +207,16 @@ namespace GlobalFront.Core.Catalog
                     speedMmPerTick: 500, visionRangeMm: 10000),
                 Vehicle(new BlueprintId(207), FactionId.China,
                     cost: 800, buildTimeTicks: 300, health: 400, damage: 45, rangeMm: 7000, cooldownTicks: 30,
-                    speedMmPerTick: 750, visionRangeMm: 9000, lightArmor: true, damageType: DamageType.ThermobaricNapalm),
+                    speedMmPerTick: 750, visionRangeMm: 9000, lightArmor: true, damageType: DamageType.ThermobaricNapalm,
+                    splashRadiusMm: 5_000),
                 Vehicle(new BlueprintId(208), FactionId.China,
                     cost: 1200, buildTimeTicks: 450, health: 400, damage: 90, rangeMm: 11000, cooldownTicks: 80,
-                    speedMmPerTick: 600, visionRangeMm: 10000, damageType: DamageType.ThermobaricNapalm),
+                    speedMmPerTick: 600, visionRangeMm: 10000, damageType: DamageType.ThermobaricNapalm,
+                    splashRadiusMm: 7_000),
                 Vehicle(new BlueprintId(209), FactionId.China,
                     cost: 1600, buildTimeTicks: 550, health: 400, damage: 150, rangeMm: 14000, cooldownTicks: 150,
-                    speedMmPerTick: 550, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive),
+                    speedMmPerTick: 550, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive,
+                    splashRadiusMm: 9_000),
                 Harvester(new BlueprintId(222), FactionId.China,
                     cost: 1000, buildTimeTicks: 250, health: 500, speedMmPerTick: 700, visionRangeMm: 9000),
                 Builder(new BlueprintId(224), FactionId.China,
@@ -253,7 +258,8 @@ namespace GlobalFront.Core.Catalog
                     DamageType.HeavyMachineGun, ArmorType.HeavyVehicle, 3, 3, powerConsumption: 1, visionRangeMm: 10000),
                 Attacking(new BlueprintId(226), FactionId.China, BlueprintCategory.Superweapon,
                     cost: 5000, buildTimeTicks: 900, health: 2500, damage: 400, rangeMm: 20000, cooldownTicks: 400,
-                    DamageType.ArtilleryExplosive, ArmorType.Fortified, 6, 6, powerConsumption: 8, visionRangeMm: 12000),
+                    DamageType.ArtilleryExplosive, ArmorType.Fortified, 6, 6, powerConsumption: 8, visionRangeMm: 12000,
+                    splashRadiusMm: 12_000),
             };
         }
 
@@ -304,13 +310,16 @@ namespace GlobalFront.Core.Catalog
                     speedMmPerTick: 850, visionRangeMm: 10000, lightArmor: true, damageType: DamageType.HeavyMachineGun),
                 Vehicle(new BlueprintId(319), FactionId.GLA,
                     cost: 900, buildTimeTicks: 300, health: 400, damage: 40, rangeMm: 8500, cooldownTicks: 40,
-                    speedMmPerTick: 700, visionRangeMm: 9000, damageType: DamageType.ToxinChemical),
+                    speedMmPerTick: 700, visionRangeMm: 9000, damageType: DamageType.ToxinChemical,
+                    splashRadiusMm: 6_000),
                 Vehicle(new BlueprintId(320), FactionId.GLA,
                     cost: 1200, buildTimeTicks: 400, health: 600, damage: 150, rangeMm: 1500, cooldownTicks: 80,
-                    speedMmPerTick: 750, visionRangeMm: 9000, damageType: DamageType.ThermobaricNapalm),
+                    speedMmPerTick: 750, visionRangeMm: 9000, damageType: DamageType.ThermobaricNapalm,
+                    splashRadiusMm: 5_000),
                 Vehicle(new BlueprintId(321), FactionId.GLA,
                     cost: 1500, buildTimeTicks: 500, health: 350, damage: 130, rangeMm: 14000, cooldownTicks: 140,
-                    speedMmPerTick: 550, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive),
+                    speedMmPerTick: 550, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive,
+                    splashRadiusMm: 9_000),
                 Vehicle(new BlueprintId(322), FactionId.GLA,
                     cost: 1000, buildTimeTicks: 350, health: 900, damage: 20, rangeMm: 6000, cooldownTicks: 20,
                     speedMmPerTick: 650, visionRangeMm: 9000, damageType: DamageType.SmallArms),
@@ -342,7 +351,8 @@ namespace GlobalFront.Core.Catalog
                     DamageType.ThermobaricNapalm, ArmorType.Fortified, 2, 2, visionRangeMm: 4000),
                 Attacking(new BlueprintId(318), FactionId.GLA, BlueprintCategory.Superweapon,
                     cost: 5000, buildTimeTicks: 900, health: 2500, damage: 140, rangeMm: 20000, cooldownTicks: 350,
-                    DamageType.ArtilleryExplosive, ArmorType.Fortified, 6, 6, visionRangeMm: 12000),
+                    DamageType.ArtilleryExplosive, ArmorType.Fortified, 6, 6, visionRangeMm: 12000,
+                    splashRadiusMm: 10_000),
             };
         }
 
@@ -362,7 +372,8 @@ namespace GlobalFront.Core.Catalog
                     damage: 75, rangeMm: 9000, cooldownTicks: 50, damageType: DamageType.AntiTankCannon),
                 Infantry(new BlueprintId(403), FactionId.Russia,
                     cost: 400, buildTimeTicks: 150, health: 130, speedMmPerTick: 520, visionRangeMm: 8000,
-                    damage: 50, rangeMm: 5000, cooldownTicks: 30, damageType: DamageType.ThermobaricNapalm),
+                    damage: 50, rangeMm: 5000, cooldownTicks: 30, damageType: DamageType.ThermobaricNapalm,
+                    splashRadiusMm: 4_000),
                 Infantry(new BlueprintId(404), FactionId.Russia,
                     cost: 700, buildTimeTicks: 200, health: 120, speedMmPerTick: 500, visionRangeMm: 11000,
                     damage: 85, rangeMm: 11000, cooldownTicks: 80),
@@ -383,10 +394,12 @@ namespace GlobalFront.Core.Catalog
                     speedMmPerTick: 700, visionRangeMm: 10000),
                 Vehicle(new BlueprintId(408), FactionId.Russia,
                     cost: 1600, buildTimeTicks: 500, health: 450, damage: 130, rangeMm: 12000, cooldownTicks: 130,
-                    speedMmPerTick: 600, visionRangeMm: 11000, damageType: DamageType.ThermobaricNapalm),
+                    speedMmPerTick: 600, visionRangeMm: 11000, damageType: DamageType.ThermobaricNapalm,
+                    splashRadiusMm: 8_000),
                 Vehicle(new BlueprintId(409), FactionId.Russia,
                     cost: 1500, buildTimeTicks: 500, health: 420, damage: 120, rangeMm: 14000, cooldownTicks: 130,
-                    speedMmPerTick: 600, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive),
+                    speedMmPerTick: 600, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive,
+                    splashRadiusMm: 9_000),
                 Vehicle(new BlueprintId(425), FactionId.Russia,
                     cost: 1200, buildTimeTicks: 400, health: 500, damage: 65, rangeMm: 12000, cooldownTicks: 45,
                     speedMmPerTick: 750, visionRangeMm: 11000, lightArmor: true, damageType: DamageType.GuidedMissile),
@@ -444,7 +457,8 @@ namespace GlobalFront.Core.Catalog
                     DamageType.GuidedMissile, ArmorType.HeavyVehicle, 4, 4, powerConsumption: 1, visionRangeMm: 12500),
                 Attacking(new BlueprintId(421), FactionId.Russia, BlueprintCategory.Superweapon,
                     cost: 5000, buildTimeTicks: 900, health: 2800, damage: 400, rangeMm: 20000, cooldownTicks: 400,
-                    DamageType.ArtilleryExplosive, ArmorType.Fortified, 6, 6, powerConsumption: 8, visionRangeMm: 12000),
+                    DamageType.ArtilleryExplosive, ArmorType.Fortified, 6, 6, powerConsumption: 8, visionRangeMm: 12000,
+                    splashRadiusMm: 12_000),
             };
         }
 
@@ -483,10 +497,12 @@ namespace GlobalFront.Core.Catalog
                     speedMmPerTick: 820, visionRangeMm: 8000),
                 Vehicle(new BlueprintId(507), FactionId.NATO,
                     cost: 1600, buildTimeTicks: 500, health: 450, damage: 125, rangeMm: 14500, cooldownTicks: 130,
-                    speedMmPerTick: 600, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive),
+                    speedMmPerTick: 600, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive,
+                    splashRadiusMm: 9_000),
                 Vehicle(new BlueprintId(508), FactionId.NATO,
                     cost: 1500, buildTimeTicks: 500, health: 400, damage: 135, rangeMm: 14000, cooldownTicks: 120,
-                    speedMmPerTick: 650, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive),
+                    speedMmPerTick: 650, visionRangeMm: 11000, damageType: DamageType.ArtilleryExplosive,
+                    splashRadiusMm: 9_000),
                 Vehicle(new BlueprintId(509), FactionId.NATO,
                     cost: 1300, buildTimeTicks: 450, health: 450, damage: 70, rangeMm: 12500, cooldownTicks: 50,
                     speedMmPerTick: 800, visionRangeMm: 11000, lightArmor: true, damageType: DamageType.GuidedMissile),
@@ -543,7 +559,8 @@ namespace GlobalFront.Core.Catalog
                     DamageType.GuidedMissile, ArmorType.HeavyVehicle, 4, 4, powerConsumption: 1, visionRangeMm: 12500),
                 Attacking(new BlueprintId(521), FactionId.NATO, BlueprintCategory.Superweapon,
                     cost: 5000, buildTimeTicks: 900, health: 2800, damage: 450, rangeMm: 20000, cooldownTicks: 350,
-                    DamageType.HighTechLaser, ArmorType.Fortified, 6, 6, powerConsumption: 10, visionRangeMm: 12000),
+                    DamageType.HighTechLaser, ArmorType.Fortified, 6, 6, powerConsumption: 10, visionRangeMm: 12000,
+                    splashRadiusMm: 10_000),
             };
         }
 
@@ -562,7 +579,8 @@ namespace GlobalFront.Core.Catalog
             int damage = 25, int rangeMm = 7000, uint cooldownTicks = 10,
             DamageType damageType = DamageType.SmallArms,
             bool heavyInfantry = false,
-            byte legacyKind = UnitKinds.Infantry)
+            byte legacyKind = UnitKinds.Infantry,
+            int splashRadiusMm = 0)
         {
             return new BlueprintDefinition(
                 id, faction, BlueprintCategory.Infantry, legacyKind,
@@ -570,7 +588,8 @@ namespace GlobalFront.Core.Catalog
                 new CombatStats(
                     health, damage, rangeMm, cooldownTicks,
                     (byte)damageType,
-                    (byte)(heavyInfantry ? ArmorType.HeavyInfantry : ArmorType.Infantry)),
+                    (byte)(heavyInfantry ? ArmorType.HeavyInfantry : ArmorType.Infantry),
+                    splashRadiusMm),
                 speedMmPerTick, 0, 0, 0, 0, visionRangeMm);
         }
 
@@ -585,7 +604,8 @@ namespace GlobalFront.Core.Catalog
             int cost, uint buildTimeTicks, int health, int damage, int rangeMm, uint cooldownTicks,
             int speedMmPerTick, int visionRangeMm,
             bool lightArmor = false,
-            DamageType damageType = DamageType.AntiTankCannon)
+            DamageType damageType = DamageType.AntiTankCannon,
+            int splashRadiusMm = 0)
         {
             return new BlueprintDefinition(
                 id, faction, BlueprintCategory.Vehicle, UnitKinds.Tank,
@@ -593,7 +613,8 @@ namespace GlobalFront.Core.Catalog
                 new CombatStats(
                     health, damage, rangeMm, cooldownTicks,
                     (byte)damageType,
-                    (byte)(lightArmor ? ArmorType.LightVehicle : ArmorType.HeavyVehicle)),
+                    (byte)(lightArmor ? ArmorType.LightVehicle : ArmorType.HeavyVehicle),
+                    splashRadiusMm),
                 speedMmPerTick, 0, 0, 0, 0, visionRangeMm);
         }
 
@@ -710,14 +731,16 @@ namespace GlobalFront.Core.Catalog
             int cost, uint buildTimeTicks, int health, int damage, int rangeMm, uint cooldownTicks,
             DamageType damageType, ArmorType armorType,
             int footprintWidthCells, int footprintHeightCells,
-            int powerProduction = 0, int powerConsumption = 0, int visionRangeMm = 9000)
+            int powerProduction = 0, int powerConsumption = 0, int visionRangeMm = 9000,
+            int splashRadiusMm = 0)
         {
             return new BlueprintDefinition(
                 id, faction, category, UnitKinds.BaseStructure,
                 cost, buildTimeTicks,
                 new CombatStats(
                     health, damage, rangeMm, cooldownTicks,
-                    (byte)damageType, (byte)armorType),
+                    (byte)damageType, (byte)armorType,
+                    splashRadiusMm),
                 speedMmPerTick: 0, footprintWidthCells: footprintWidthCells,
                 footprintHeightCells: footprintHeightCells,
                 powerProduction: powerProduction, powerConsumption: powerConsumption,

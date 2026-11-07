@@ -820,6 +820,47 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         }
 
         [Test]
+        public void Radar_ClassifiesAlliesOnlyInTeamMatch()
+        {
+            // Step 5.6.2: the Ally classification exists for team matches and
+            // must not leak into a 1v1 reading, where player 2 is the enemy.
+            var teammateSlot = Spawn(1, Ax, RowZ, owner: 2);
+            var thirdSlot = Spawn(2, Bx, RowZ, owner: 3);
+
+            Assert.That(_radar.Rebuild(), Is.EqualTo(2));
+            Assert.That(
+                BlipFor(1).Kind, Is.EqualTo(MinimapBlipKind.Enemy),
+                "with the team flag off, any non-local owner is an enemy — a 1v1 opponent must never read as an ally");
+
+            _radar.IsTeamMatch = true;
+            Assert.That(_radar.Rebuild(), Is.EqualTo(2));
+            Assert.That(
+                BlipFor(1).Kind, Is.EqualTo(MinimapBlipKind.Ally),
+                "player 2 is Team Red under the 2v2 topology, same as the local player 1");
+            Assert.That(
+                BlipFor(2).Kind, Is.EqualTo(MinimapBlipKind.Enemy),
+                "player 3 is Team Blue: an enemy no matter the flag");
+
+            // The allied cyan is a fourth distinct palette colour.
+            var palette = MinimapBlipPalette.Default;
+            Assert.That(
+                palette.ColorFor(MinimapBlipKind.Ally),
+                Is.Not.EqualTo(palette.ColorFor(MinimapBlipKind.Friendly)));
+            Assert.That(
+                palette.ColorFor(MinimapBlipKind.Ally),
+                Is.Not.EqualTo(palette.ColorFor(MinimapBlipKind.Enemy)));
+            Assert.That(
+                palette.ColorFor(MinimapBlipKind.Ally),
+                Is.Not.EqualTo(palette.ColorFor(MinimapBlipKind.Selected)));
+
+            _radar.IsTeamMatch = false;
+            Assert.That(_radar.Rebuild(), Is.EqualTo(2));
+            Assert.That(
+                BlipFor(1).Kind, Is.EqualTo(MinimapBlipKind.Enemy),
+                "clearing the team flag restores the 1v1 reading");
+        }
+
+        [Test]
         public void Radar_ExcludesDeadUnits()
         {
             Spawn(1, Ax, RowZ);
@@ -1056,6 +1097,11 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
             Assert.That(palette.ColorFor(MinimapBlipKind.Friendly), Is.Not.EqualTo(palette.ColorFor(MinimapBlipKind.Enemy)));
             Assert.That(palette.ColorFor(MinimapBlipKind.Selected), Is.Not.EqualTo(palette.ColorFor(MinimapBlipKind.Friendly)));
             Assert.That(palette.ColorFor(MinimapBlipKind.Selected), Is.Not.EqualTo(palette.ColorFor(MinimapBlipKind.Enemy)));
+
+            // Step 5.6.2: the allied cyan is distinct from every existing kind.
+            Assert.That(palette.ColorFor(MinimapBlipKind.Ally), Is.Not.EqualTo(palette.ColorFor(MinimapBlipKind.Friendly)));
+            Assert.That(palette.ColorFor(MinimapBlipKind.Ally), Is.Not.EqualTo(palette.ColorFor(MinimapBlipKind.Enemy)));
+            Assert.That(palette.ColorFor(MinimapBlipKind.Ally), Is.Not.EqualTo(palette.ColorFor(MinimapBlipKind.Selected)));
         }
 
         [Test]

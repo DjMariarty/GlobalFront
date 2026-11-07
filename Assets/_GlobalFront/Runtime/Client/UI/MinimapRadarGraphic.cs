@@ -20,28 +20,46 @@ namespace GlobalFront.Client.UI
         /// <summary>The local player's units that are currently selected.</summary>
         public Color32 Selected;
 
+        /// <summary>A teammate's units in a team match (Step 5.6.2): allied, commandable by an ally, never by the local player.</summary>
+        public Color32 Ally;
+
         public MinimapBlipPalette(Color32 friendly, Color32 enemy, Color32 selected)
         {
             Friendly = friendly;
             Enemy = enemy;
             Selected = selected;
+            Ally = DefaultAlly;
         }
+
+        public MinimapBlipPalette(Color32 friendly, Color32 enemy, Color32 selected, Color32 ally)
+        {
+            Friendly = friendly;
+            Enemy = enemy;
+            Selected = selected;
+            Ally = ally;
+        }
+
+        /// <summary>Allied cyan: clearly neither the friendly green nor the enemy red (Step 5.6.2).</summary>
+        public static readonly Color32 DefaultAlly = new Color32(51, 204, 229, 255);
 
         /// <summary>
         /// The prototype palette: friendly green, enemy red, selection amber, the
-        /// Generals/Zero Hour reading of the three cases (ADR-003 keeps the product
-        /// formula, so this is the conventional choice rather than a new one).
+        /// Generals/Zero Hour reading of the cases (ADR-003 keeps the product
+        /// formula, so this is the conventional choice rather than a new one);
+        /// allied cyan completes the team reading (Step 5.6.2).
         /// </summary>
         public static MinimapBlipPalette Default => new MinimapBlipPalette(
             new Color32(96, 220, 120, 255),
             new Color32(226, 84, 74, 255),
-            new Color32(252, 206, 92, 255));
+            new Color32(252, 206, 92, 255),
+            DefaultAlly);
 
         /// <summary>The colour for one blip state.</summary>
         public Color32 ColorFor(MinimapBlipKind kind) => kind switch
         {
             MinimapBlipKind.Enemy => Enemy,
             MinimapBlipKind.Selected => Selected,
+            MinimapBlipKind.Ally => Ally,
             _ => Friendly,
         };
     }
@@ -253,6 +271,9 @@ namespace GlobalFront.Client.UI
         [SerializeField] private Color friendlyColor = new Color(0.38f, 0.86f, 0.47f, 1f);
         [SerializeField] private Color enemyColor = new Color(0.89f, 0.33f, 0.29f, 1f);
         [SerializeField] private Color selectedColor = new Color(0.99f, 0.81f, 0.36f, 1f);
+
+        /// <summary>Step 5.6.2: teammate blips in a team match — allied cyan.</summary>
+        [SerializeField] private Color allyColor = new Color(0.2f, 0.8f, 0.9f, 1f);
         [SerializeField, Min(1f)] private float blipSizePixels = 3f;
         [SerializeField, Range(8, 1024)] private int radarGridSizePixels =
             MinimapBlipGeometry.DefaultRadarGridSizePixels;
@@ -380,7 +401,12 @@ namespace GlobalFront.Client.UI
 
         /// <summary>The palette currently in use, from the serialized colours.</summary>
         public MinimapBlipPalette Palette => new MinimapBlipPalette(
-            friendlyColor, enemyColor, selectedColor);
+            friendlyColor, enemyColor, selectedColor,
+            new Color32(
+                (byte)Mathf.RoundToInt(allyColor.r * 255f),
+                (byte)Mathf.RoundToInt(allyColor.g * 255f),
+                (byte)Mathf.RoundToInt(allyColor.b * 255f),
+                (byte)Mathf.RoundToInt(allyColor.a * 255f)));
 
         /// <inheritdoc/>
         /// <remarks>

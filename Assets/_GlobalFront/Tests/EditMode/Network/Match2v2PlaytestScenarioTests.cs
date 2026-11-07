@@ -87,7 +87,10 @@ namespace GlobalFront.Tests.EditMode.Network
             }
         }
 
-        private Match2v2Fixture CreateFixture(int disconnectGraceTicks = LocalMatchHost.DefaultDisconnectGraceTicks)
+        private Match2v2Fixture CreateFixture(
+            int disconnectGraceTicks = LocalMatchHost.DefaultDisconnectGraceTicks,
+            FogOfWarReplicationFilter fogFilter = null,
+            ICombatRelation combatRelation = null)
         {
             var fixture = new Match2v2Fixture();
 
@@ -95,7 +98,9 @@ namespace GlobalFront.Tests.EditMode.Network
                 new ImpairmentProfile(),
                 ServerReplicationEmitterConfig.Default,
                 clientCount: 4,
-                disconnectGraceTicks: disconnectGraceTicks);
+                disconnectGraceTicks: disconnectGraceTicks,
+                filter: fogFilter,
+                combatRelation: combatRelation);
 
             for (var i = 0; i < 4; i++)
             {
@@ -139,6 +144,16 @@ namespace GlobalFront.Tests.EditMode.Network
                 fixture.World.Rig.Host.TryStartSessionMatch(fixture.World.Rig.Match, matchConfig, out var entityIds),
                 Is.True,
                 "2v2 session match must start");
+
+            // Step 5.6.2: a fog-equipped fixture maps the four slots onto their
+            // teams immediately, so shared vision applies from the first tick.
+            if (fogFilter != null)
+            {
+                fogFilter.SetPlayerTeam(fixture.P1, MatchTopology2v2.TeamRed);
+                fogFilter.SetPlayerTeam(fixture.P2, MatchTopology2v2.TeamRed);
+                fogFilter.SetPlayerTeam(fixture.P3, MatchTopology2v2.TeamBlue);
+                fogFilter.SetPlayerTeam(fixture.P4, MatchTopology2v2.TeamBlue);
+            }
 
             fixture.Unit1 = entityIds[0];
             fixture.Unit2 = entityIds[1];
@@ -524,6 +539,289 @@ namespace GlobalFront.Tests.EditMode.Network
             Assert.That(chk0, Is.Not.Zero);
             Assert.That(chk1, Is.EqualTo(chk0), "Client 1 checksum must match Client 0 in 2v1");
             Assert.That(chk2, Is.EqualTo(chk0), "Client 2 checksum must match Client 0 in 2v1");
+        }
+
+        // ------------------------------------------------------------------
+        // Step 5.6.2: Milestone M2 acceptance (shared vision, splash, team win)
+        // ------------------------------------------------------------------
+
+        [Test]
+        public void Playtest2v2_SharedVision_AlliedSightRevealsEnemiesInReplicationSlice()
+        {
+            using var fixture = CreateFixture(
+                fogFilter: new FogOfWarReplicationFilter());
+            var world = fixture.World;
+            var client0 = world.Clients[0];
+
+            // The P1 army sits at its fixture base; the shared-vision geometry
+            // is staged far away from it: an allied scout within sight of an
+            // enemy, and that enemy beyond the P1 army's own sight radius.
+            // Sight radius is the engine default of 20 000 mm.
+            var allyScout = world.Rig.Host.Server.SpawnUnit(
+                fixture.P2,
+                new CombatStats(100, 1, 7000, 3),
+                new WorldPointMm(-10_000, 0),
+                speedMmPerTick: 500,
+                autoAcquire: false,
+                UnitKinds.Infantry);
+            var enemy = world.Rig.Host.Server.SpawnUnit(
+                fixture.P3,
+                new CombatStats(100, 1, 7000, 3),
+                new WorldPointMm(-25_000, 0),
+                speedMmPerTick: 500,
+                autoAcquire: false,
+                UnitKinds.Infantry);
+            var farEnemy = world.Rig.Host.Server.SpawnUnit(
+                fixture.P4,
+                new CombatStats(100, 1, 7000, 3),
+                new WorldPointMm(200_000, 0),
+                speedMmPerTick: 500,
+                autoAcquire: false,
+                UnitKinds.Infantry);
+
+            // The fog filter serves masks from its per-tick history, so the
+            // scenario asserts need a completed tick recorded after spawn.
+            for (var tick = 0; tick < 3; tick++)
+            {
+                world.PumpTick();
+            }
+
+            // P2 (15 000 mm from the enemy) sees it; the P1 army (about
+            // 36 400 mm away) cannot see it on its own — but shared vision is
+            // exactly the feature under test: through the ally, P1 sees it too.
+            var lastCompletedTick = world.Rig.Host.CurrentTick - 1;
+            Assert.That(
+                world.Rig.Host.Server.VisibilityFilter.IsVisible(
+                    lastCompletedTick, fixture.P2, enemy),
+                Is.True, "scenario setup: the allied scout must see the enemy");
+            Assert.That(
+                world.Rig.Host.Server.VisibilityFilter.IsVisible(
+                    lastCompletedTick, fixture.P1, farEnemy),
+                Is.False,
+                "an enemy nobody's sight reaches stays hidden even through the team map");
+
+            for (var tick = 0; tick < 5; tick++)
+            {
+                world.PumpTick();
+            }
+
+            // Shared vision: the enemy the ally revealed lands in P1's
+            // replication slice, and the far enemy stays out of it.
+            Assert.That(
+                client0.Receiver.World.Contains(enemy),
+                Is.True,
+                "an enemy revealed by an ally must reach the ally's teammate over the wire");
+            Assert.That(
+                client0.Receiver.World.Contains(farEnemy),
+                Is.False,
+                "an enemy nobody sees must not reach the teammate's slice");
+            Assert.That(
+                client0.Receiver.World.Contains(allyScout),
+                Is.True,
+                "allies are always visible to each other");
+        }
+
+        [Test]
+        public void Playtest2v2_FriendlySplash_DoesNotDamageAlliedUnits()
+        {
+            // Team relation: the red ally (P2) must be untouchable by splash.
+            using var fixture = CreateFixture(
+                combatRelation: Team2v2CombatRelation.Instance);
+            var world = fixture.World;
+            var client0 = world.Clients[0];
+
+            // P1 artillery (splash 8000) fires at a blue cluster; a red ally
+            // stands well inside the blast radius — friendly splash is
+            // forbidden, so only the blue units lose health.
+            var artillery = world.Rig.Host.Server.SpawnUnit(
+                fixture.P1,
+                new CombatStats(
+                    100, 40, 15_000, 1,
+                    (byte)DamageType.ArtilleryExplosive, (byte)ArmorType.HeavyVehicle,
+                    splashRadiusMm: 8_000),
+                new WorldPointMm(0, 0),
+                speedMmPerTick: 500,
+                autoAcquire: false,
+                UnitKinds.Tank);
+            var ally = world.Rig.Host.Server.SpawnUnit(
+                fixture.P2,
+                new CombatStats(100, 1, 7000, 3),
+                new WorldPointMm(10_000, -12_000),
+                speedMmPerTick: 500,
+                autoAcquire: false,
+                UnitKinds.Infantry);
+            var primary = world.Rig.Host.Server.SpawnUnit(
+                fixture.P3,
+                new CombatStats(1000, 1, 7000, 3),
+                new WorldPointMm(10_000, -8_000),
+                speedMmPerTick: 500,
+                autoAcquire: false,
+                UnitKinds.Infantry);
+            var nearbyEnemy = world.Rig.Host.Server.SpawnUnit(
+                fixture.P3,
+                new CombatStats(1000, 1, 7000, 3),
+                new WorldPointMm(10_000, -6_000),
+                speedMmPerTick: 500,
+                autoAcquire: false,
+                UnitKinds.Infantry);
+
+            // The order rides the canonical client command path (wire > session
+            // > schedule), exactly as the green SimultaneousCombat scenario
+            // drives its shots. Ten shots at cooldown 1: the blue cluster loses
+            // a known amount of health while the red ally stands untouched
+            // inside the blast radius.
+            Assert.That(
+                client0.Commands.TrySubmitAttack(
+                    new CommandHeader(fixture.P1, client0.NextCommandSequence++, world.Rig.Host.CurrentTick + 1, GameCommandType.Attack),
+                    new[] { artillery },
+                    primary),
+                Is.EqualTo(MatchCommandRejection.None), "the artillery order must pass preflight");
+
+            for (var tick = 0; tick < 10; tick++)
+            {
+                world.PumpTick();
+            }
+
+            // Exact pins over nine landed shots (the wire order executes one
+            // tick after submission, so ten pumps carry nine shots): the direct
+            // hit is 40 per shot (ArtilleryExplosive x legacy sentinel =
+            // x1.000), the hostile neighbor takes the linear falloff at 2000 mm
+            // of an 8000 mm radius (30 per shot), and the red ally at 4000 mm
+            // takes nothing — friendly splash is forbidden outright (RND §7.3).
+            Assert.That(
+                world.Rig.Host.Server.TryGetUnit(primary, out var primaryState), Is.True);
+            Assert.That(
+                1000 - primaryState.CurrentHealth,
+                Is.EqualTo(9 * DamageCalculator.CalculateDamage(
+                    40, DamageType.ArtilleryExplosive, (ArmorType)CombatStats.LegacySentinel)),
+                "the primary target takes exactly the direct hits");
+            Assert.That(
+                world.Rig.Host.Server.TryGetUnit(nearbyEnemy, out var nearbyState), Is.True);
+            Assert.That(
+                1000 - nearbyState.CurrentHealth,
+                Is.EqualTo(9 * SplashCalculator.CalculateLinearFalloff(40, 8_000, 2_000)),
+                "the hostile neighbor inside the blast takes the linear falloff");
+            Assert.That(
+                world.Rig.Host.Server.TryGetUnit(ally, out var allyState), Is.True);
+            Assert.That(
+                allyState.CurrentHealth, Is.EqualTo(100),
+                "friendly splash is forbidden outright (RND §7.3): the red ally is untouched");
+            Assert.That(
+                world.Rig.Host.Server.TryGetUnit(artillery, out var artilleryState), Is.True);
+            Assert.That(artilleryState.CurrentHealth, Is.EqualTo(100),
+                "the attacker never splashes itself");
+        }
+
+        [Test]
+        public void Playtest2v2_TeamVictory_TerminatesAllFourClientsWithMatchFinished()
+        {
+            // The team relation decides the outcome: Team Red wins when Team
+            // Blue dies (a skirmish host would report a player victory instead).
+            using var fixture = CreateFixture(
+                combatRelation: Team2v2CombatRelation.Instance);
+            var world = fixture.World;
+            var client0 = world.Clients[0];
+
+            // The production runner owns this wiring (Step 4.6.4, M1.1 P1-02):
+            // a terminal outcome detaches every session with MatchFinished, and
+            // the client endpoint surfaces it to the coordinator. The bare rig
+            // has no runner, so the test composes the same two lines.
+            world.Rig.Host.SessionTerminated += (session, reason) =>
+                world.Rig.ServerTransport.DetachSession(session, reason);
+            for (var i = 0; i < 4; i++)
+            {
+                var coordinator = fixture.Coordinators[i];
+                world.Clients[i].Endpoint.Terminated += reason =>
+                    coordinator.OnSessionTerminated(reason);
+            }
+
+            // Terminal reasons captured per client through the endpoint's
+            // termination event.
+            var reasons = new List<TransportDisconnectReason> { 0, 0, 0, 0 };
+            for (var i = 0; i < 4; i++)
+            {
+                var index = i;
+                world.Clients[i].Endpoint.Terminated += reason => reasons[index] = reason;
+            }
+
+            // A one-shot killer next to the blue cluster decides the match
+            // through the authoritative combat path: Team Blue (P3, P4) dies,
+            // Team Red survives, the outcome is a team victory. The kills are
+            // explicit wire orders from client 0 (P1), not auto-acquisition,
+            // so the scenario stays deterministic.
+            var killer = world.Rig.Host.Server.SpawnUnit(
+                fixture.P1,
+                new CombatStats(100_000, 1_000, 12_000, 1),
+                new WorldPointMm(8_000, 15_000),
+                speedMmPerTick: 1,
+                autoAcquire: false);
+
+            Assert.That(
+                client0.Commands.TrySubmitAttack(
+                    new CommandHeader(fixture.P1, client0.NextCommandSequence++, world.Rig.Host.CurrentTick + 1, GameCommandType.Attack),
+                    new[] { killer },
+                    fixture.Unit3),
+                Is.EqualTo(MatchCommandRejection.None),
+                "the killer must accept the order onto Unit 3");
+            Assert.That(
+                client0.Commands.TrySubmitAttack(
+                    new CommandHeader(fixture.P1, client0.NextCommandSequence++, world.Rig.Host.CurrentTick + 2, GameCommandType.Attack),
+                    new[] { killer },
+                    fixture.Unit4),
+                Is.EqualTo(MatchCommandRejection.None),
+                "the queued second order removes Unit 4 right after");
+
+            var budget = 0;
+            while (!world.Rig.Host.Server.Outcome.IsTerminal && budget < 200)
+            {
+                world.PumpTick();
+                budget++;
+            }
+
+            Assert.That(budget, Is.LessThan(200),
+                "the kills must land well inside the tick budget");
+            Assert.That(world.Rig.Host.Server.Outcome.IsTerminal, Is.True,
+                "eliminating Team Blue must terminate the match");
+            Assert.That(
+                world.Rig.Host.Server.Outcome.IsTeamVictory, Is.True);
+            Assert.That(
+                world.Rig.Host.Server.Outcome.WinningTeam,
+                Is.EqualTo(MatchTopology2v2.TeamRed));
+
+            // The terminal outcome fans out to every attached client as
+            // MatchFinished, and all four sessions terminate cleanly.
+            var terminated = 0;
+            var terminationBudget = 0;
+            while (terminated < 4 && terminationBudget < 100)
+            {
+                world.Pump(5);
+                terminated = 0;
+                for (var i = 0; i < 4; i++)
+                {
+                    if (fixture.Coordinators[i].State == ClientReconnectState.Terminated)
+                    {
+                        terminated++;
+                    }
+                }
+
+                terminationBudget++;
+            }
+
+            for (var i = 0; i < 4; i++)
+            {
+                Assert.That(
+                    fixture.Coordinators[i].State,
+                    Is.EqualTo(ClientReconnectState.Terminated),
+                    $"client {i} must be terminally closed (no reconnect armed)");
+                Assert.That(
+                    world.Clients[i].Endpoint.State,
+                    Is.EqualTo(ClientTransportState.Disconnected),
+                    $"client {i} socket must be closed by the server");
+                Assert.That(
+                    reasons[i],
+                    Is.EqualTo(TransportDisconnectReason.MatchFinished),
+                    $"client {i} must receive the MatchFinished terminal reason");
+            }
         }
     }
 }

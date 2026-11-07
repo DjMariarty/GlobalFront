@@ -57,13 +57,18 @@ namespace GlobalFront.Tests.EditMode
             ImpairmentProfile profile,
             int capacity = 2,
             bool autoJoin = true,
-            int disconnectGraceTicks = LocalMatchHost.DefaultDisconnectGraceTicks)
+            int disconnectGraceTicks = LocalMatchHost.DefaultDisconnectGraceTicks,
+            ICombatRelation combatRelation = null)
         {
             var rig = new Rig
             {
                 Pipe = new VirtualNetworkPipe(profile),
                 Clock = new VirtualTransportClock(),
-                Host = new LocalMatchHost(disconnectGraceTicks)
+                // Step 5.6.2: a team harness passes Team2v2CombatRelation here;
+                // null keeps the skirmish default.
+                Host = combatRelation != null
+                    ? new LocalMatchHost(new MatchServer(combatRelation), disconnectGraceTicks)
+                    : new LocalMatchHost(disconnectGraceTicks)
             };
 
             var serverAddress = rig.Pipe.CreateEndpoint();

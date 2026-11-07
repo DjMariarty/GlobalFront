@@ -73,23 +73,33 @@ namespace GlobalFront.Tests.EditMode.Integration.Replication
         /// <summary>
         /// Builds the rig, the emitter (wired to <c>TickCompleted</c>) and
         /// <paramref name="clientCount"/> fully connected client legs.
+        /// Step 5.6.2: an optional fog filter composes with the emitter, the
+        /// way the dedicated host wires its FogOfWarReplicationFilter.
         /// </summary>
         public static ReplicationIntegrationWorld Create(
             ImpairmentProfile profile,
             ServerReplicationEmitterConfig emitterConfig,
             int clientCount = 1,
-            int disconnectGraceTicks = LocalMatchHost.DefaultDisconnectGraceTicks)
+            int disconnectGraceTicks = LocalMatchHost.DefaultDisconnectGraceTicks,
+            IReplicationFilter filter = null,
+            ICombatRelation combatRelation = null)
         {
             var world = new ReplicationIntegrationWorld
             {
-                Rig = TransportTestSupport.CreateRig(profile, capacity: Math.Max(2, clientCount), disconnectGraceTicks: disconnectGraceTicks),
+                Rig = TransportTestSupport.CreateRig(
+                    profile,
+                    capacity: Math.Max(2, clientCount),
+                    disconnectGraceTicks: disconnectGraceTicks,
+                    combatRelation: combatRelation),
                 Profile = profile
             };
 
             var adapter = new TransportReplicationAdapter(world.Rig.ServerTransport);
             // The host owns the emitter lifecycle (audit P1-5): the rig wires
             // replication exactly like the production runtime would.
-            world.Emitter = world.Rig.Host.AttachReplication(adapter, emitterConfig);
+            world.Emitter = filter != null
+                ? world.Rig.Host.AttachReplication(adapter, emitterConfig, filter)
+                : world.Rig.Host.AttachReplication(adapter, emitterConfig);
 
             for (var index = 0; index < clientCount; index++)
             {

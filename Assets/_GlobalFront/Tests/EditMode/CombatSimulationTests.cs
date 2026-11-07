@@ -685,5 +685,106 @@ namespace GlobalFront.Tests.EditMode
                 return BattleOutcome.InProgress;
             }
         }
+
+        // ------------------------------------------------------------------
+        // Step 5.6.2: friendly splash filter (RND §7.3)
+        // ------------------------------------------------------------------
+
+        [Test]
+        public void Splash_In2v2_DamagesOnlyEnemies_AlliedUnitsAreUntouched()
+        {
+            // Team relation: players 1, 2 = Team Red; 3 = Team Blue. The
+            // artillery (splash 8000) fires at the blue unit; the red ally
+            // stands closer to the impact than the second blue unit.
+            var artillery = CreateState(
+                1, 1,
+                new CombatStats(
+                    100, 40, 12000, 1,
+                    (byte)DamageType.ArtilleryExplosive, (byte)ArmorType.HeavyVehicle,
+                    splashRadiusMm: 8_000));
+            var ally = CreateState(2, 2, new CombatStats(500, 1, 5000, 3));
+            var primary = CreateState(3, 3, new CombatStats(1000, 1, 5000, 3));
+            var secondary = CreateState(4, 3, new CombatStats(1000, 1, 5000, 3));
+            artillery.TryAssignTarget(primary.Entity);
+
+            var inputs = new[]
+            {
+                new CombatantTickInput(artillery, new WorldPointMm(0, 0)),
+                new CombatantTickInput(ally, new WorldPointMm(12_000, 3_000)),
+                new CombatantTickInput(primary, new WorldPointMm(9_000, 0)),
+                new CombatantTickInput(secondary, new WorldPointMm(9_000, 5_000)),
+            };
+
+            var result = CombatTickResolver.Resolve(inputs, 20, Team2v2CombatRelation.Instance);
+
+            // The direct hit and both splash candidates are hostile; the ally
+            // is untouched no matter how close it stands to the impact.
+            Assert.That(ally.CurrentHealth, Is.EqualTo(500),
+                "friendly splash is forbidden outright (RND §7.3)");
+            Assert.That(primary.CurrentHealth, Is.LessThan(1000),
+                "the primary target takes the direct hit");
+            Assert.That(secondary.CurrentHealth, Is.LessThan(1000),
+                "the farther hostile is inside the splash radius");
+
+            // The splash amounts are the linear falloff of the direct hit: the
+            // nearer hostile takes more than the farther one, and the ally
+            // appears in no damage event at all. Both targets carry the legacy
+            // sentinel line, so the direct hit survives at x1.000 (40).
+            var direct = DamageCalculator.CalculateDamage(
+                40, DamageType.ArtilleryExplosive, (ArmorType)CombatStats.LegacySentinel);
+            var expectedFar = SplashCalculator.CalculateLinearFalloff(direct, 8_000, 5_000);
+            Assert.That(1000 - primary.CurrentHealth, Is.EqualTo(direct),
+                "the primary target takes the direct hit, never the splash on top");
+            Assert.That(1000 - secondary.CurrentHealth, Is.EqualTo(expectedFar));
+            Assert.That(expectedFar, Is.GreaterThan(0), "sanity: the far hostile is inside the blast");
+            for (var index = 0; index < result.EventCount; index++)
+            {
+                Assert.That(result.GetEvent(index).Target, Is.Not.EqualTo(ally.Entity),
+                    "the ally must not appear in the event stream either");
+            }
+        }
+
+        [Test]
+        public void Splash_InSkirmish_HitsEveryOtherPlayer_PrimaryExcluded()
+        {
+            // Skirmish: every distinct owner is an enemy, so a splash damages
+            // both other players but never the primary target twice and never
+            // the attacker itself.
+            var artillery = CreateState(
+                1, 1,
+                new CombatStats(
+                    100, 40, 12000, 1,
+                    (byte)DamageType.ArtilleryExplosive, (byte)ArmorType.HeavyVehicle,
+                    splashRadiusMm: 8_000));
+            var first = CreateState(2, 2, new CombatStats(500, 1, 5000, 3));
+            var primary = CreateState(3, 3, new CombatStats(1000, 1, 5000, 3));
+            artillery.TryAssignTarget(primary.Entity);
+
+            var inputs = new[]
+            {
+                new CombatantTickInput(artillery, new WorldPointMm(0, 0)),
+                new CombatantTickInput(first, new WorldPointMm(9_000, 0)),
+                new CombatantTickInput(primary, new WorldPointMm(9_000, 4_000)),
+            };
+
+            var result = CombatTickResolver.Resolve(inputs, 20, SkirmishCombatRelation.Instance);
+
+            Assert.That(first.CurrentHealth, Is.LessThan(500),
+                "a skirmish splash damages every hostile in the radius");
+            Assert.That(
+                500 - first.CurrentHealth,
+                Is.EqualTo(SplashCalculator.CalculateLinearFalloff(
+                    DamageCalculator.CalculateDamage(
+                        40, DamageType.ArtilleryExplosive, (ArmorType)CombatStats.LegacySentinel),
+                    8_000, 4_000)),
+                "the falloff measures from the impact point");
+            Assert.That(
+                1000 - primary.CurrentHealth,
+                Is.EqualTo(DamageCalculator.CalculateDamage(
+                    40, DamageType.ArtilleryExplosive, (ArmorType)CombatStats.LegacySentinel)),
+                "the primary target takes exactly the direct hit — splash never stacks onto it");
+            Assert.That(artillery.CurrentHealth, Is.EqualTo(100),
+                "the attacker never splashes itself");
+        }
     }
 }

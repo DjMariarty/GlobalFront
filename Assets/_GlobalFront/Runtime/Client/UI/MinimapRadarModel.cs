@@ -9,23 +9,32 @@ namespace GlobalFront.Client.UI
     /// <summary>
     /// What a radar blip stands for (Phase 3, step 3.6, ADR-012/OD-24).
     ///
-    /// Three values rather than two flags because the player has to be able to see
-    /// the third case at a glance: their own units, someone else's units, and the
-    /// subset of their own units they have selected. Selected is a separate value
-    /// rather than an extra bit so a blip can never be drawn as an unselected
-    /// friendly that the selection says otherwise about — the state <em>is</em> the
-    /// colour, and the two cannot disagree.
+    /// Discrete values rather than flags because the player has to be able to see
+    /// the case at a glance: their own units, a teammate's units (Step 5.6.2,
+    /// team matches only), someone else's units, and the subset of their own
+    /// units they have selected. Selected is a separate value rather than an extra
+    /// bit so a blip can never be drawn as an unselected friendly that the
+    /// selection says otherwise about — the state <em>is</em> the colour, and the
+    /// two cannot disagree.
     /// </summary>
     public enum MinimapBlipKind : byte
     {
         /// <summary>A live unit owned by the local player.</summary>
         Friendly = 0,
 
-        /// <summary>A live unit owned by anyone else.</summary>
+        /// <summary>A live unit owned by anyone the local player does not ally with.</summary>
         Enemy = 1,
 
         /// <summary>A live unit owned by the local player and in their selection.</summary>
         Selected = 2,
+
+        /// <summary>
+        /// A live unit owned by a teammate (Step 5.6.2): commandable by an ally,
+        /// not by the local player, so it must not share the enemy red. Only
+        /// classified while the radar's <c>IsTeamMatch</c> flag is set — a 1v1
+        /// opponent is always an Enemy.
+        /// </summary>
+        Ally = 3,
     }
 
     /// <summary>
@@ -175,6 +184,15 @@ namespace GlobalFront.Client.UI
 
         /// <summary>Who is local, read through the selection so a reconnect updates the radar's colours with it.</summary>
         public PlayerId LocalPlayerId => _selection.LocalPlayerId;
+
+        /// <summary>
+        /// Step 5.6.2: true in a team match (2v2) — teammates then classify as
+        /// <see cref="MinimapBlipKind.Ally"/> instead of Enemy. False by
+        /// default: a 1v1 opponent is always an Enemy, and the client learns
+        /// the mode from its own hosting wiring (a dedicated-host client sets
+        /// this once the lobby confirms the team topology).
+        /// </summary>
+        public bool IsTeamMatch { get; set; }
 
         /// <summary>
         /// Seconds between rebuilds. Sanitised rather than validated: this arrives
@@ -330,10 +348,14 @@ namespace GlobalFront.Client.UI
                     continue;
                 }
 
-                var friendly = state.Owner == localPlayer;
-                var kind = friendly && _selection.IsSelected(state.Entity)
-                    ? MinimapBlipKind.Selected
-                    : friendly ? MinimapBlipKind.Friendly : MinimapBlipKind.Enemy;
+          var friendly = state.Owner == localPlayer;
+          var kind = friendly && _selection.IsSelected(state.Entity)
+              ? MinimapBlipKind.Selected
+              : friendly
+                  ? MinimapBlipKind.Friendly
+                  : IsTeamMatch && MatchTopology2v2.AreAllies(localPlayer, state.Owner)
+                      ? MinimapBlipKind.Ally
+                      : MinimapBlipKind.Enemy;
 
                 blips[count++] = new MinimapBlip(
                     MinimapProjection.MillimetresToUv(bounds, state.PosX, state.PosZ),

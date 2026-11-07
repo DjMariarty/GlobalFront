@@ -47,7 +47,8 @@ namespace GlobalFront.Core.Combat
             int rangeMm,
             uint cooldownTicks,
             byte damageType,
-            byte armorType)
+            byte armorType,
+            int splashRadiusMm = 0)
         {
             if (maximumHealth <= 0)
             {
@@ -86,12 +87,18 @@ namespace GlobalFront.Core.Combat
                 throw new ArgumentOutOfRangeException(nameof(armorType));
             }
 
+            if (splashRadiusMm < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(splashRadiusMm));
+            }
+
             MaximumHealth = maximumHealth;
             Damage = damage;
             RangeMm = rangeMm;
             CooldownTicks = cooldownTicks;
             DamageType = damageType;
             ArmorType = armorType;
+            SplashRadiusMm = splashRadiusMm;
         }
 
         public int MaximumHealth { get; }
@@ -105,6 +112,13 @@ namespace GlobalFront.Core.Combat
         public byte DamageType { get; }
 
         public byte ArmorType { get; }
+
+        /// <summary>
+        /// Step 5.6.2: blast radius of area weapons in millimetres; 0 means the
+        /// shot deals direct damage only. Artillery, thermobaric and toxin
+        /// lines carry a positive radius in the blueprint catalog.
+        /// </summary>
+        public int SplashRadiusMm { get; }
 
         public bool IsValid =>
             MaximumHealth > 0 &&
@@ -120,7 +134,8 @@ namespace GlobalFront.Core.Combat
             RangeMm == other.RangeMm &&
             CooldownTicks == other.CooldownTicks &&
             DamageType == other.DamageType &&
-            ArmorType == other.ArmorType;
+            ArmorType == other.ArmorType &&
+            SplashRadiusMm == other.SplashRadiusMm;
 
         public override bool Equals(object obj) =>
             obj is CombatStats other && Equals(other);
@@ -439,6 +454,40 @@ namespace GlobalFront.Core.Combat
                 : squaredX + squaredZ;
         }
 
+        /// <summary>
+        /// Deterministic integer square root (Step 5.6.2): the splash path
+        /// needs a distance in millimetres from a squared distance, and the
+        /// simulation layer must not touch floating point. Returns the largest
+        /// value whose square does not exceed <paramref name="value"/>.
+        /// </summary>
+        public static long IntegerSqrt(ulong value)
+        {
+            var result = 0UL;
+            var bit = 1UL << 62;
+            while (bit > value)
+            {
+                bit >>= 2;
+            }
+
+            while (bit != 0)
+            {
+                var candidate = result + bit;
+                if (value >= candidate)
+                {
+                    value -= candidate;
+                    result = (result >> 1) + bit;
+                }
+                else
+                {
+                    result >>= 1;
+                }
+
+                bit >>= 2;
+            }
+
+            return (long)result;
+        }
+
         public static bool IsWithinRange(
             WorldPointMm left,
             WorldPointMm right,
@@ -642,6 +691,55 @@ namespace GlobalFront.Core.Combat
                         currentDamage > long.MaxValue - damageEvent.Damage
                             ? long.MaxValue
                             : currentDamage + damageEvent.Damage;
+
+                    // Step 5.6.2 (RND §7.3): area weapons splash around the
+                    // impact point. The primary target already took the direct
+                    // hit; the sweep damages only hostile units — friendly
+                    // splash is forbidden outright — with the ADR-015 linear
+                    // falloff and no armor pass: a shockwave is not a shot, and
+                    // the rim stays zero (the SplashCalculator pins forbid a
+                    // min-1 clamp here). Deterministic: one ascending pass over
+                    // the entity-sorted canonical roster, zero allocations.
+                    if (attacker.Stats.SplashRadiusMm > 0)
+                    {
+                        var impactPoint = targetInput.Position;
+                        for (var candidateIndex = 0; candidateIndex < count; candidateIndex++)
+                        {
+                            var splashInput = _canonical[candidateIndex];
+                            var splashTarget = splashInput.State;
+                            if (splashTarget.Entity == targetInput.State.Entity ||
+                                !splashTarget.IsAlive ||
+                                !hostility.AreEnemies(attacker.Owner, splashTarget.Owner))
+                            {
+                                continue;
+                            }
+
+                            var splashDamage = SplashCalculator.CalculateLinearFalloff(
+                                appliedDamage,
+                                attacker.Stats.SplashRadiusMm,
+                                (int)CombatMath.IntegerSqrt(CombatMath.SquaredDistance(
+                                    impactPoint,
+                                    splashInput.Position)));
+                            if (splashDamage <= 0)
+                            {
+                                continue;
+                            }
+
+                            var splashEvent = new DamageEvent(
+                                attacker.Entity,
+                                splashTarget.Entity,
+                                splashDamage);
+                            _events.Add(splashEvent);
+
+                            _accumulatedDamage.TryGetValue(
+                                splashEvent.Target,
+                                out var splashAccumulated);
+                            _accumulatedDamage[splashEvent.Target] =
+                                splashAccumulated > long.MaxValue - splashEvent.Damage
+                                    ? long.MaxValue
+                                    : splashAccumulated + splashEvent.Damage;
+                        }
+                    }
                 }
 
                 for (var index = 0; index < count; index++)
