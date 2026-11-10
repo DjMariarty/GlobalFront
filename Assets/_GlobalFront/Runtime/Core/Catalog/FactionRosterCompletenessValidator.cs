@@ -264,5 +264,56 @@ namespace GlobalFront.Core.Catalog
                    legacyKind == UnitKinds.InternetCenter ||
                    legacyKind == UnitKinds.LogisticsHub;
         }
+
+        /// <summary>
+        /// M2 remediation (P1-08): the wire build gate's builder test. Only
+        /// the catalog's builder rows (the five canonical ids below) may start
+        /// a construction. The legacy kind cannot discriminate — builder rows
+        /// share the mobile-armed <see cref="UnitKinds.Tank"/> slot (or
+        /// <see cref="UnitKinds.Infantry"/> for the GLA Worker) with combat
+        /// units — so the check runs on the blueprint id the unit was spawned
+        /// from. Public: the server's wire build gate enforces it.
+        /// </summary>
+        public static bool IsBuilderBlueprint(ushort blueprintId)
+        {
+            for (var index = 0; index < BuilderIds.Length; index++)
+            {
+                if (BuilderIds[index] == blueprintId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// M2 remediation (P1-06): the wire build gate's production-building
+        /// test. Factory and barracks rows register in the production registry
+        /// on completion and accept Produce orders. The legacy kind cannot
+        /// discriminate (every building is a BaseStructure row), so the check
+        /// runs on the canonical blueprint ids. Public: the server's wire
+        /// build gate drives <c>isProduction</c> with it.
+        /// </summary>
+        public static bool IsFactoryOrBarracksBlueprint(ushort blueprintId)
+        {
+            for (var index = 0; index < FactoryIds.Length; index++)
+            {
+                if (FactoryIds[index] == blueprintId)
+                {
+                    return true;
+                }
+            }
+
+            for (var index = 0; index < BarracksIds.Length; index++)
+            {
+                if (BarracksIds[index] == blueprintId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
     }
 }

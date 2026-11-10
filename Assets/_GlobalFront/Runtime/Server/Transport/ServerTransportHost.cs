@@ -175,6 +175,15 @@ namespace GlobalFront.Server.Transport
                 offset + length);
         }
 
+        /// <summary>
+        /// M2 remediation (P1-03): the sessions currently bound for snapshot
+        /// delivery — the PlayerStateSync emitter walks them to push each
+        /// session its own private economy digest. Resolve a session's owner
+        /// through <see cref="TryGetPlayerForSession"/>.
+        /// </summary>
+        public System.Collections.Generic.IReadOnlyList<SessionId> SnapshotTargets =>
+            _binder.SnapshotTargets;
+
         /// <summary>Broadcasts a snapshot to every attached session.</summary>
         public void BroadcastSnapshot(ulong snapshotTick, byte[] snapshotBytes, int length)
         {
@@ -183,6 +192,56 @@ namespace GlobalFront.Server.Transport
             {
                 SendSnapshot(targets[i], snapshotTick, snapshotBytes, length);
             }
+        }
+
+        /// <summary>
+        /// M2 remediation (P1-03): sends one <see cref="TransportMessageType.PlayerStateSync"/>
+        /// payload (the owner's private economy digest — credits, power grid,
+        /// production queue heads) to exactly the owning session. The message
+        /// rides the framed envelope on the reliable Control channel; only the
+        /// bound connection of <paramref name="session"/> can ever observe it,
+        /// so a rival client cannot learn another player's balance.
+        /// </summary>
+        public bool SendPlayerStateSync(SessionId session, byte[] payloadBytes, int length)
+        {
+            if (!_binder.TryGetTokenBySession(session, out var token))
+            {
+                return false;
+            }
+
+            if (!_binder.TryGetByToken(token, out var binding))
+            {
+                return false;
+            }
+
+            var offset = MessageCodec.WriteHeader(
+                _messageBuffer, 0, TransportMessageType.PlayerStateSync, token, 0);
+            Array.Copy(payloadBytes, 0, _messageBuffer, offset, length);
+            return _carrier.Send(
+                binding.ConnectionId,
+                TransportChannel.Control,
+                _messageBuffer,
+                0,
+                offset + length);
+        }
+
+        /// <summary>
+        /// M2 remediation (P1-03): the player a session is bound to — the
+        /// owner whose private state the PlayerStateSync emitter reads.
+        /// Returns false for sessions without a match binding (pre-join
+        /// handshakes, terminated sessions).
+        /// </summary>
+        public bool TryGetPlayerForSession(SessionId session, out PlayerId player)
+        {
+            if (_binder.TryGetTokenBySession(session, out var token) &&
+                _binder.TryGetByToken(token, out var binding))
+            {
+                player = binding.Player;
+                return player.IsValid;
+            }
+
+            player = default;
+            return false;
         }
 
         /// <summary>
@@ -365,6 +424,14 @@ namespace GlobalFront.Server.Transport
                     HandleReplicationFeedback(
                         transportEvent, header, TransportMessageType.ReplicationRequest,
                         GlobalFront.Core.Snapshot.ReplicationRequestCodec.SizeBytes);
+                    return;
+
+                case TransportMessageType.PlayerStateSync:
+                    // M2 remediation (P1-03): PlayerStateSync is a server→
+                    // client private channel — a client naming it is a protocol
+                    // violation (a forged attempt to learn another player's
+                    // economy). Dropped and counted, no state is touched.
+                    _carrier.Metrics.DroppedMalformed++;
                     return;
 
                 default:

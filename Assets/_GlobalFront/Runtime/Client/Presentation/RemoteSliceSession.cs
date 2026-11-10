@@ -1,5 +1,6 @@
 using System;
 using GlobalFront.Client.Replication;
+using GlobalFront.Core.Economy;
 using GlobalFront.Core.Reconnect;
 using GlobalFront.Server.Transport;
 
@@ -43,6 +44,7 @@ namespace GlobalFront.Client
         private readonly Action<SessionSecret32> _onSecretReceived;
         private readonly Action<ReconnectResponse> _onReconnectResponse;
         private readonly Action _onReadyToResume;
+        private readonly Action<PlayerStateSyncPayload, int> _onPlayerStateSync;
 
         private double _smoothedRttMs;
         private int _rttSampleCount;
@@ -101,6 +103,12 @@ namespace GlobalFront.Client
             Endpoint.SecretReceived += _onSecretReceived;
             Endpoint.ReconnectResponseReceived += _onReconnectResponse;
             ReconnectCoordinator.ReadyToResume += _onReadyToResume;
+
+            // M2 remediation (P1-03): the owner's private economy digest
+            // (opcode 15) lands in the bridge's preallocated latest-state
+            // storage for the HUD to read.
+            _onPlayerStateSync = OnPlayerStateSync;
+            Endpoint.PlayerStateSyncReceived += _onPlayerStateSync;
         }
 
         public INetworkCarrier Carrier => _carrier;
@@ -253,6 +261,7 @@ namespace GlobalFront.Client
             Endpoint.Terminated -= _onTerminated;
             Endpoint.SecretReceived -= _onSecretReceived;
             Endpoint.ReconnectResponseReceived -= _onReconnectResponse;
+            Endpoint.PlayerStateSyncReceived -= _onPlayerStateSync;
             ReconnectCoordinator.ReadyToResume -= _onReadyToResume;
 
             ReconnectCoordinator.Dispose();
@@ -388,6 +397,11 @@ namespace GlobalFront.Client
         private void OnDenied(ConnectDenyReason reason)
         {
             Disconnected?.Invoke(TransportDisconnectReason.Rejected);
+        }
+
+        private void OnPlayerStateSync(PlayerStateSyncPayload payload, int digestCount)
+        {
+            _bridge.HandlePlayerStateSync(Endpoint, payload, digestCount);
         }
 
         private void OnPongReceived(long originalTimestamp)

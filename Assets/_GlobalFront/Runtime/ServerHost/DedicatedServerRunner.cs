@@ -77,6 +77,20 @@ namespace GlobalFront.DedicatedServer
         private FogOfWarReplicationFilter _fogFilter;
 
         /// <summary>
+        /// M2 remediation (P0-01): the team match's own combat relation — the
+        /// lobby's slot mapping is configured into it at match start, so
+        /// hostility follows the same table the fog filter uses instead of the
+        /// hardcoded PlayerId fold.
+        /// </summary>
+        private Team2v2CombatRelation _teamRelation;
+
+        /// <summary>
+        /// M2 remediation (P1-03): pushes per-session private economy digests
+        /// (opcode 15) on the host's TickCompleted cadence.
+        /// </summary>
+        private PlayerStateSyncEmitter _stateSyncEmitter;
+
+        /// <summary>
         /// The match layout this host fills (Step 5.6.1): a two-player skirmish
         /// or the four-slot 2v2 team match. Must be set before
         /// <see cref="Initialize"/> — the combat relation is fixed when the
@@ -213,11 +227,18 @@ namespace GlobalFront.DedicatedServer
 
             // Step 5.6.1: the topology decides the hostility policy. A team
             // match runs Team2v2CombatRelation (players 1,2 vs 3,4); a skirmish
-            // keeps the null skirmish default.
-            var combatRelation = TopologyMode == MatchTopologyMode.Team2v2
-                ? Team2v2CombatRelation.Instance
-                : null;
-            _host = new ServerHost(tickRate, combatRelation);
+            // keeps the null skirmish default. M2 remediation (P0-01): the
+            // relation is a per-match instance — the lobby's slot mapping is
+            // configured into it at start, so hostility follows the same table
+            // the fog filter uses instead of the PlayerId fold.
+            Team2v2CombatRelation teamRelation = null;
+            if (TopologyMode == MatchTopologyMode.Team2v2)
+            {
+                teamRelation = new Team2v2CombatRelation();
+            }
+
+            _teamRelation = teamRelation;
+            _host = new ServerHost(tickRate, teamRelation);
             _transportHost = new ServerTransportHost(_carrier, _host.Sessions, _host.Server);
 
             // The forming match admits exactly the players the topology needs:
@@ -249,6 +270,12 @@ namespace GlobalFront.DedicatedServer
                 new TransportReplicationAdapter(_transportHost),
                 ServerReplicationEmitterConfig.Default,
                 _fogFilter);
+
+            // M2 remediation (P1-03): every bound session receives its own
+            // private economy digest (credits, power, queue heads) once a
+            // second — owner-only delivery, rivals never see the balance.
+            _stateSyncEmitter = new PlayerStateSyncEmitter(_host.Server, _transportHost);
+            _host.TickCompleted += _stateSyncEmitter.OnTickCompleted;
 
             // StartServer is idempotent: the port overload above already
             // started LiteNetLib, while an injected carrier starts here.
@@ -301,6 +328,12 @@ namespace GlobalFront.DedicatedServer
             }
 
             _host.StopRealTime();
+            if (_stateSyncEmitter != null && _host != null)
+            {
+                _host.TickCompleted -= _stateSyncEmitter.OnTickCompleted;
+            }
+
+            _stateSyncEmitter = null;
             _host.SessionTerminated -= OnHostSessionTerminated;
             _transportHost.ClientReadyToResumeReceived -= _host.OnClientReadyToResume;
             _transportHost.SessionAttached -= OnSessionAttached;
@@ -313,6 +346,7 @@ namespace GlobalFront.DedicatedServer
             _host = null;
             _match = default;
             _lastPumpMs = 0;
+            _teamRelation = null;
             _joinedPlayers.Clear();
         }
 
@@ -395,6 +429,21 @@ namespace GlobalFront.DedicatedServer
             var config = TopologyMode == MatchTopologyMode.Team2v2
                 ? BuildTeamMatchConfig(owners)
                 : BuildDefaultMatchConfig(owners);
+
+            TeamSlotMapping2v2 teamMapping = default;
+            if (TopologyMode == MatchTopologyMode.Team2v2)
+            {
+                // M2 remediation (P0-01): the lobby's slot order — not the
+                // PlayerId values — decides the teams. One mapping feeds both
+                // the combat relation and the fog filter, so allies can never
+                // be hostile in combat while sharing a team in FoW (the
+                // [2, 3, 4, 5] lobby defect). The relation is configured
+                // before the match starts: the first tick already acquires
+                // targets through it.
+                teamMapping = TeamSlotMapping2v2.FromSlots(owners);
+                _teamRelation.ConfigureSlots(teamMapping);
+            }
+
             if (!_host.TryStartSessionMatch(_match, config, out _))
             {
                 return false;
@@ -404,10 +453,13 @@ namespace GlobalFront.DedicatedServer
             {
                 // Step 5.6.1: same-team units are always visible to each other,
                 // but only once the filter knows the teams. Without this map a
-                // 2v2 lobby spawns four mutually blind armies.
+                // 2v2 lobby spawns four mutually blind armies. M2 remediation
+                // (P0-01): the teams come from the same mapping the combat
+                // relation received above.
                 for (var slot = 0; slot < owners.Length; slot++)
                 {
-                    _fogFilter.SetPlayerTeam(owners[slot], MatchTopology2v2.GetTeamForSlot(slot));
+                    _fogFilter.SetPlayerTeam(
+                        owners[slot], teamMapping.GetTeamForPlayer(owners[slot]));
                 }
             }
 

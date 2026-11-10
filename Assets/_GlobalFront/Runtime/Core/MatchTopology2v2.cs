@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using GlobalFront.Core.Simulation;
 
 namespace GlobalFront.Core.Model
 {
@@ -77,5 +79,117 @@ namespace GlobalFront.Core.Model
         {
             return GetTeamForPlayer(left) != GetTeamForPlayer(right);
         }
+    }
+
+    /// <summary>
+    /// M2 remediation (P0-01): an immutable PlayerId→TeamId table for one 2v2
+    /// lobby. The historical <see cref="MatchTopology2v2.GetTeamForPlayer"/>
+    /// fold hardcoded <c>player.Value &lt;= 2</c> — correct only while the
+    /// lobby's join order equals the PlayerId order. A lobby of players
+    /// [2, 3, 4, 5] (one seat retired before the match started) split teams
+    /// inconsistently: the fog filter keyed on slot order while the combat
+    /// relation keyed on the id fold, so two players shared a team in FoW and
+    /// killed each other in combat. A mapping built once from the lobby's
+    /// slot order feeds BOTH the fog filter and the combat relation, keeping
+    /// them consistent by construction.
+    /// </summary>
+    /// <remarks>
+    /// Setup-path only: the table is allocated at match start and read on
+    /// every combat tick — reads allocate nothing.
+    /// </remarks>
+    public readonly struct TeamSlotMapping2v2
+    {
+        private const byte UnassignedTeam = byte.MaxValue;
+
+        /// <summary>Team byte per <see cref="PlayerId.Value"/>; index 0 unused.</summary>
+        private readonly byte[] _teamByPlayerValue;
+
+        private TeamSlotMapping2v2(byte[] teamByPlayerValue)
+        {
+            _teamByPlayerValue = teamByPlayerValue;
+        }
+
+        /// <summary>
+        /// Builds the mapping from the lobby's slot order: the first two slots
+        /// form Team Red, the last two Team Blue — the same geometry
+        /// <see cref="MatchTopology2v2.GetTeamForSlot"/> and the dedicated
+        /// server's spawn layout use.
+        /// </summary>
+        public static TeamSlotMapping2v2 FromSlots(IReadOnlyList<PlayerId> slots)
+        {
+            if (slots == null || slots.Count != MatchTopology2v2.SlotCount)
+            {
+                throw new ArgumentException(
+                    $"A 2v2 mapping needs exactly {MatchTopology2v2.SlotCount} slots.",
+                    nameof(slots));
+            }
+
+            var table = new byte[SimulationConstants.MaxPlayers + 1];
+            for (var index = 0; index < table.Length; index++)
+            {
+                table[index] = UnassignedTeam;
+            }
+
+            for (var slot = 0; slot < MatchTopology2v2.SlotCount; slot++)
+            {
+                var player = slots[slot];
+                if (!player.IsValid)
+                {
+                    throw new ArgumentException(
+                        $"Slot {slot} carries an invalid PlayerId.", nameof(slots));
+                }
+
+                table[player.Value] = MatchTopology2v2.GetTeamForSlot(slot).Value;
+            }
+
+            return new TeamSlotMapping2v2(table);
+        }
+
+        /// <summary>
+        /// The canonical default mapping: players 1 and 2 form Team Red,
+        /// every valid player above 2 folds into Team Blue — exactly the
+        /// Step 5.6.1 behaviour the static
+        /// <see cref="MatchTopology2v2.GetTeamForPlayer"/> hardcodes. Keeps
+        /// unconfigured relations (the <c>Instance</c> singleton, tests, the
+        /// playtest rig) bit-for-bit identical to the pre-remediation code.
+        /// </summary>
+        public static TeamSlotMapping2v2 DefaultCanonical()
+        {
+            var table = new byte[SimulationConstants.MaxPlayers + 1];
+            for (var value = 1; value < table.Length; value++)
+            {
+                table[value] = value <= 2
+                    ? MatchTopology2v2.TeamRed.Value
+                    : MatchTopology2v2.TeamBlue.Value;
+            }
+
+            return new TeamSlotMapping2v2(table);
+        }
+
+        /// <summary>
+        /// Returns the lobby's team for <paramref name="player"/>. Fails fast
+        /// on an invalid or unmapped player: a 2v2 relation that cannot answer
+        /// "which team" must never guess (a wrong guess turns an ally into a
+        /// legal target).
+        /// </summary>
+        public TeamId GetTeamForPlayer(PlayerId player)
+        {
+            if (!player.IsValid || _teamByPlayerValue == null ||
+                player.Value >= _teamByPlayerValue.Length ||
+                _teamByPlayerValue[player.Value] == UnassignedTeam)
+            {
+                throw new ArgumentException(
+                    $"Player {player.Value} is not mapped to a 2v2 team.",
+                    nameof(player));
+            }
+
+            return new TeamId(_teamByPlayerValue[player.Value]);
+        }
+
+        /// <summary>
+        /// Returns true when both players are mapped and belong to the same team.
+        /// </summary>
+        public bool AreAllies(PlayerId left, PlayerId right) =>
+            GetTeamForPlayer(left) == GetTeamForPlayer(right);
     }
 }

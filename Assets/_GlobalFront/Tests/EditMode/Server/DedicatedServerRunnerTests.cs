@@ -4,8 +4,10 @@ using GlobalFront.Core.Combat;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Simulation;
+using GlobalFront.Core.Visibility;
 using GlobalFront.DedicatedServer;
 using GlobalFront.Server;
+using GlobalFront.Server.Replication;
 using GlobalFront.Server.Sessions;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
@@ -299,11 +301,142 @@ namespace GlobalFront.Tests.EditMode
                 joinedClients: 4,
                 (runner, pipe, clock, clients) =>
                 {
+                    // M2 remediation (P0-01): the runner owns a per-match
+                    // relation instance now — the lobby's slot mapping is
+                    // configured into it at start — so the assertion checks
+                    // the policy, not the singleton identity.
                     Assert.That(
                         runner.Host.Server.CombatRelation,
-                        Is.EqualTo(Team2v2CombatRelation.Instance),
+                        Is.InstanceOf<Team2v2CombatRelation>(),
                         "a 2v2 match must run the team hostility policy, not skirmish");
                 });
+        }
+
+        [Test]
+        public void Topology2v2_DynamicLobby_TeamsConsistent()
+        {
+            // The P0-01 lobby: a seat retires before the match starts, the
+            // retired PlayerId is never reused (OD-3), and the replacements
+            // take PlayerIds 4 and 5 — the lobby becomes [2, 3, 4, 5]. Teams
+            // must follow the SLOT order ([2,3]=Red, [4,5]=Blue) in BOTH the
+            // fog filter and the combat relation: the same
+            // TeamSlotMapping2v2 the dedicated runner feeds both sides with
+            // (DedicatedServerRunner.TryStartMatchWhenReady) drives this rig —
+            // allies must never be hostile in combat while seeing each other
+            // through the fog. The pre-remediation id fold put PlayerId 3 on
+            // Blue (combat) while the fog kept it Red.
+            //
+            // Server-level rig (MatchServer + FogOfWarReplicationFilter +
+            // the runner's own mapping object): the runner wiring is covered
+            // by the DedicatedServerRunner_In2v2Mode_* tests; the [2,3,4,5]
+            // lobby replays here deterministically, without the harness's
+            // replacement-handshake phase (its virtual-pipe delivery for
+            // joins after a socket close is exercised by the reconnect
+            // suites, not by this acceptance).
+            var lobby = new[]
+            {
+                new PlayerId(2), new PlayerId(3), new PlayerId(4), new PlayerId(5)
+            };
+            var mapping = TeamSlotMapping2v2.FromSlots(lobby);
+            var relation = new Team2v2CombatRelation();
+            relation.ConfigureSlots(mapping);
+            var fog = new FogOfWarReplicationFilter();
+
+            // The dedicated runner feeds BOTH sides from the same mapping
+            // (TryStartMatchWhenReady) — replay that wiring verbatim.
+            for (var slot = 0; slot < lobby.Length; slot++)
+            {
+                fog.SetPlayerTeam(lobby[slot], mapping.GetTeamForPlayer(lobby[slot]));
+            }
+
+            var server = new MatchServer(relation);
+
+            // Spawn geometry mirrors the runner's team bases: allies 40 m
+            // apart (outside the 20 m sight radius), enemies 70 m — an ally
+            // seen at all is seen THROUGH the team rule, and an enemy stays
+            // hidden beyond the radius.
+            server.SpawnUnit(
+                lobby[0], new CombatStats(100, 1, 0, 1),
+                new WorldPointMm(-35_000, 20_000), 500, false, UnitKinds.Scout);
+            server.SpawnUnit(
+                lobby[1], new CombatStats(100, 1, 0, 1),
+                new WorldPointMm(-35_000, -20_000), 500, false, UnitKinds.Scout);
+            server.SpawnUnit(
+                lobby[2], new CombatStats(100, 1, 0, 1),
+                new WorldPointMm(35_000, 20_000), 500, false, UnitKinds.Scout);
+            server.SpawnUnit(
+                lobby[3], new CombatStats(100, 1, 0, 1),
+                new WorldPointMm(35_000, -20_000), 500, false, UnitKinds.Scout);
+
+            // Three simulation ticks exercise the relation inside the
+            // simulation itself: allies must not acquire each other.
+            server.ExecuteTicks(3);
+
+            // Combat relation: slot mapping, not the id fold.
+            Assert.That(
+                relation.GetTeamForPlayer(lobby[0]), Is.EqualTo(MatchTopology2v2.TeamRed),
+                "PlayerId 2 holds Red slot 0");
+            Assert.That(
+                relation.GetTeamForPlayer(lobby[1]), Is.EqualTo(MatchTopology2v2.TeamRed),
+                "PlayerId 3 holds Red slot 1 — not the hardcoded id fold's Blue");
+            Assert.That(
+                relation.GetTeamForPlayer(lobby[2]), Is.EqualTo(MatchTopology2v2.TeamBlue),
+                "PlayerId 4 holds Blue slot 2");
+            Assert.That(
+                relation.GetTeamForPlayer(lobby[3]), Is.EqualTo(MatchTopology2v2.TeamBlue),
+                "PlayerId 5 holds Blue slot 3");
+
+            Assert.That(
+                relation.AreEnemies(lobby[0], lobby[1]), Is.False,
+                "[2,3] are Red allies in combat");
+            Assert.That(
+                relation.AreEnemies(lobby[2], lobby[3]), Is.False,
+                "[4,5] are Blue allies in combat");
+            Assert.That(
+                relation.AreEnemies(lobby[0], lobby[2]), Is.True,
+                "Red and Blue are enemies in combat");
+            Assert.That(
+                relation.AreEnemies(lobby[1], lobby[3]), Is.True,
+                "Red and Blue are enemies in combat (cross pair)");
+
+            // FoW: feed the filter the world exactly once (positions are
+            // static), then query — the same mapping must make allies
+            // visible at any distance while enemies stay hidden.
+            var snapshots = new ServerUnitSnapshot[server.UnitCount];
+            Assert.That(server.CopySnapshots(snapshots), Is.EqualTo(server.UnitCount));
+            fog.UpdateTick(server.CurrentTick, snapshots, snapshots.Length);
+
+            var ownScout = FindScout(snapshots, lobby[0]);
+            var allyScout = FindScout(snapshots, lobby[1]);
+            var enemyScout = FindScout(snapshots, lobby[2]);
+
+            Assert.That(
+                fog.IsVisible(server.CurrentTick, lobby[0], ownScout.Entity),
+                Is.True, "own units are always visible");
+            Assert.That(
+                fog.IsVisible(server.CurrentTick, lobby[0], allyScout.Entity),
+                Is.True,
+                "fog ally-visibility must follow the same dynamic mapping as combat");
+            Assert.That(
+                fog.IsVisible(server.CurrentTick, lobby[0], enemyScout.Entity),
+                Is.False,
+                "an enemy beyond sight radius stays hidden — no fog/combat team leak");
+        }
+
+        private static ServerUnitSnapshot FindScout(
+            ServerUnitSnapshot[] snapshots, PlayerId owner)
+        {
+            for (var index = 0; index < snapshots.Length; index++)
+            {
+                if (snapshots[index].Owner == owner &&
+                    snapshots[index].UnitKind == UnitKinds.Scout)
+                {
+                    return snapshots[index];
+                }
+            }
+
+            Assert.Fail($"no scout belongs to player {owner.Value}");
+            return default;
         }
 
         [Test]
@@ -901,6 +1034,41 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(
                 DedicatedServerBootstrap.IsDedicatedServerRequested(Array.Empty<string>()),
                 Is.False);
+        }
+
+        [Test]
+        public void Bootstrap_ParsesTopologyArguments()
+        {
+            // M2 remediation (P1-01): the dedicated server can start a team
+            // match from the command line.
+            Assert.That(
+                DedicatedServerBootstrap.ParseTopology(new[] { "-topology", "2v2" }),
+                Is.EqualTo(MatchTopologyMode.Team2v2));
+            Assert.That(
+                DedicatedServerBootstrap.ParseTopology(new[] { "-topology=2v2" }),
+                Is.EqualTo(MatchTopologyMode.Team2v2));
+            Assert.That(
+                DedicatedServerBootstrap.ParseTopology(new[] { "-TOPOLOGY", "2V2" }),
+                Is.EqualTo(MatchTopologyMode.Team2v2),
+                "the flag parses case-insensitively");
+            Assert.That(
+                DedicatedServerBootstrap.ParseTopology(new[] { "-topology", "1v1" }),
+                Is.EqualTo(MatchTopologyMode.Skirmish1v1));
+            Assert.That(
+                DedicatedServerBootstrap.ParseTopology(new[] { "-topology=1v1" }),
+                Is.EqualTo(MatchTopologyMode.Skirmish1v1));
+            Assert.That(
+                DedicatedServerBootstrap.ParseTopology(Array.Empty<string>()),
+                Is.EqualTo(MatchTopologyMode.Skirmish1v1),
+                "the topology defaults to 1v1");
+            Assert.That(
+                DedicatedServerBootstrap.ParseTopology(new[] { "-topology", "3v3" }),
+                Is.EqualTo(MatchTopologyMode.Skirmish1v1),
+                "an unknown topology falls back to 1v1 instead of aborting startup");
+            Assert.That(
+                DedicatedServerBootstrap.ParseTopology(new[] { "-topology" }),
+                Is.EqualTo(MatchTopologyMode.Skirmish1v1),
+                "a dangling flag falls back to 1v1");
         }
 
         private static void PumpUntil(

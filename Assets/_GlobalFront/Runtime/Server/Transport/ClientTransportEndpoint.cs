@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Core.Economy;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Reconnect;
 using GlobalFront.Server.Snapshot;
@@ -47,6 +48,15 @@ namespace GlobalFront.Server.Transport
         private readonly byte[][] _snapshotBuffers = new byte[SnapshotBufferCount][];
         private readonly byte[] _reconnectRequestBuffer = new byte[ReconnectRequest.SizeBytes];
         private readonly byte[] _readyToResumeBuffer = new byte[ClientReadyToResumeCodec.SizeBytes];
+
+        /// <summary>
+        /// M2 remediation (P1-03): preallocated decode sink for the private
+        /// PlayerStateSync digest — the codec writes entries here, the event
+        /// consumer reads them back through
+        /// <see cref="GetPlayerStateSyncDigest"/>. No per-message allocation.
+        /// </summary>
+        private readonly PlayerQueueDigestEntry[] _playerStateSyncDigest =
+            new PlayerQueueDigestEntry[PlayerStateSyncCodec.MaxQueueDigestEntries];
 
         private int _snapshotBufferIndex;
         private int _connectionId;
@@ -128,6 +138,22 @@ namespace GlobalFront.Server.Transport
         /// entirely on the client's monotonic clock.
         /// </summary>
         public event Action<long> PongReceived;
+
+        /// <summary>
+        /// M2 remediation (P1-03): the owner's private economy digest (opcode
+        /// 15) — credits, power grid and production queue heads, emitted
+        /// strictly to this session. <paramref name="digestCount"/> entries
+        /// are readable through <see cref="GetPlayerStateSyncDigest"/> until
+        /// the next PlayerStateSync arrives on this endpoint.
+        /// </summary>
+        public event Action<PlayerStateSyncPayload, int> PlayerStateSyncReceived;
+
+        /// <summary>
+        /// M2 remediation (P1-03): digest entry <paramref name="index"/> of
+        /// the last decoded PlayerStateSync (see <see cref="PlayerStateSyncReceived"/>).
+        /// </summary>
+        public PlayerQueueDigestEntry GetPlayerStateSyncDigest(int index) =>
+            _playerStateSyncDigest[index];
 
         public INetworkCarrier Carrier => _carrier;
 
@@ -568,6 +594,29 @@ namespace GlobalFront.Server.Transport
                             out var originalTimestamp))
                     {
                         PongReceived?.Invoke(originalTimestamp);
+                    }
+
+                    return;
+
+                case TransportMessageType.PlayerStateSync:
+                    // M2 remediation (P1-03): the owner's private economy
+                    // digest. Decodes into the preallocated sink and raises;
+                    // anything malformed is dropped and counted — the client
+                    // never mutates authoritative state from this channel.
+                    if (PlayerStateSyncCodec.TryDecode(
+                            transportEvent.Data.AsSpan(
+                                header.PayloadOffset, header.PayloadLength),
+                            _playerStateSyncDigest,
+                            out var digestCount,
+                            out var syncPayload,
+                            out _) &&
+                        digestCount >= 0)
+                    {
+                        PlayerStateSyncReceived?.Invoke(syncPayload, digestCount);
+                    }
+                    else
+                    {
+                        _carrier.Metrics.DroppedMalformed++;
                     }
 
                     return;

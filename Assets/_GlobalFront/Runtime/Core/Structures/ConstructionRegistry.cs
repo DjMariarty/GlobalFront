@@ -406,6 +406,14 @@ namespace GlobalFront.Core.Structures
             return assigned;
         }
 
+        /// <summary>
+        /// M2 remediation (P1-08): total assignments across all sites — the
+        /// wire build gate pre-checks the <see cref="BuilderFsm.MaxBuilders"/>
+        /// ceiling with it, so a saturated table rejects a new build before a
+        /// site is started. Command-path only.
+        /// </summary>
+        public int TotalAssignedBuilders => _fsm.Count;
+
         public bool TryGetBuilderActivity(ulong builderEntityId, out BuilderActivity activity)
         {
             if (_fsm.TryGet(builderEntityId, out BuilderRecord record))

@@ -85,7 +85,24 @@ namespace GlobalFront.Server
         /// Step 5.5.3: China's hacker roster is capped at the 4-Internet-Center
         /// ceiling (4 centers x 4 hackers).
         /// </summary>
-        HackerCapacityReached = 18
+        HackerCapacityReached = 18,
+
+        /// <summary>
+        /// M2 remediation (P1-04): the build/produce cost exceeds the player's
+        /// credit balance. The first state mutation on the build/produce paths
+        /// is the credit debit, so a rejected order leaves the world, the
+        /// entity counter and the wallet untouched.
+        /// Append-only: the byte travels the wire inside CommandAck.
+        /// </summary>
+        InsufficientFunds = 19,
+
+        /// <summary>
+        /// M2 remediation (P1-08): the blueprint belongs to another faction
+        /// than the commanding player's (neutral <see cref="FactionId.None"/>
+        /// rows stay orderable by everyone). Append-only: the byte travels
+        /// the wire inside CommandAck.
+        /// </summary>
+        FactionMismatch = 20
     }
 
     /// <summary>
@@ -224,6 +241,16 @@ namespace GlobalFront.Server
             new Dictionary<PlayerId, uint>();
 
         private ulong _nextEntityValue = 1;
+
+        /// <summary>
+        /// M2 remediation (P1-10): the largest grid cell whose 500 mm mapping
+        /// stays inside the simulation bounds — the wire Build gate rejects
+        /// cells beyond it BEFORE the multiplication, so a hostile cell cannot
+        /// wrap the 32-bit product back into a plausible position.
+        /// </summary>
+        private const int MaxGridCellCoordinate =
+            (SimulationConstants.MaxWorldCoordinateMm - SnapGrid.DefaultSnapStepMm / 2) /
+            SnapGrid.DefaultSnapStepMm;
 
         private readonly Dictionary<EntityId, WorldPointMm> _startPositionsCache =
             new Dictionary<EntityId, WorldPointMm>(SimulationConstants.MaxUnitsPerMatch);
@@ -1512,7 +1539,16 @@ namespace GlobalFront.Server
             }
 
             rejection = _production.TryCancel(buildingEntityId, player, slotIndex, out refundCost);
-            return rejection == ProductionRejection.None;
+            if (rejection != ProductionRejection.None)
+            {
+                return false;
+            }
+
+            // M2 remediation (P1-04): the full (100%) refund reaches the
+            // wallet here — before this fix a cancelled order evaporated its
+            // cost while the refund number was reported but never deposited.
+            _economy.AddCredits(player, refundCost);
+            return true;
         }
 
         /// <summary>
@@ -1552,25 +1588,48 @@ namespace GlobalFront.Server
 
         /// <summary>
         /// Wire-level build gate (Step 5.5.2, CommandWireCodec v2
-        /// <c>GameCommandType.Build</c>; Step 5.5.3 tightened). Follows the
-        /// TryEnqueueMove pattern: common header validation, per-command gates,
-        /// sequence commit — and on success the construction frame actually
-        /// starts through <see cref="TryStartBuilding"/>. The wire payload names
-        /// the blueprint and the origin cell only; every numeric input
-        /// (footprint, cost, power delta, work rate, final archetype) is
-        /// resolved from the blueprint catalog server-side, so a client cannot
-        /// understate a cost or oversize a footprint.
+        /// <c>GameCommandType.Build</c>; Step 5.5.3 tightened; M2 remediation
+        /// hardened). Follows the TryEnqueueMove pattern: common header
+        /// validation, per-command gates, sequence commit — and on success the
+        /// construction frame actually starts through
+        /// <see cref="TryStartBuilding"/>. The wire payload names the blueprint
+        /// and the origin cell only; every numeric input (footprint, cost,
+        /// power delta, work rate, final archetype) is resolved from the
+        /// blueprint catalog server-side, so a client cannot understate a cost
+        /// or oversize a footprint.
         ///
         /// Step 5.5.3: a builder entity is REQUIRED — every faction fields a
         /// physical builder, and building from thin air is refused
         /// (<see cref="MatchCommandRejection.BuilderRequired"/>); the gate then
-        /// validates it as a living owned unit
-        /// (<see cref="ConstructionMethod.DozerWorker"/>). The secondary-income
-        /// classes (DropZone, BlackMarket, OilRig, InternetCenter, LogisticsHub)
-        /// are capped at four per player, counting completed buildings and
+        /// validates it as a living owned unit. M2 remediation (P1-08): the
+        /// builder must also be a catalog builder row (checked by blueprint id
+        /// — builder rows share the mobile-armed legacy kind with combat
+        /// vehicles) and the blueprint must belong to the player's faction
+        /// (<see cref="MatchCommandRejection.FactionMismatch"/>) or be neutral.
+        /// A failed builder assignment rolls the whole order back — the site
+        /// is cancelled with its full refund.
+        ///
+        /// M2 remediation (P1-04): the credit debit is the FIRST state mutation
+        /// of an accepted order; every rejection before it leaves the world,
+        /// the entity counter and the wallet untouched. If the construction
+        /// start itself fails the debit is refunded and the freshly allocated
+        /// entity id rewound (no frame was created, so no corpse holds the id).
+        ///
+        /// M2 remediation (P1-05): the power delta flips to the ledger's
+        /// production-positive convention — a reactor raises NetPower, a
+        /// factory lowers it. M2 remediation (P1-06): factory/barracks rows
+        /// start as production buildings and register in the production
+        /// registry on completion. M2 remediation (P1-07): the work rate comes
+        /// from the catalog's BuildTimeTicks, not a fixed constant.
+        ///
+        /// The secondary-income classes (DropZone, BlackMarket, OilRig,
+        /// InternetCenter, LogisticsHub) are capped at four per player
+        /// IN TOTAL (M2 remediation P1-09), counting completed buildings and
         /// in-progress frames alike — frames carry their final kind from tick 0.
-        /// The grid cell maps to the centre of that 500 mm cell; the placement
-        /// registry still applies its own snapping, bounds and overlap checks.
+        /// M2 remediation (P1-10): the grid cell is range-checked before the mm
+        /// multiplication so a hostile cell cannot wrap the 32-bit product back
+        /// inside the map bounds; the placement registry still applies its own
+        /// snapping, bounds and overlap checks.
         /// </summary>
         public MatchCommandRejection TryOrderBuild(
             CommandHeader header,
@@ -1601,9 +1660,48 @@ namespace GlobalFront.Server
                 return builderRejection;
             }
 
-            if (FactionRosterCompletenessValidator.IsSecondaryIncomeKind(definition.LegacyKind) &&
-                CountPlayerUnitsOfKind(header.Player, definition.LegacyKind) >=
+            // M2 remediation (P1-08): only catalog builder rows may build. The
+            // legacy kind cannot discriminate — builder rows share the
+            // mobile-armed Tank kind (Infantry for the GLA Worker) with combat
+            // units — so the check runs on the blueprint id the frame was
+            // spawned from.
+            if (!_units.TryGetValue(builder, out var builderRecord) ||
+                !FactionRosterCompletenessValidator.IsBuilderBlueprint(
+                    builderRecord.BlueprintId))
+            {
+                return MatchCommandRejection.BuilderRequired;
+            }
+
+            // M2 remediation (P1-08): a blueprint authored for another faction
+            // is refused; neutral rows (FactionId.None) stay orderable by
+            // everyone. Hosts that run without a faction table keep the
+            // pre-remediation behaviour — there is no faction data to compare.
+            if (_playerFactions != null &&
+                header.Player.Value < _playerFactions.Length &&
+                definition.Faction != FactionId.None &&
+                _playerFactions[header.Player.Value] != definition.Faction)
+            {
+                return MatchCommandRejection.FactionMismatch;
+            }
+
+            // M2 remediation (P1-09): the four-building ceiling covers the
+            // whole secondary-income class, not one kind at a time.
+            if (FactionRosterCompletenessValidator.IsSecondaryIncomeKind(
+                    definition.LegacyKind) &&
+                CountSecondaryIncomeBuildings(header.Player) >=
                 SimulationConstants.MaxSecondaryBuildingsPerPlayer)
+            {
+                return MatchCommandRejection.ConstructionRejected;
+            }
+
+            // M2 remediation (P1-10): range-check the cell before the mm
+            // multiplication. An unchecked cell could wrap the 32-bit product
+            // back inside the map bounds and anchor a building at a bogus
+            // position. No Math.Abs — int.MinValue would overflow the Abs.
+            if (gridCellX > MaxGridCellCoordinate ||
+                gridCellX < -MaxGridCellCoordinate ||
+                gridCellZ > MaxGridCellCoordinate ||
+                gridCellZ < -MaxGridCellCoordinate)
             {
                 return MatchCommandRejection.ConstructionRejected;
             }
@@ -1616,6 +1714,15 @@ namespace GlobalFront.Server
                 definition.FootprintWidthCells * stepMm,
                 definition.FootprintHeightCells * stepMm);
 
+            // Pure placement pre-validation keeps geometry rejections off the
+            // mutation path — the credit debit below is the first state change
+            // of an accepted order.
+            if (_buildingPlacement.ValidatePlacement(center, footprint) !=
+                PlacementRejection.None)
+            {
+                return MatchCommandRejection.ConstructionRejected;
+            }
+
             // TryStartBuilding refuses a zero entity id, so the gate allocates
             // one from the same high-water source as every other spawn. The
             // capacity pre-check keeps a rejected build from consuming it.
@@ -1624,17 +1731,38 @@ namespace GlobalFront.Server
                 return MatchCommandRejection.ConstructionRejected;
             }
 
-            var buildingEntityId = new EntityId(_nextEntityValue++);
+            // M2 remediation (P1-08): a builder holding an assignment (or a
+            // saturated assignment table) must fail before the site exists, so
+            // the rejection below cannot strand a started frame.
+            if (_construction.TryGetBuilderActivity(builder.Value, out _))
+            {
+                return MatchCommandRejection.BuilderRequired;
+            }
+
+            if (_construction.TotalAssignedBuilders >= BuilderFsm.MaxBuilders)
+            {
+                return MatchCommandRejection.BuilderRequired;
+            }
+
+            // M2 remediation (P1-04): the credit debit is the first mutation.
+            // Everything above either passed or returned without side effects.
+            if (!_economy.TrySpendCredits(header.Player, definition.Cost))
+            {
+                return MatchCommandRejection.InsufficientFunds;
+            }
+
+            var buildingEntityValue = _nextEntityValue;
             var started = TryStartBuilding(
                 header.Player,
-                buildingEntityId.Value,
+                buildingEntityValue,
                 center,
                 footprint,
                 ConstructionMethod.DozerWorker,
-                ConstructionRegistry.DefaultWorkPerTick,
+                BuildWorkPerTickFromCatalog(definition.BuildTimeTicks),
                 definition.Cost,
-                definition.PowerConsumption - definition.PowerProduction,
-                false,
+                definition.PowerProduction - definition.PowerConsumption,
+                FactionRosterCompletenessValidator.IsFactoryOrBarracksBlueprint(
+                    blueprint.Value),
                 null,
                 definition.LegacyKind,
                 blueprint.Value,
@@ -1642,6 +1770,13 @@ namespace GlobalFront.Server
 
             if (!started)
             {
+                // M2 remediation (P1-04) state-safety invariant: a refused
+                // start refunds the wallet and rewinds the entity counter.
+                // Safe because TryStartBuilding rolls back everything it
+                // touched and, having failed, spawned no frame — no unit holds
+                // the id, so it can be handed out again.
+                _nextEntityValue = buildingEntityValue;
+                _economy.AddCredits(header.Player, definition.Cost);
                 return MatchCommandRejection.ConstructionRejected;
             }
 
@@ -1649,17 +1784,49 @@ namespace GlobalFront.Server
             // builder is assigned to the fresh site immediately — a DozerWorker
             // site with zero assigned builders freezes forever, and the wire
             // path has no separate assign command yet. GLA fields Worker
-            // builders (cap 3 per site), everyone else Dozers (cap 1). A failed
-            // assignment is not fatal: the site stands and another builder may
-            // be assigned later through the direct gate.
-            TryAssignBuilder(
+            // builders (cap 3 per site), everyone else Dozers (cap 1).
+            var assignment = TryAssignBuilder(
                 header.Player,
                 builder.Value,
                 IsGlaPlayer(header.Player) ? BuilderKind.Worker : BuilderKind.Dozer,
-                buildingEntityId.Value);
+                buildingEntityValue);
+
+            if (assignment != BuilderAssignmentRejection.None)
+            {
+                // M2 remediation (P1-08): unreachable by construction — the
+                // pre-checks above exhaust every assignment failure mode for a
+                // fresh site. Defensively roll the order back anyway: the
+                // cancel refunds the paid cost through the regular flow. The
+                // entity id stays consumed (the dead frame occupies it like
+                // any corpse — ids are never reused within a match), so the
+                // high-water mark must NOT move backwards here.
+                TryCancelBuilding(header.Player, buildingEntityValue, out _);
+                return MatchCommandRejection.BuilderRequired;
+            }
 
             CommitSequence(header.Player, header.Sequence);
             return MatchCommandRejection.None;
+        }
+
+        /// <summary>
+        /// M2 remediation (P1-07): the per-tick work pace derived from the
+        /// catalog's build time — <see cref="ConstructionRegistry.CompletedMilli"/>
+        /// (1000‰) spread over the blueprint's tick budget, clamped to the
+        /// registry's work ceiling so a catalog can never overshoot completion
+        /// in one tick. A 500-tick blueprint takes 500 builder-present ticks.
+        /// </summary>
+        private static int BuildWorkPerTickFromCatalog(uint buildTimeTicks)
+        {
+            var buildTicks = (int)Math.Min(buildTimeTicks, int.MaxValue);
+            if (buildTicks < 1)
+            {
+                buildTicks = 1;
+            }
+
+            return Math.Clamp(
+                ConstructionRegistry.CompletedMilli / buildTicks,
+                1,
+                ConstructionRegistry.CompletedMilli);
         }
 
         /// <summary>
@@ -1688,6 +1855,14 @@ namespace GlobalFront.Server
                 return MatchCommandRejection.UnknownBlueprint;
             }
 
+            // M2 remediation (P1-11): buildings are raised through the Build
+            // gate, not queued in a factory — a Building-category blueprint in
+            // a Produce order is a malformed payload.
+            if (definition.Category == BlueprintCategory.Building)
+            {
+                return MatchCommandRejection.InvalidPayload;
+            }
+
             if (definition.BuildTimeTicks > ushort.MaxValue)
             {
                 return MatchCommandRejection.InvalidPayload;
@@ -1696,11 +1871,23 @@ namespace GlobalFront.Server
             // Step 5.5.3: China's hacker roster is capped at the 4-Internet-
             // Center ceiling (4 centers x 4 hackers). The per-center
             // distribution is not tracked yet — the ceiling is per player.
+            // M2 remediation (P1-11): the ceiling counts living hackers plus
+            // hackers already waiting in every factory queue of the player —
+            // queue-stacking orders must not bypass the roster cap.
             if (definition.LegacyKind == UnitKinds.Hacker &&
-                CountPlayerUnitsOfKind(header.Player, UnitKinds.Hacker) >=
+                CountPlayerUnitsOfKind(header.Player, UnitKinds.Hacker) +
+                CountQueuedUnitsOfKind(header.Player, UnitKinds.Hacker) >=
                 SimulationConstants.MaxHackersPerPlayer)
             {
                 return MatchCommandRejection.HackerCapacityReached;
+            }
+
+            // M2 remediation (P1-04): the production cost is debited up front;
+            // a refused enqueue refunds it immediately — a rejected order must
+            // net zero against the wallet.
+            if (!_economy.TrySpendCredits(header.Player, definition.Cost))
+            {
+                return MatchCommandRejection.InsufficientFunds;
             }
 
             var produced = TryEnqueueProduce(
@@ -1713,6 +1900,7 @@ namespace GlobalFront.Server
 
             if (!produced)
             {
+                _economy.AddCredits(header.Player, definition.Cost);
                 return MapProductionRejection(rejection);
             }
 
@@ -1978,6 +2166,11 @@ namespace GlobalFront.Server
             _powerLedger.UnregisterBuilding(player, buildingEntityId);
             _pendingFactoryExitPoints.Remove(buildingEntityId);
             frame.Combat.ApplyDamage(frame.Combat.CurrentHealth);
+
+            // M2 remediation (P1-04): the full (100%) refund reaches the
+            // wallet here — before this fix a cancelled construction site
+            // reported the refund number but never deposited it.
+            _economy.AddCredits(player, refundCost);
             return true;
         }
 
@@ -2145,6 +2338,67 @@ namespace GlobalFront.Server
                     unit.Combat.IsAlive)
                 {
                     count++;
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>
+        /// M2 remediation (P1-09): counts every secondary-income building the
+        /// player owns — completed or in progress, across all five classes —
+        /// in one pass. The four-building ceiling applies to the class total,
+        /// not to one kind at a time. Command-path only, like
+        /// <see cref="CountPlayerUnitsOfKind"/>.
+        /// </summary>
+        private int CountSecondaryIncomeBuildings(PlayerId player)
+        {
+            var count = 0;
+            for (var index = 0; index < _orderedUnits.Count; index++)
+            {
+                var unit = _orderedUnits[index];
+                if (unit.Combat.Owner == player &&
+                    unit.Combat.IsAlive &&
+                    FactionRosterCompletenessValidator.IsSecondaryIncomeKind(
+                        unit.UnitKind))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>
+        /// M2 remediation (P1-11): counts units of one legacy kind waiting in
+        /// the production queues of the player's factories. Queue rows carry
+        /// blueprint ids, not kinds — every queued row resolves through the
+        /// catalog. Command-path only, like <see cref="CountPlayerUnitsOfKind"/>.
+        /// </summary>
+        private int CountQueuedUnitsOfKind(PlayerId player, byte kind)
+        {
+            var count = 0;
+            for (var index = 0; index < _production.Count; index++)
+            {
+                var building = _production.GetAt(index);
+                if (building.Owner != player)
+                {
+                    continue;
+                }
+
+                for (var slot = 0; slot < building.QueueCount; slot++)
+                {
+                    if (_production.TryGetQueueItem(
+                            building.BuildingEntityId,
+                            slot,
+                            out var item) &&
+                        _blueprintCatalog.TryGet(
+                            new BlueprintId(item.BlueprintId),
+                            out var definition) &&
+                        definition.LegacyKind == kind)
+                    {
+                        count++;
+                    }
                 }
             }
 

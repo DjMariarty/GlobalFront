@@ -143,7 +143,11 @@ namespace GlobalFront.Server.Transport
             }
 
             var type = (TransportMessageType)data[offset + 4];
-            if (type == TransportMessageType.None || type > TransportMessageType.ReplicationRequest)
+            // M2 remediation (P1-03): PlayerStateSync (15) rides the framed
+            // envelope — server→client only, but both endpoints must decode
+            // its header so the receiving side can route and the sending side
+            // can reject it explicitly. Anything beyond it stays unknown.
+            if (type == TransportMessageType.None || type > TransportMessageType.PlayerStateSync)
             {
                 return MessageError.UnknownMessageType;
             }

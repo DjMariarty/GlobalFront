@@ -35,16 +35,29 @@ namespace GlobalFront.Tests.EditMode.Server
             server.SpawnUnit(
                 PlayerTwo, new CombatStats(100, 1, 0, 1), new WorldPointMm(-150_000, 0), 500);
 
+            // M2 remediation (P1-04): the build/produce gates debit the
+            // wallet — scenarios start funded so the ordering under test stays
+            // the roster/cap behaviour, not a coin flip on the balance.
+            server.Economy.SetCredits(PlayerOne, 1_000_000);
+
             return server;
         }
 
         private static void SpawnBuilder(MatchServer server)
         {
+            SpawnBuilder(server, BuilderEntity);
+        }
+
+        private static void SpawnBuilder(MatchServer server, EntityId entity)
+        {
+            // M2 remediation (P1-08): the builder must be a catalog builder
+            // row — 174 is the USA Dozer, the canonical BuilderIds entry.
             Assert.That(
                 server.SpawnUnitWithEntity(
-                    BuilderEntity, PlayerOne, new CombatStats(100, 1, 0, 1),
-                    new WorldPointMm(0, -50_000), 500, false, UnitKinds.Tank),
-                Is.EqualTo(BuilderEntity),
+                    entity, PlayerOne, new CombatStats(100, 1, 0, 1),
+                    new WorldPointMm(0, -50_000), 500, false, UnitKinds.Tank,
+                    blueprintId: 174),
+                Is.EqualTo(entity),
                 "scenario setup: the physical builder must spawn");
         }
 
@@ -68,27 +81,36 @@ namespace GlobalFront.Tests.EditMode.Server
             // The five secondary-income classes: USA Drop Zone (160), China
             // Internet Center (215), GLA Black Market (358), Russia Oil
             // Drilling Rig (415), NATO Coalition Logistics Hub (515). The cap
-            // counts completed buildings and in-progress frames alike.
+            // counts completed buildings and in-progress frames alike — across
+            // ALL classes (M2 remediation P1-09), and each order needs its own
+            // free builder (M2 remediation P1-08: one builder holds one
+            // assignment). Builder ids are spaced 50 apart: every build
+            // consumes the entity id right after its builder's high-water
+            // mark, so consecutive spawns must stay clear of the frames.
             ushort[] secondary = { 160, 215, 358, 415, 515 };
+            int[] builderIds = { 900, 950, 1000, 1050, 1100 };
 
             foreach (var blueprintId in secondary)
             {
                 var server = CreateServer();
-                SpawnBuilder(server);
 
                 for (var order = 0; order < 4; order++)
                 {
+                    var builder = new EntityId((ulong)builderIds[order]);
+                    SpawnBuilder(server, builder);
                     Assert.That(
                         server.TryOrderBuild(
-                            BuildHeader((uint)(order + 1)), BuilderEntity,
+                            BuildHeader((uint)(order + 1)), builder,
                             new BlueprintId(blueprintId), order * 10, 0),
                         Is.EqualTo(MatchCommandRejection.None),
                         $"blueprint {blueprintId}: order {order + 1} of 4 must start");
                 }
 
+                var fifthBuilder = new EntityId((ulong)builderIds[4]);
+                SpawnBuilder(server, fifthBuilder);
                 Assert.That(
                     server.TryOrderBuild(
-                        BuildHeader(99), BuilderEntity, new BlueprintId(blueprintId), 40, 0),
+                        BuildHeader(99), fifthBuilder, new BlueprintId(blueprintId), 40, 0),
                     Is.EqualTo(MatchCommandRejection.ConstructionRejected),
                     $"blueprint {blueprintId}: the fifth secondary building is cut off server-side");
             }
@@ -106,7 +128,8 @@ namespace GlobalFront.Tests.EditMode.Server
             Assert.That(
                 server.SpawnUnitWithEntity(
                     BuilderEntity, PlayerOne, new CombatStats(100, 1, 0, 1),
-                    new WorldPointMm(2_750, -1_000), 500, false, UnitKinds.Tank),
+                    new WorldPointMm(2_750, -1_000), 500, false, UnitKinds.Tank,
+                    blueprintId: 174),
                 Is.EqualTo(BuilderEntity),
                 "scenario setup: the builder spawns inside the work radius");
             Assert.That(

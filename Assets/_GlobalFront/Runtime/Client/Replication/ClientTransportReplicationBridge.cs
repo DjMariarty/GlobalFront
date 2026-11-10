@@ -1,4 +1,5 @@
 using System;
+using GlobalFront.Core.Economy;
 using GlobalFront.Core.Snapshot;
 using GlobalFront.Server.Transport;
 
@@ -249,6 +250,18 @@ namespace GlobalFront.Client.Replication
         private int _sentRequestCount;
         private int _assemblyTimeoutCount;
 
+        // M2 remediation (P1-03): the owner's private economy digest (opcode
+        // 15). The payload and its digest entries live in preallocated
+        // storage — the channel arrives at 1 Hz and drives HUD display only,
+        // never simulation.
+        private readonly PlayerQueueDigestEntry[] _playerStateDigest =
+            new PlayerQueueDigestEntry[PlayerStateSyncCodec.MaxQueueDigestEntries];
+        private PlayerStateSyncPayload _latestPlayerState;
+        private int _latestPlayerStateDigestCount;
+        private bool _hasPlayerState;
+        private int _playerStateSyncCount;
+        private int _playerStateSyncRejectedCount;
+
         public ClientTransportReplicationBridge(IReplicationUplink uplink, ClientReplicationReceiver receiver)
             : this(uplink, receiver, ClientTransportReplicationBridgeConfig.Default)
         {
@@ -322,6 +335,62 @@ namespace GlobalFront.Client.Replication
 
         /// <summary>Incomplete assemblies discarded after <see cref="AssemblyTimeoutMs"/>.</summary>
         public int AssemblyTimeoutCount => _assemblyTimeoutCount;
+
+        /// <summary>Accepted PlayerStateSync messages (M2 remediation P1-03).</summary>
+        public int PlayerStateSyncCount => _playerStateSyncCount;
+
+        /// <summary>PlayerStateSync messages refused by the local shape check.</summary>
+        public int PlayerStateSyncRejectedCount => _playerStateSyncRejectedCount;
+
+        /// <summary>
+        /// M2 remediation (P1-03): stores the latest owner-only economy digest
+        /// (opcode 15) arriving through <see cref="ClientTransportEndpoint.PlayerStateSyncReceived"/>.
+        /// The digest entries are copied into preallocated storage — they stay
+        /// valid after the transport's own decode sink is reused by the next
+        /// message. Display-only state: nothing here touches simulation.
+        /// </summary>
+        public void HandlePlayerStateSync(
+            ClientTransportEndpoint source,
+            PlayerStateSyncPayload payload,
+            int digestCount)
+        {
+            if (source == null ||
+                digestCount < 0 ||
+                digestCount > PlayerStateSyncCodec.MaxQueueDigestEntries)
+            {
+                _playerStateSyncRejectedCount++;
+                return;
+            }
+
+            for (var index = 0; index < digestCount; index++)
+            {
+                _playerStateDigest[index] = source.GetPlayerStateSyncDigest(index);
+            }
+
+            _latestPlayerState = payload;
+            _latestPlayerStateDigestCount = digestCount;
+            _hasPlayerState = true;
+            _playerStateSyncCount++;
+        }
+
+        /// <summary>
+        /// M2 remediation (P1-03): the latest private economy digest — credits,
+        /// power grid and production queue heads — plus its digest entry count.
+        /// Returns false before the first PlayerStateSync arrives.
+        /// </summary>
+        public bool TryGetLatestPlayerState(out PlayerStateSyncPayload payload, out int digestCount)
+        {
+            payload = _latestPlayerState;
+            digestCount = _latestPlayerStateDigestCount;
+            return _hasPlayerState;
+        }
+
+        /// <summary>
+        /// M2 remediation (P1-03): digest entry <paramref name="index"/> of the
+        /// latest PlayerStateSync (see <see cref="TryGetLatestPlayerState"/>).
+        /// </summary>
+        public PlayerQueueDigestEntry GetPlayerStateDigest(int index) =>
+            _playerStateDigest[index];
 
         /// <summary>
         /// Drives the receiver's repair schedule and drains its feedback:
