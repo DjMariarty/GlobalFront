@@ -26,6 +26,9 @@ namespace GlobalFront.Tests.EditMode.Server
     /// - P1-10 coordinate overflow: ExtremeCellCoordinates_Rejected.
     /// - P1-11 queue validation: BuildingBlueprint_RejectedWithInvalidPayload,
     ///   HackerCap_CountsQueuedHackers.
+    /// - N-01 mirrored category gate: MobileUnitBlueprint_RejectedWithInvalidPayload
+    ///   (tank 108 / infantry 101 refuse through Build with the wallet,
+    ///   placement and entity counter untouched).
     /// </summary>
     [TestFixture]
     public sealed class WireBuildRemediationTests
@@ -492,7 +495,7 @@ namespace GlobalFront.Tests.EditMode.Server
         }
 
         // ------------------------------------------------------------------
-        // P1-11: queue validation
+        // P1-11 / N-01: queue validation and the mirrored category gate
         // ------------------------------------------------------------------
 
         [Test]
@@ -507,6 +510,58 @@ namespace GlobalFront.Tests.EditMode.Server
                     new EntityId(800), new BlueprintId(110)),
                 Is.EqualTo(MatchCommandRejection.InvalidPayload),
                 "buildings are raised through Build, never queued in a factory");
+        }
+
+        [Test]
+        public void WireBuild_MobileUnitBlueprint_RejectedWithInvalidPayload()
+        {
+            // N-01 (the P1-11 mirror): a mobile blueprint carries a zero
+            // footprint — past the gate it would throw inside the
+            // BuildingFootprint constructor and the transport would swallow
+            // the packet as DroppedMalformed, never answering the client.
+            // The gate refuses it with a wire-visible InvalidPayload BEFORE
+            // any footprint math, and a rejected command must not touch the
+            // wallet, the placement registry or the entity counter. The USA
+            // Crusader (108, Tank) stands in for every mobile row — the gate
+            // keys on the blueprint CATEGORY, so one vehicle exercises the
+            // whole class (infantry 101 rides the same branch).
+            var server = CreateServer();
+            var builder = SpawnBuilder(server, 900, 0, -10_000);
+
+            var creditsBefore = server.Economy.GetCredits(PlayerOne);
+            var unitsBefore = server.UnitCount;
+            var counterBefore = ReadEntityCounter(server);
+
+            Assert.That(
+                server.TryOrderBuild(
+                    BuildHeader(1), builder, new BlueprintId(108), 0, 0),
+                Is.EqualTo(MatchCommandRejection.InvalidPayload),
+                "mobile row 108: mobile rows are not raisable through Build");
+
+            Assert.That(
+                server.Economy.GetCredits(PlayerOne), Is.EqualTo(creditsBefore),
+                "the refused order debits nothing");
+            Assert.That(server.UnitCount, Is.EqualTo(unitsBefore),
+                "the refused order spawns no frame");
+            Assert.That(server.Construction.Count, Is.EqualTo(0),
+                "the refused order starts no construction site");
+            Assert.That(ReadEntityCounter(server), Is.EqualTo(counterBefore),
+                "the refused order leaves _nextEntityValue untouched");
+        }
+
+        /// <summary>
+        /// N-01 invariant helper: the private high-water counter, read via
+        /// reflection — test-only, the simulation never touches it on the
+        /// command path except through the gate under test.
+        /// </summary>
+        private static ulong ReadEntityCounter(MatchServer server)
+        {
+            var field = typeof(MatchServer).GetField(
+                "_nextEntityValue",
+                System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Instance);
+            Assert.That(field, Is.Not.Null, "counter field must exist");
+            return (ulong)field.GetValue(server);
         }
 
         [Test]

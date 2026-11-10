@@ -1629,7 +1629,10 @@ namespace GlobalFront.Server
         /// M2 remediation (P1-10): the grid cell is range-checked before the mm
         /// multiplication so a hostile cell cannot wrap the 32-bit product back
         /// inside the map bounds; the placement registry still applies its own
-        /// snapping, bounds and overlap checks.
+        /// snapping, bounds and overlap checks. N-01 remediation (the P1-11
+        /// mirror): only Building-category rows pass — a mobile blueprint's
+        /// zero footprint would throw below the gate and the transport would
+        /// swallow the packet without a CommandAck answer.
         /// </summary>
         public MatchCommandRejection TryOrderBuild(
             CommandHeader header,
@@ -1647,6 +1650,18 @@ namespace GlobalFront.Server
             if (!_blueprintCatalog.TryGet(blueprint, out var definition))
             {
                 return MatchCommandRejection.UnknownBlueprint;
+            }
+
+            // N-01 remediation (the P1-11 mirror): only Building-category
+            // rows are raisable through the Build gate. A mobile-unit
+            // blueprint carries a zero footprint — the BuildingFootprint
+            // constructor below would throw ArgumentOutOfRange, which the
+            // transport pump swallows as DroppedMalformed and the client
+            // never receives a CommandAck answer. Refused here, at the gate,
+            // with a wire-visible rejection.
+            if (definition.Category != BlueprintCategory.Building)
+            {
+                return MatchCommandRejection.InvalidPayload;
             }
 
             if (!builder.IsValid)
