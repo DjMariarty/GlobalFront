@@ -1,6 +1,6 @@
 # Первый запуск GlobalFront
 
-> Unity: `6000.6.2f1` • URP: `17.6.0` • uGUI: `2.6.0` • текущая реализация: технический RTS-прототип и 400-юнитный тактический вертикальный срез
+> Unity: `6000.6.2f1` • URP: `17.6.0` • uGUI: `2.6.0` • текущая реализация: полномасштабный RTS-прототип с dedicated сервером, 2v2 топологией, 5 асимметричными фракциями, строительством баз и экономикой снабжения (Фазы 1–5 полностью сертифицированы)
 
 ## Открытие проекта
 
@@ -9,6 +9,7 @@
 3. Откройте сцену `Assets/Scenes/SampleScene.unity`.
 4. Нажмите Play.
 5. Для переключения на полномасштабный 400-юнитный тактический срез Phase 3 нажмите **F9** или кнопку переключения в HUD.
+6. Для запуска 1v1/2v2 сетевого матча на выделенном сервере используйте меню Unity: `GlobalFront → Playtest → Launch Dedicated Match` или CLI аргументы.
 
 ## Управление
 
@@ -25,36 +26,38 @@
   - **ЛКМ по миникарте** — мгновенное центрирование камеры на указанной точке мира.
   - **ПКМ по миникарте** — выдача приказа движения выбранному отряду в указанную точку карты.
 
-## Реализованные ключевые подсистемы
+## Реализованные ключевые подсистемы (Фазы 1–5)
 
-- **Core & Server:** Детерминированная авторитетная симуляция 20 Hz (`GlobalFront.Core`, `GlobalFront.Server`), `MatchServer`, `TickDriver` (ADR-007, потокобезопасный шаг под lock).
-- **Session & Identity:** `SessionManager` (ADR-008), 32-байтный криптографический секрет, O(k) grace sweep, эксклюзивная привязка сокета и сессии (`TransportSessionBinder`).
-- **Транспорт и дельта-сжатие:** `INetworkCarrier` (ADR-009, LiteNetLib 1.3.5 + `OwnDatagramCarrier`), каналы C0/C1/C2, дельта-снапшоты (ADR-010, History Ring 120 тиков, keyframe slicing), Zero-GC буферы отправки.
-- **Reconnect & Resync:** Полноценное переподключение и восстановление (ADR-011, OD-18..OD-22), тактическая пауза, 5-секундный countdown таймер, защита от cross-session hijack (`ServerTransportHost`).
-- **Presentation & Controls:** SoA интерполяционный буфер `UnitViewTickBuffer` (OD-23), пул `UnitViewPool` и O(1) биндинг `UnitViewBinder` (OD-26), инстансированные кольца выделения и HP-бары `UnitOverlayBatcher` (URP 17.6 RenderGraph, OD-25), миникарта и HUD за 1 draw call (OD-24, OD-27, OD-28).
-- **Сквозной вертикальный срез 400 юнитов:** `TacticalVerticalSliceRunner` с доказанным профилем OD-28: **0.623 ms/frame** и **0 B GC.Alloc** за 60 steady-state кадров.
+- **Core & Simulation:** Детерминированная авторитетная симуляция 20 Hz (`GlobalFront.Core`), целочисленная математика в миллиметрах `WorldPointMm`, матрица брони и урона 8x7 в пермилле (`DamageMatrix`, линейный splash falloff, гатлинг-эскалация, токсины).
+- **Base Building & Power:** Сетка 500 мм (`SnapGrid500Mm`), проверка AABB футпринтов и коллизий зданий в `PlacementRegistry` (512 слотов), строительные леса 0%..100%, строители Dozer/Worker, мульти-стройка ГЛА, энергосеть `PowerLedger` и блэкаут защитных турелей.
+- **Production Queues:** Кольцевой буфер очереди фабрик (5 слотов, `ProducerLedger`), проверка техдрева `TechMask`, точки сбора `RallyPointMm`, замедление при LowPower.
+- **Supply Economy:** Склады ресурсов `SupplyDock` с 4 слотами погрузки, детерминированный FSM харвестеров, учет ресурсов `CreditLedger`, вторичный доход (хакеры, черный рынок, зоны сброса), Zero-GC 1 Hz трансляция `PlayerStateSync`.
+- **Faction Database (100+ чертежей):** Полный ростер 5 фракций (USA, China, GLA, EU, Russia), сетевой Snapshot Protocol v3 (`BlueprintId` 16-bit), Command Codec v2 (`Build`, `Produce`).
+- **Dedicated Server & 2v2 Topology:** `DedicatedServerRunner` (120 FPS pump, CLI `-topology 1v1|2v2`), командное лобби, Shared Vision союзников, фильтрация дружественного splash-урона, разделение меток на радаре.
+- **Network Transport & Resync:** LiteNetLib 1.3.5 / `OwnDatagramCarrier`, каналы C0/C1/C2, дельта-снапшоты с FoW filtering, Zero-GC буферы пула (2048 буферов, до 1 MiB), тактическая пауза, 5-секундный countdown, авто-возобновление C0 Opcode 14.
+- **Presentation & Controls:** SoA интерполяционный буфер `UnitViewTickBuffer`, пул `UnitViewPool` и O(1) биндинг `UnitViewBinder`, инстансированные кольца выделения и HP-бары `UnitOverlayBatcher` (URP 17.6 RenderGraph), миникарта и HUD за 1 draw call. Профиль на 400 юнитах: **0.623 ms/frame** и **0 B GC.Alloc**.
 
 ## Ограничения прототипа
 
-- `LocalMatchHost` работает внутри клиентского процесса (выделенный dedicated-серверный процесс запланирован в Phase 4/8).
-- Pathfinding по неровной местности и детерминированный обход динамических препятствий — в процессе разработки.
-- Фракции и производственный контент 1.0 (пять основных фракций: NATO, Russia, China, GLA, USA) являются утверждённым планом, а не финальным набором юнитов.
+- **Клиентский UI строительства и заказа юнитов:** Серверный бекенд (команды `Build`/`Produce`, очереди, проверка сетки, списание кредитов) полностью готов и протестирован; визуальные кнопки заказа в HUD и отображение призрака здания на сетке реализуются в Шаге 6.1 (Фаза 6).
+- **Pathfinding по сложной местности:** Базовое плоское перемещение отрядов и formation slots реализованы; детальный обход динамических препятствий по трехмерному рельефу запланирован на последующие фазы.
 
 ## Автоматические проверки
 
 Откройте `Window → General → Test Runner`.
-Актуальный бейзлайн (коммит `4cb8ffa`, 2026-10-20):
-- **1162/1162 EditMode** тестов passed (100% green).
-- **16/16 PlayMode** тестов passed (100% green).
-- **1178 автоматизированных тестов суммарно** (0 warnings, 0 errors).
-- Grand Re-Audit сертифицирован 3 независимыми аудиторами: **`[APPROVED: ZERO DEFECTS]`**.
+Актуальный бейзлайн (коммит `f21ba3f` / `4d03fdf`):
+- **1705/1705 EditMode** тестов passed (100% green).
+- **20/22 PlayMode** тестов passed.
+- **1727 автоматизированных тестов суммарно** (0 compiler warnings, 0 compiler errors).
+- Сертификация: Фазы 1, 2, 3, 4 и 5 полностью закрыты независимыми состязательными аудитами с вердиктом **`[APPROVED: ZERO DEFECTS]`**.
 
 ## Связанные документы
 
 - [Текущее состояние](Documentation/CURRENT_STATE.md)
+- [Статус проекта](Documentation/PROJECT_STATUS.md)
 - [Индекс документации](Documentation/README.md)
 - [Архитектура](Documentation/ARCHITECTURE.md)
 - [Roadmap](Documentation/ROADMAP.md)
-- [Phase 02 (Multiplayer)](Documentation/Phases/Phase_02_Multiplayer.md)
-- [Phase 03 (RTS Core)](Documentation/Phases/Phase_03_RTS_Core.md)
 - [Phase 04 (Multiplayer Integration)](Documentation/Phases/Phase_04_Multiplayer_Integration.md)
+- [Phase 05 (Full Five Factions & 2v2)](Documentation/Phases/Phase_05_Five_Factions.md)
+- [Phase 06 (Playable Client Slice)](Documentation/Phases/Phase_06_Content_Maps_Presentation.md)
