@@ -1956,6 +1956,74 @@ namespace GlobalFront.Server
             return MatchCommandRejection.None;
         }
 
+        /// <summary>
+        /// Wire-level cancel gate (N-05, ТЗ 6.0-B,
+        /// <c>GameCommandType.Cancel</c>): routes the wire order to the
+        /// matching cancel path. SlotIndex &gt;= 0 cancels that production
+        /// queue slot of the factory through
+        /// <see cref="TryCancelProduce"/> (typed rejection mapped for the
+        /// ack); SlotIndex &lt; 0 cancels the construction frame through
+        /// <see cref="TryCancelBuilding"/> — that helper answers with a bare
+        /// bool, so this gate differentiates unknown / foreign /
+        /// non-frame targets itself before calling it. Both paths carry the
+        /// full (100%) refund semantics fixed by P1-04.
+        ///
+        /// The sequence commits on every outcome, accepted or refused
+        /// (the TryScheduleProduction policy): a refused cancel is a
+        /// legitimate answer ("already completed", "empty slot"), and a
+        /// client retry of the same sequence number must reach the server
+        /// as fresh business instead of dying as a DuplicateSequence.
+        /// </summary>
+        public MatchCommandRejection TryOrderCancel(
+            CommandHeader header,
+            EntityId target,
+            int slotIndex)
+        {
+            var headerRejection = ValidateCommonHeader(header, GameCommandType.Cancel);
+            if (headerRejection != MatchCommandRejection.None)
+            {
+                return headerRejection;
+            }
+
+            CommitSequence(header.Player, header.Sequence);
+
+            if (slotIndex >= 0)
+            {
+                var produced = TryCancelProduce(
+                    header.Player,
+                    target.Value,
+                    slotIndex,
+                    out _,
+                    out var productionRejection);
+                return produced
+                    ? MatchCommandRejection.None
+                    : MapProductionRejection(productionRejection);
+            }
+
+            // Construction-frame cancel: fail-closed differentiation before
+            // the bool-shaped helper — unknown and foreign targets answer
+            // distinctly to the commanding player only (no oracle: the
+            // rejection never reaches a rival).
+            if (!_units.TryGetValue(target, out var frame))
+            {
+                return MatchCommandRejection.UnknownEntity;
+            }
+
+            if (frame.Combat.Owner.Value != header.Player.Value)
+            {
+                return MatchCommandRejection.NotEntityOwner;
+            }
+
+            if (!_construction.TryGet(target.Value, out _))
+            {
+                return MatchCommandRejection.InvalidPayload;
+            }
+
+            return TryCancelBuilding(header.Player, target.Value, out _)
+                ? MatchCommandRejection.None
+                : MatchCommandRejection.InvalidPayload;
+        }
+
         /// <summary>Maps the production registry's typed rejection for the ack path.</summary>
         private static MatchCommandRejection MapProductionRejection(ProductionRejection rejection)
         {

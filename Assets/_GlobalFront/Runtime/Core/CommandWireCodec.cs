@@ -52,12 +52,21 @@ namespace GlobalFront.Core.Commands
 
         /// <summary>
         /// Build: the builder entity (0 = modular/global build). Produce and
-        /// SetRally: the factory entity (never 0).
+        /// SetRally: the factory entity (never 0). Cancel: the entity to
+        /// cancel on (never 0) — a construction frame when SlotIndex &lt; 0,
+        /// the owning factory when SlotIndex &gt;= 0 (N-05).
         /// </summary>
         public EntityId SubjectEntity;
 
         /// <summary>SetRally: the rally point in world millimetres.</summary>
         public WorldPointMm RallyPoint;
+
+        /// <summary>
+        /// N-05 (Cancel): &lt; 0 cancels the construction frame
+        /// <see cref="SubjectEntity"/>; &gt;= 0 cancels that production
+        /// queue slot of the factory <see cref="SubjectEntity"/>.
+        /// </summary>
+        public int SlotIndex;
     }
 
     /// <summary>
@@ -82,6 +91,8 @@ namespace GlobalFront.Core.Commands
     ///          (builder 0 = modular/global build; Step 5.5.2)
     /// Produce: u64 factory | u16 blueprintId (Step 5.5.2)
     /// SetRally: u64 factory | i32 rallyX | i32 rallyZ (Step 5.5.2)
+    /// Cancel:  u64 target | i32 slotIndex — slotIndex &lt; 0 = construction
+    ///          frame, &gt;= 0 = production queue slot (N-05, ТЗ 6.0-B)
     /// </code>
     /// </summary>
     public static class CommandWireCodec
@@ -116,6 +127,9 @@ namespace GlobalFront.Core.Commands
 
         /// <summary>Header 15 + factory 8 + rally 8.</summary>
         public static int GetSetRallySize() => HeaderSizeBytes + 8 + 4 + 4;
+
+        /// <summary>Header 15 + target 8 + slot 4 (N-05).</summary>
+        public static int GetCancelSize() => HeaderSizeBytes + 8 + 4;
 
         public static int EncodeMove(
             byte[] buffer,
@@ -197,6 +211,23 @@ namespace GlobalFront.Core.Commands
         }
 
         /// <summary>
+        /// N-05 (ТЗ 6.0-B): cancel a construction frame (slotIndex &lt; 0) or
+        /// a production queue slot (slotIndex &gt;= 0) of
+        /// <paramref name="target"/>. The authoritative refund and
+        /// ownership rules stay inside <c>MatchServer.TryOrderCancel</c>.
+        /// </summary>
+        public static int EncodeCancel(
+            byte[] buffer,
+            CommandHeader header,
+            EntityId target,
+            int slotIndex)
+        {
+            var offset = WriteHeader(buffer, header);
+            offset = WriteUInt64(buffer, offset, target.Value);
+            return WriteInt32(buffer, offset, slotIndex);
+        }
+
+        /// <summary>
         /// Decodes and structurally validates a wire command starting at
         /// <paramref name="offset"/> for <paramref name="length"/> bytes.
         /// Structural validation only: gameplay authority (ownership, tick
@@ -232,7 +263,8 @@ namespace GlobalFront.Core.Commands
                 type != GameCommandType.Stop &&
                 type != GameCommandType.Build &&
                 type != GameCommandType.Produce &&
-                type != GameCommandType.SetRally)
+                type != GameCommandType.SetRally &&
+                type != GameCommandType.Cancel)
             {
                 error = CommandWireError.UnknownCommandType;
                 return false;
@@ -354,6 +386,24 @@ namespace GlobalFront.Core.Commands
                     var rallyX = ReadInt32(data, ref offset);
                     var rallyZ = ReadInt32(data, ref offset);
                     command.RallyPoint = new WorldPointMm(rallyX, rallyZ);
+                    break;
+
+                case GameCommandType.Cancel:
+                    if (offset + 12 > end)
+                    {
+                        error = CommandWireError.TruncatedPayload;
+                        return false;
+                    }
+
+                    var cancelTarget = ReadUInt64(data, ref offset);
+                    if (cancelTarget == 0)
+                    {
+                        error = CommandWireError.InvalidEntity;
+                        return false;
+                    }
+
+                    command.SubjectEntity = new EntityId(cancelTarget);
+                    command.SlotIndex = ReadInt32(data, ref offset);
                     break;
             }
 

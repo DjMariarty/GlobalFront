@@ -13,7 +13,14 @@ namespace GlobalFront.Core.Commands
         Build = 6,
         Produce = 7,
         UseAbility = 8,
-        SetRally = 9
+        SetRally = 9,
+
+        /// <summary>
+        /// N-05 (ТЗ 6.0-B): cancel a construction frame (SlotIndex &lt; 0) or a
+        /// production queue slot (SlotIndex &gt;= 0) on the wire. Append-only:
+        /// the byte travels inside CommandWireCodec v2 headers and CommandAck.
+        /// </summary>
+        Cancel = 10
     }
 
     public enum CommandValidationResult : byte
@@ -67,11 +74,11 @@ namespace GlobalFront.Core.Commands
                 return CommandValidationResult.MissingSequence;
             }
 
-            if (Type == GameCommandType.None ||
-                (byte)Type > (byte)GameCommandType.SetRally)
-            {
-                return CommandValidationResult.UnknownCommand;
-            }
+        if (Type == GameCommandType.None ||
+            (byte)Type > (byte)GameCommandType.Cancel)
+        {
+            return CommandValidationResult.UnknownCommand;
+        }
 
             if (RequestedTick < currentServerTick &&
                 currentServerTick - RequestedTick > acceptedPastTicks)

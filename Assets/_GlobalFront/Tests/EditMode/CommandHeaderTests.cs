@@ -73,6 +73,12 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void GameCommandType_CarriesTheCancelValue()
+        {
+            Assert.That((byte)GameCommandType.Cancel, Is.EqualTo(10), "N-05 (ТЗ 6.0-B): append-only addition after SetRally = 9");
+        }
+
+        [Test]
         public void Validate_AcceptsSetRally_AsTheNewUpperBound()
         {
             var header = new CommandHeader(
@@ -85,15 +91,27 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
-        public void Validate_RejectsTypeBeyondTheSetRallyBound()
+        public void Validate_AcceptsCancel_AsTheNewUpperBound()
         {
             var header = new CommandHeader(
                 new PlayerId(1),
                 sequence: 1,
                 requestedTick: 100,
-                type: (GameCommandType)10);
+                type: GameCommandType.Cancel);
 
-            Assert.That(header.Validate(100, 2, 5), Is.EqualTo(CommandValidationResult.UnknownCommand), "the first byte past SetRally is unknown again");
+            Assert.That(header.Validate(100, 2, 5), Is.EqualTo(CommandValidationResult.Accepted));
+        }
+
+        [Test]
+        public void Validate_RejectsTypeBeyondTheCancelBound()
+        {
+            var header = new CommandHeader(
+                new PlayerId(1),
+                sequence: 1,
+                requestedTick: 100,
+                type: (GameCommandType)11);
+
+            Assert.That(header.Validate(100, 2, 5), Is.EqualTo(CommandValidationResult.UnknownCommand), "the first byte past Cancel is unknown again");
         }
     }
 }

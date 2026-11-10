@@ -152,6 +152,61 @@ namespace GlobalFront.Tests.EditMode
         }
 
         [Test]
+        public void CommandWireCodec_CancelBuildingCommand_EncodesAndDecodesCorrectly()
+        {
+            // N-05: 15 header + 8 target + 4 slot = 27 bytes; SlotIndex -1
+            // cancels the construction frame.
+            Assert.That(CommandWireCodec.GetCancelSize(), Is.EqualTo(27));
+
+            var buffer = new byte[CommandWireCodec.GetCancelSize()];
+            var length = CommandWireCodec.EncodeCancel(
+                buffer, Header(GameCommandType.Cancel), new EntityId(64), -1);
+
+            Assert.That(length, Is.EqualTo(27));
+            Assert.That(
+                CommandWireCodec.TryDecode(buffer, 0, length, out var wire, out var error),
+                Is.True, error.ToString());
+            Assert.That(wire.Header.Type, Is.EqualTo(GameCommandType.Cancel));
+            Assert.That(wire.Header.Player.Value, Is.EqualTo(1));
+            Assert.That(wire.Header.Sequence, Is.EqualTo(7u));
+            Assert.That(wire.Header.RequestedTick, Is.EqualTo(100ul));
+            Assert.That(wire.SubjectEntity, Is.EqualTo(new EntityId(64)));
+            Assert.That(wire.SlotIndex, Is.EqualTo(-1));
+        }
+
+        [Test]
+        public void CommandWireCodec_CancelProductionSlotCommand_EncodesAndDecodesCorrectly()
+        {
+            // N-05: SlotIndex >= 0 cancels that production queue slot of the
+            // factory — slot 2 of entity 88 here.
+            var buffer = new byte[CommandWireCodec.GetCancelSize()];
+            var length = CommandWireCodec.EncodeCancel(
+                buffer, Header(GameCommandType.Cancel), new EntityId(88), 2);
+
+            Assert.That(length, Is.EqualTo(27));
+            Assert.That(
+                CommandWireCodec.TryDecode(buffer, 0, length, out var wire, out var error),
+                Is.True, error.ToString());
+            Assert.That(wire.Header.Type, Is.EqualTo(GameCommandType.Cancel));
+            Assert.That(wire.SubjectEntity, Is.EqualTo(new EntityId(88)));
+            Assert.That(wire.SlotIndex, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void CommandWireCodec_CancelCommand_RejectsZeroTarget_ReturnsInvalidEntity()
+        {
+            // Same structural symmetry as Produce/SetRally: a zero entity is
+            // not a cancel target.
+            var buffer = new byte[CommandWireCodec.GetCancelSize()];
+            var length = CommandWireCodec.EncodeCancel(
+                buffer, Header(GameCommandType.Cancel), new EntityId(0), -1);
+
+            Assert.That(
+                CommandWireCodec.TryDecode(buffer, 0, length, out _, out var error), Is.False);
+            Assert.That(error, Is.EqualTo(CommandWireError.InvalidEntity));
+        }
+
+        [Test]
         public void CommandWireCodec_RejectsVersion1Command_ReturnsBadVersion()
         {
             // A v1 peer's packets start with the byte 0x01; the v2 codec must
@@ -197,6 +252,14 @@ namespace GlobalFront.Tests.EditMode
                 CommandWireCodec.TryDecode(rally, 0, rallyLength - 1, out _, out var rallyError),
                 Is.False);
             Assert.That(rallyError, Is.EqualTo(CommandWireError.TruncatedPayload));
+
+            var cancel = new byte[CommandWireCodec.GetCancelSize()];
+            var cancelLength = CommandWireCodec.EncodeCancel(
+                cancel, Header(GameCommandType.Cancel), new EntityId(3), -1);
+            Assert.That(
+                CommandWireCodec.TryDecode(cancel, 0, cancelLength - 1, out _, out var cancelError),
+                Is.False);
+            Assert.That(cancelError, Is.EqualTo(CommandWireError.TruncatedPayload));
         }
 
         [Test]
@@ -225,6 +288,14 @@ namespace GlobalFront.Tests.EditMode
                 CommandWireCodec.TryDecode(rally, 0, rallyLength + 2, out _, out var rallyError),
                 Is.False);
             Assert.That(rallyError, Is.EqualTo(CommandWireError.TrailingBytes));
+
+            var cancel = new byte[CommandWireCodec.GetCancelSize() + 2];
+            var cancelLength = CommandWireCodec.EncodeCancel(
+                cancel, Header(GameCommandType.Cancel), new EntityId(3), -1);
+            Assert.That(
+                CommandWireCodec.TryDecode(cancel, 0, cancelLength + 2, out _, out var cancelError),
+                Is.False);
+            Assert.That(cancelError, Is.EqualTo(CommandWireError.TrailingBytes));
         }
 
         [Test]

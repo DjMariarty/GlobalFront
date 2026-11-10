@@ -693,10 +693,14 @@ namespace GlobalFront.Server.Transport
                     result = _server.TryScheduleProduction(
                         wire.Header, wire.SubjectEntity, wire.Blueprint);
                     break;
-                case GameCommandType.SetRally:
-                    result = _server.TryOrderSetRally(
-                        wire.Header, wire.SubjectEntity, wire.RallyPoint);
-                    break;
+        case GameCommandType.SetRally:
+            result = _server.TryOrderSetRally(
+                wire.Header, wire.SubjectEntity, wire.RallyPoint);
+            break;
+        case GameCommandType.Cancel:
+            result = _server.TryOrderCancel(
+                wire.Header, wire.SubjectEntity, wire.SlotIndex);
+            break;
                 default:
                     _carrier.Metrics.DroppedMalformed++;
                     return;
