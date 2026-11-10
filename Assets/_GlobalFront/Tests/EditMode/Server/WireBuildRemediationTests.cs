@@ -526,7 +526,7 @@ namespace GlobalFront.Tests.EditMode.Server
             // each of them with a wire-visible InvalidPayload BEFORE any
             // footprint math, and a rejected command must not touch the
             // wallet, the placement registry or the entity counter.
-            // 108 USA Crusader (Tank), 101 USA Ranger (Infantry),
+            // 108 USA Tomahawk (Vehicle), 100 USA Ranger (Infantry),
             // 122 USA Raptor (Aircraft) — one row per mobile category.
             var server = CreateServer();
             var builder = SpawnBuilder(server, 900, 0, -10_000);
@@ -535,7 +535,7 @@ namespace GlobalFront.Tests.EditMode.Server
             var unitsBefore = server.UnitCount;
             var counterBefore = ReadEntityCounter(server);
 
-            byte[] mobile = { 108, 101, 122 };
+            byte[] mobile = { 108, 100, 122 };
             for (var index = 0; index < mobile.Length; index++)
             {
                 Assert.That(
