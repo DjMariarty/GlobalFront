@@ -26,9 +26,10 @@ namespace GlobalFront.Tests.EditMode.Server
     /// - P1-10 coordinate overflow: ExtremeCellCoordinates_Rejected.
     /// - P1-11 queue validation: BuildingBlueprint_RejectedWithInvalidPayload,
     ///   HackerCap_CountsQueuedHackers.
-    /// - N-01 mirrored category gate: MobileUnitBlueprint_RejectedWithInvalidPayload
-    ///   (tank 108 / infantry 101 refuse through Build with the wallet,
-    ///   placement and entity counter untouched).
+    /// - N-07 footprint gate (supersedes the N-01 category gate): mobile rows
+    ///   (108/101/122) refuse through Build with the wallet, placement and
+    ///   entity counter untouched; non-Building-category structures
+    ///   (112 Supply, 116 Defense, 118 Superweapon) build through the wire.
     /// </summary>
     [TestFixture]
     public sealed class WireBuildRemediationTests
@@ -515,16 +516,18 @@ namespace GlobalFront.Tests.EditMode.Server
         [Test]
         public void WireBuild_MobileUnitBlueprint_RejectedWithInvalidPayload()
         {
-            // N-01 (the P1-11 mirror): a mobile blueprint carries a zero
-            // footprint — past the gate it would throw inside the
-            // BuildingFootprint constructor and the transport would swallow
-            // the packet as DroppedMalformed, never answering the client.
-            // The gate refuses it with a wire-visible InvalidPayload BEFORE
-            // any footprint math, and a rejected command must not touch the
-            // wallet, the placement registry or the entity counter. The USA
-            // Crusader (108, Tank) stands in for every mobile row — the gate
-            // keys on the blueprint CATEGORY, so one vehicle exercises the
-            // whole class (infantry 101 rides the same branch).
+            // N-07 (supersedes the N-01 category gate): the build gate keys on
+            // the POSITIVE FOOTPRINT, not the category — structures span four
+            // catalog categories (Building/Supply/Defense/Superweapon), and
+            // the zero-footprint mobile rows are the discriminator. Past the
+            // gate a mobile blueprint would throw inside the BuildingFootprint
+            // constructor and the transport would swallow the packet as
+            // DroppedMalformed, never answering the client. The gate refuses
+            // each of them with a wire-visible InvalidPayload BEFORE any
+            // footprint math, and a rejected command must not touch the
+            // wallet, the placement registry or the entity counter.
+            // 108 USA Crusader (Tank), 101 USA Ranger (Infantry),
+            // 122 USA Raptor (Aircraft) — one row per mobile category.
             var server = CreateServer();
             var builder = SpawnBuilder(server, 900, 0, -10_000);
 
@@ -532,21 +535,55 @@ namespace GlobalFront.Tests.EditMode.Server
             var unitsBefore = server.UnitCount;
             var counterBefore = ReadEntityCounter(server);
 
-            Assert.That(
-                server.TryOrderBuild(
-                    BuildHeader(1), builder, new BlueprintId(108), 0, 0),
-                Is.EqualTo(MatchCommandRejection.InvalidPayload),
-                "mobile row 108: mobile rows are not raisable through Build");
+            byte[] mobile = { 108, 101, 122 };
+            for (var index = 0; index < mobile.Length; index++)
+            {
+                Assert.That(
+                    server.TryOrderBuild(
+                        BuildHeader((uint)(index + 1)), builder,
+                        new BlueprintId(mobile[index]), 0, 0),
+                    Is.EqualTo(MatchCommandRejection.InvalidPayload),
+                    $"mobile row {mobile[index]} is not raisable through Build");
+            }
 
             Assert.That(
                 server.Economy.GetCredits(PlayerOne), Is.EqualTo(creditsBefore),
-                "the refused order debits nothing");
+                "the refused orders debit nothing");
             Assert.That(server.UnitCount, Is.EqualTo(unitsBefore),
-                "the refused order spawns no frame");
+                "the refused orders spawn no frame");
             Assert.That(server.Construction.Count, Is.EqualTo(0),
-                "the refused order starts no construction site");
+                "the refused orders start no construction site");
             Assert.That(ReadEntityCounter(server), Is.EqualTo(counterBefore),
-                "the refused order leaves _nextEntityValue untouched");
+                "the refused orders leave _nextEntityValue untouched");
+        }
+
+        [Test]
+        public void WireBuild_NonBuildingCategories_PassTheFootprintGate()
+        {
+            // N-07: structures live in FOUR catalog categories — the N-01
+            // category gate wrongly cut off Supply (112, 6x6), Defense (116
+            // Patriot, 4x4) and Superweapon (118 particle cannon, 6x6). The
+            // footprint invariant admits all of them: each wire order starts
+            // a site, exactly as the pre-N-01 wire did.
+            var server = CreateServer();
+            int[] builderIds = { 900, 950, 1000 };
+            ushort[] structures = { 112, 116, 118 };
+            int[] cells = { 0, 10, 20 };
+
+            for (var index = 0; index < structures.Length; index++)
+            {
+                var builder = SpawnBuilder(server, builderIds[index], 0, -10_000);
+                Assert.That(
+                    server.TryOrderBuild(
+                        BuildHeader((uint)(index + 1)), builder,
+                        new BlueprintId(structures[index]), cells[index], 0),
+                    Is.EqualTo(MatchCommandRejection.None),
+                    $"blueprint {structures[index]} (a non-Building category with a " +
+                    "valid footprint) must build through the wire");
+            }
+
+            Assert.That(server.Construction.Count, Is.EqualTo(structures.Length),
+                "every non-Building-category structure started its site");
         }
 
         /// <summary>

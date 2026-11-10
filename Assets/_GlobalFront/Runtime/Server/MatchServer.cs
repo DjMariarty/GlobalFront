@@ -1629,10 +1629,12 @@ namespace GlobalFront.Server
         /// M2 remediation (P1-10): the grid cell is range-checked before the mm
         /// multiplication so a hostile cell cannot wrap the 32-bit product back
         /// inside the map bounds; the placement registry still applies its own
-        /// snapping, bounds and overlap checks. N-01 remediation (the P1-11
-        /// mirror): only Building-category rows pass — a mobile blueprint's
-        /// zero footprint would throw below the gate and the transport would
-        /// swallow the packet without a CommandAck answer.
+        /// snapping, bounds and overlap checks. N-07 remediation (supersedes
+        /// the N-01 category gate): only positive-footprint rows pass — a
+        /// mobile blueprint's zero footprint would throw below the gate and
+        /// the transport would swallow the packet without a CommandAck answer,
+        /// while every building category (Building/Supply/Defense/Superweapon)
+        /// keeps building through the wire.
         /// </summary>
         public MatchCommandRejection TryOrderBuild(
             CommandHeader header,
@@ -1652,14 +1654,19 @@ namespace GlobalFront.Server
                 return MatchCommandRejection.UnknownBlueprint;
             }
 
-            // N-01 remediation (the P1-11 mirror): only Building-category
-            // rows are raisable through the Build gate. A mobile-unit
-            // blueprint carries a zero footprint — the BuildingFootprint
-            // constructor below would throw ArgumentOutOfRange, which the
-            // transport pump swallows as DroppedMalformed and the client
-            // never receives a CommandAck answer. Refused here, at the gate,
-            // with a wire-visible rejection.
-            if (definition.Category != BlueprintCategory.Building)
+            // N-07 remediation (supersedes the N-01 category gate): only rows
+            // with a real footprint are raisable through the Build gate.
+            // Structures span FOUR catalog categories (Building, Supply,
+            // Defense, Superweapon — e.g. the 112 supply centre, the 116
+            // Patriot, the 118 particle cannon), so the category is not the
+            // discriminator; the zero-footprint mobile rows are. A mobile
+            // blueprint below this gate would throw inside the
+            // BuildingFootprint constructor, which the transport pump
+            // swallows as DroppedMalformed — the client would never receive
+            // a CommandAck answer. Refused here, at the gate, with a
+            // wire-visible rejection.
+            if (definition.FootprintWidthCells <= 0 ||
+                definition.FootprintHeightCells <= 0)
             {
                 return MatchCommandRejection.InvalidPayload;
             }
