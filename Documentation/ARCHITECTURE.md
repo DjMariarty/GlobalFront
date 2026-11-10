@@ -115,14 +115,15 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 ## Verification Baseline
 
 - Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`
-- **1370/1370 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-11-03
-- **22/22 PlayMode passed (100%)**, 0 failed, 0 skipped, 2026-11-03
-- **1392 автоматизированных теста суммарно** (0 compiler warnings, 0 compiler errors на HEAD `66419a8` / `6d8a20c`)
-- last committed milestone: `6d8a20c` (Milestone M1.2 certification APPROVE by Kimi k 3.1 Pro; `66419a8` strict Zero-GC & terminal MatchFinished rebind)
+- **1705/1705 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-11-10
+- **20/22 PlayMode passed**, 0 compiler warnings, 0 compiler errors на HEAD `f21ba3f`
+- **1727 автоматизированных тестов суммарно**
+- last committed milestone: `f21ba3f` (Milestone M2 2v2 Topology Hardening и Milestone M3 Full Five Factions Roster certification UNCONDITIONAL APPROVE by QDuck; N-01/N-07 footprint wire gates, dynamic `TeamSlotMapping2v2`, Zero-GC `PlayerStateSync`)
 - Phase 2.0 Grand Re-Audit (`4cb8ffa`): сертификация подтвердила **P0/P1 = 0**. Строгий состязательный ре-аудит выполнен Claude на основе коммита `4cb8ffa` (отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`); все замечания закрыты в Hardening Phase 3.7.1 блоками 1–5 (`934840d`..`3a112ad` + документация)
 - Phase 3 (3.1–3.7) сертифицирована независимым adversarial-аудитом **[APPROVED: ZERO DEFECTS]** (отчёты: `3414ba6`, `cb01ea2`) — **Phase 3 [100% COMPLETED]**; профиль OD-28 на 400 юнитах: **0.623 ms/frame**, **0 B GC.Alloc**
 - Phase 4 (4.1–4.6.5 + M1.1/M1.2) сертифицирована независимым adversarial-аудитом Kimi k 3.1 Pro **[APPROVED: ZERO DEFECTS]** (P0=0, P1=0, P2=0, P3=0 на `66419a8`, отчёт: `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`) — **Phase 4 / Milestone M1.2 [100% COMPLETED]**; Strict Zero-GC до 895 фрагментов / 1 MiB, live UDP MatchFinished
-- next: **Phase 5: Full Five Factions (Faction Asymmetry & Strategic Combat) & Milestone M2 (2v2 Topology)** (ADR-014, OD-48)
+- Phase 5 (5.1–5.6.2 + M2 Hardening Remediation) сертифицирована состязательным ре-аудитом QDuck **[UNCONDITIONAL APPROVE (Server Core)]** на `f21ba3f` — **Phase 5 / Milestones M2 & M3 [100% COMPLETED]**; целочисленная матрица 8x7, Snap Grid 500 мм, PowerLedger, кольцевые очереди, склады ресурсов, 100+ блюпринтов 5 фракций, 2v2 Shared Vision
+- next: **Phase 6: Content + Maps + Presentation (Playable Client Slice, Step 6.1)**
 
 ## Связанные документы
 
@@ -132,3 +133,5 @@ R&D → Architecture Decision → Implementation → Tests → Review → Docume
 - [Phase 02](Phases/Phase_02_Multiplayer.md)
 - [Phase 03](Phases/Phase_03_RTS_Core.md)
 - [Phase 04](Phases/Phase_04_Multiplayer_Integration.md)
+- [Phase 05](Phases/Phase_05_Five_Factions.md)
+- [Phase 06](Phases/Phase_06_Content_Maps_Presentation.md)

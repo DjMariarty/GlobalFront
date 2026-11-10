@@ -60,6 +60,16 @@ R&D → impact analysis → ADR / Owner Approval → migration plan
 
 **Required integration tests:** all-five-faction roster/data validation, networked command/state coverage, deterministic regression, multiplayer parity, protocol/load regression и cross-faction gameplay integration.
 
+## Phase 5 ↔ Phase 6
+
+**Phase 5 provides:** авторитетный пятифракционный ростер (`BlueprintCatalog`, 100+ чертежей), дискретную сетку 500 мм (`SnapGrid500Mm`), FSM строителей и строительные леса, кольцевые очереди производства фабрик, снабженческую экономику с FSM харвестеров и складами, 1 Hz трансляцию ресурсов `PlayerStateSync`, и 2v2 топологию с Shared Vision.
+
+**Phase 6 consumes:** серверные авторитетные контракты симуляции для реализации клиентского игрового среза: меню строительства зданий с призраком на сетке 500 мм, меню заказа юнитов на фабриках, HUD ресурсов (деньги и энергия), карты, визуальные ассеты, аудио, эффекты и презентационный слой.
+
+**Protection rule:** клиентский UI и презентационный слой Phase 6 не мутируют авторитетное состояние напрямую, взаимодействуют с симуляцией исключительно через сетевой командный канал (`ICommandChannel` с командами `Build`, `Produce`, `Cancel`, `Move`, `Attack`, `Stop`) и реплицированное состояние (`ClientReplicationWorld`, `PlayerStateSync`).
+
+**Required integration tests:** валидация клиентских UI-команд на сервере, отображение призрака здания и валидация размещения, привязка кнопок заказа к очередям фабрик, реакция HUD на `PlayerStateSync`, E2E PlayMode сценарий постройки и производства.
+
 ## Change and Review Gate
 
 Изменение contract принимается только когда:

@@ -8,9 +8,9 @@
 | 1 | [Simulation Foundation](Phase_01_Foundation.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** | M0 |
 | 2 | [Multiplayer Foundation](Phase_02_Multiplayer.md) | **COMPLETE [P0/P1 = 0 CERTIFIED; все P2/P3 закрыты]** (`4cb8ffa` + Hardening 3.7.1) | prerequisite M1 |
 | 3 | [RTS Core + Vertical Slice](Phase_03_RTS_Core.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** (3.1–3.7 + Hardening 3.7.1) | M2 |
-| 4 | [Multiplayer Gameplay Integration](Phase_04_Multiplayer_Integration.md) | **CURRENT / NEXT** | M1 |
-| 5 | [Full Five Factions](Phase_05_Five_Factions.md) | planned | M3 |
-| 6 | [Content + Maps + Presentation](Phase_06_Content_Maps_Presentation.md) | planned | — |
+| 4 | [Multiplayer Gameplay Integration](Phase_04_Multiplayer_Integration.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** (4.1–4.6.5 + M1.1/M1.2, commit `66419a8`) | M1 |
+| 5 | [Full Five Factions](Phase_05_Five_Factions.md) | **COMPLETE [APPROVED: ZERO DEFECTS]** (5.1–5.6.2 + M2 Hardening, commit `f21ba3f`) | M2 (2v2) / M3 |
+| 6 | [Content + Maps + Presentation](Phase_06_Content_Maps_Presentation.md) | **CURRENT / NEXT** (Playable Client Slice, Step 6.1) | — |
 | 7 | [AI](Phase_07_AI.md) | planned | M4 |
 | 8 | [Scale / Performance / Reliability](Phase_08_Scale_Performance_Reliability.md) | planned | M5 |
 | 9 | [Alpha](Phase_09_Alpha.md) | planned | M6 |
@@ -28,4 +28,4 @@
 R&D → Architecture Decision → Implementation → Tests → Review → Documentation → Commit
 ```
 
-Навигация: [Master Game Plan](../MASTER_GAME_PLAN.md) • [Roadmap](../ROADMAP.md) • [Current State](../CURRENT_STATE.md)
+Навигация: [Master Game Plan](../MASTER_GAME_PLAN.md) • [Roadmap](../ROADMAP.md) • [Current State](../CURRENT_STATE.md) • [Project Status](../PROJECT_STATUS.md)

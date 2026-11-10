@@ -1,14 +1,15 @@
 # Phase 06 — Content + Maps + Presentation
 
-> Status: planned
+> Status: **CURRENT / NEXT** (Step 6.1 Playable Client Slice) • Prerequisite: M3 Five Factions (Phase 5, COMPLETE)
 
 ## Goal
 
-Довести карты, graphics, UI, audio, VFX, destruction и presentation до production scope 1.0.
+Довести карты, graphics, UI, audio, VFX, destruction и presentation до production scope 1.0. Начальный этап (Шаг 6.1) фокусируется на Playable Client Slice: меню строительства зданий на сетке 500 мм, меню заказа юнитов в очередях фабрик, HUD ресурсов и отмена заказов.
 
 ## Dependencies
 
-- M3 Five Factions (Phase 5);
+- M2 2v2 Topology Hardening (Phase 5, COMPLETE);
+- M3 Five Factions (Phase 5, COMPLETE);
 - утверждённые art/UI/audio directions;
 - production content pipeline и лицензионные правила.
 

@@ -14,7 +14,9 @@
 - Current baseline отделён от approved target architecture.
 - ADR-009 Network Transport Architecture (Phase 2.5) — Accepted (OD-1 = LiteNetLib как preferred initial carrier за контрактом `INetworkCarrier`); R&D-документы в `Documentation/Research/`.
 - ADR-014 Phase 4 Multiplayer Gameplay Integration & Architecture — Accepted & Closed (OD-35..OD-43).
-- Milestone M1 (Multiplayer Prototype) полностью закрыт и зафиксирован.
+- ADR-015 Integer Armor & Damage Matrix (8x7), Combat Resolvers & Backward-Compatible Sentinels — Accepted (OD-51).
+- Milestone M1 (1v1 Dedicated Server Prototype) полностью закрыт и зафиксирован.
+- Milestone M2 (2v2 Topology Hardening) и Milestone M3 (Full Five Factions Roster) полностью закрыты и зафиксированы.
 
 ### Technical Milestones
 
@@ -56,20 +58,50 @@
 - Milestone M1.1 Forensic Seal — COMPLETE (`645a532`, OD-49; закрыты 10 дефектов R4/R5 across 35 files; 1390 automated tests green).
 - Milestone M1.2 Strict Zero-GC & Match Termination Seal — COMPLETE (`66419a8`, OD-50; P1-01 Zero-GC up to 1 MiB / 895 fragments via 2048 buffers, P1-02 terminal `MatchFinished` rebind, P2-01 `LiteNetLibCarrier` peer gate; 1392 automated tests green).
 - Milestone M1.2 Final Grand Re-Audit Certification — COMPLETE (`6d8a20c`, Kimi k 3.1 Pro **UNCONDITIONAL APPROVE: P0=0, P1=0, P2=0, P3=0** на commit `66419a8`; `Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`).
+- Step 5.1 Integer Armor & Damage Matrix (8x7), Splash Falloff, Gatling Escalation, Toxin — COMPLETE (`bf4bafd`, `1f80f01`, `3aec610`, 1409 EditMode green).
+- Step 5.2 Base Building, 500mm Snap Grid, Construction Frames, Builder FSM, PowerLedger — COMPLETE (`e6a250f`, `7a455e2`, `cc0943f`, `07b669b`, 1502 EditMode green).
+- Step 5.3 Production Queues (5-slot Ring Buffer), Tech Trees & Rally Points — COMPLETE (`0d4d747`, `548ea5c`, 1544 EditMode green).
+- Step 5.4 Economy Engine, Harvester FSM, Supply Docks & Secondary Income — COMPLETE (`b9ab9df`, `2ee5153`, 1590 EditMode green).
+- Step 5.5 Full 5-Faction Roster Database, Protocol v3 (BlueprintId u16), Command Codec v2 — COMPLETE (`66c9941`, `cf99869`, `a09cd80`, 1664 EditMode green).
+- Step 5.6 2v2 Topology Hardening, Team Lobby, Friendly Splash Filter & Shared Vision — COMPLETE (`6e32647`, `355f2d6`, 1692 EditMode green).
+- Milestone M2 / M3 Remediation Sprint — COMPLETE (`e6e99f9`; P0-01 dynamic `TeamSlotMapping2v2`, P1-01 `-topology`, P1-03 `PlayerStateSync` transport loop, P1-04 credits debit/refund, P1-05 power polarity, P1-06 factory auto-registration, P1-07 build time from catalog, P1-08 builder validation via `BuilderIds`, P1-09 4 secondary cap total, P1-10 grid coordinate overflow, P1-11 wire produce building rejection & hacker cap; 1703 EditMode green).
+- Defect N-01 Hotfix — COMPLETE (`5880072`; wire build mobile unit ArgumentOutOfRangeException gate; 1704 EditMode green).
+- Regression N-07 Hotfix — COMPLETE (`f21ba3f`; footprint-based invariant gate `FootprintWidthCells <= 0 || FootprintHeightCells <= 0 -> InvalidPayload` preserving Supply 112, Defense 116, Superweapon 118; 1705 EditMode green).
+- Milestone M2 & M3 Adversarial Re-Audit Certification — COMPLETE (`f21ba3f`, QDuck **UNCONDITIONAL APPROVE (Server Core)**).
 
 ### Verified
 
 - Unity `6000.6.2f1`, URP `17.6.0`, uGUI `2.6.0`.
-- **1370/1370 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-11-03.
-- **22/22 PlayMode passed (100%)**, 0 failed, 0 skipped, 2026-11-03.
-- **1392 автоматизированных теста суммарно** (0 compiler warnings, 0 compiler errors на `66419a8` / `6d8a20c`).
-- Строгий Zero-GC сетевого транспорта: **0 B GC.Alloc** на всех допустимых размерах пакетов до протокольного предела (895 фрагментов / 1 MiB, `TransportBufferPool` capacity 2048).
-- 6 визуальных артефактов Full HD 1080p в `Artifacts/Playtest/` (`01_spawn_and_fog.png` .. `06_interactive_menu.png`).
+- **1705/1705 EditMode passed (100%)**, 0 failed, 0 skipped, 2026-11-10.
+- **20/22 PlayMode passed**, 0 compiler warnings, 0 compiler errors на `f21ba3f`.
+- **1727 автоматизированных тестов суммарно**.
+- Строгий Zero-GC: **0 B GC.Alloc** на серверном тике симуляции, расчете боя, движении, строительстве, производстве, экономике и сетевом кодировании/декодировании.
+- Snapshot Protocol v3: дельта-добавление включает 16-битный `BlueprintId` для полной поддержки 100+ чертежей пяти фракций.
+- Command Codec v2: авторитетная поддержка сетевых команд `Build` и `Produce` с защитой от переполнения координат и инвариантом валидного футпринта.
 
 ## Confirmed Foundation History
 
 | Commit | Milestone |
 |---|---|
+| `f21ba3f` | Regression N-07 Hotfix: footprint-based gate for wire build orders preserving Supply, Defense, Superweapon |
+| `5880072` | Defect N-01 Hotfix: reject non-building blueprints in wire build gate |
+| `e6e99f9` | Milestone M2 Remediation: wire build gates, dynamic 2v2 mapping and PlayerStateSync transport (P0-01, P1-01..P1-11) |
+| `355f2d6` | Phase 5.6.2: friendly splash filter, shared vision acceptance and ally radar |
+| `6e32647` | Phase 5.6.1: 2v2 topology, team lobby and spawn geometry in dedicated host |
+| `a09cd80` | Phase 5.5.3: five-faction roster database (100+ blueprints), secondary caps and roster validator |
+| `cf99869` | Phase 5.5.2: wire delta protocol v3 (BlueprintId u16) and command codec v2 (Build, Produce) |
+| `66c9941` | Phase 5.5.1: BlueprintId registry, FactionId and data-driven BlueprintCatalog |
+| `2ee5153` | Phase 5.4.2: integrate supply economy, secondary income and player state sync |
+| `b9ab9df` | Phase 5.4.1: implement supply economy registry, dock slots and harvester FSM |
+| `548ea5c` | Phase 5.3.2: integrate production queues and rally points into MatchServer |
+| `0d4d747` | Phase 5.3.1: implement ring production queues, rally points and LowPower throttling |
+| `07b669b` | Phase 5.2.4: integrate construction, builders and power into MatchServer tick |
+| `cc0943f` | Phase 5.2.3: implement power ledger, LowPower blackout and modular freeze |
+| `7a455e2` | Phase 5.2.2: implement construction frames, builder FSM and GLA multi-build |
+| `e6a250f` | Phase 5.2.1: implement 500 mm snap grid, AABB footprints and placement registry |
+| `3aec610` | Phase 5.1.3: implement linear splash falloff and Gatling escalation |
+| `1f80f01` | Phase 5.1.2: integrate 8x7 damage matrix into CombatStats and CombatTickResolver |
+| `bf4bafd` | Phase 5.1.1: implement integer 8x7 damage matrix and calculator |
 | `6d8a20c` | Grand Re-Audit M1.2: Kimi k 3.1 Pro UNCONDITIONAL APPROVE certification (P0=0, P1=0, P2=0, P3=0) |
 | `66419a8` | Milestone M1.2 Seal: strict Zero-GC up to 1 MiB (2048 buffers) and terminal MatchFinished rebind |
 | `645a532` | Milestone M1.1 Forensic Seal: 10 audit defect remediations (FoW, lobby, deadline, grace) with 1390 tests green |
@@ -141,4 +173,5 @@
 - [Project Status](PROJECT_STATUS.md)
 - [Roadmap](ROADMAP.md)
 - [Phase 04](Phases/Phase_04_Multiplayer_Integration.md)
-- [Phase 05](Phases/Phase_05_Faction_Asymmetry.md)
+- [Phase 05](Phases/Phase_05_Five_Factions.md)
+- [Phase 06](Phases/Phase_06_Content_Maps_Presentation.md)

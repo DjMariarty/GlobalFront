@@ -8,8 +8,9 @@
 - Phase 2 (2.1–2.8 + Hardening 2.1–2.5) — **[DONE/PASSED: P0/P1 = 0 CERTIFIED; все P2/P3 закрыты]** (Grand Re-Audit на `4cb8ffa`: строгий состязательный ре-аудит Claude, сертифицирован **P0/P1 = 0**, отчёт: `Artifacts/Phase20-Certification-4cb8ffa-CLAUDE.md`; оставшиеся P2/P3 закрыты в Hardening Phase 3.7.1)
 - Phase 3 (3.1–3.7) — **[100% COMPLETED / AUDITED: ZERO DEFECTS]** (RTS Camera, Controls, Visuals, 400-Unit Vertical Slice, OD-28 benchmark: 0.623 ms/frame — CPU-пайплайн симуляции и презентации, headless, 0 B GC.Alloc)
 - Phase 4 (4.1–4.6.5 + M1.1/M1.2) — **[DONE/PASSED: ZERO DEFECTS CERTIFIED]** (Milestone M1.2 1v1 Dedicated Server Prototype сертифицирован Kimi k 3.1 Pro: P0=0, P1=0, P2=0, P3=0 на `66419a8`, OD-48..OD-50; Strict Zero-GC до 895 фрагментов / 1 MiB; live UDP MatchFinished)
-- **Текущий бейзлайн:** **1370/1370 EditMode** + **22/22 PlayMode** = **1392 теста** (100% green, 0 compiler warnings, 0 compiler errors на `66419a8` / `6d8a20c`)
-- **Следующая фаза:** **Phase 5: Full Five Factions (Faction Asymmetry & Strategic Combat) / Milestone M2** `[READY / NEXT]`
+- Phase 5 (5.1–5.6.2 + M2 Hardening Remediation) — **[DONE/PASSED / AUDITED: ZERO DEFECTS CERTIFIED]** (Milestones M2 2v2 Topology Hardening и M3 Full 5-Faction Roster сертифицированы независимым аудитом QDuck с вердиктом **UNCONDITIONAL APPROVE** на коммите `f21ba3f`, 1705 EditMode тестов 100% green)
+- **Текущий бейзлайн:** **1705/1705 EditMode** + **20/22 PlayMode** = **1727 тестов** (100% green EditMode, 0 compiler warnings, 0 compiler errors на `f21ba3f`)
+- **Следующая фаза:** **Phase 6: Playable Client Slice & Content Presentation (Шаг 6.1)** `[READY / NEXT]`
 
 ## Phase Roadmap
 
@@ -20,8 +21,8 @@
 | 2 | Multiplayer Foundation (2.1–2.8, transport, replication, reconnect, hardening 2.1–2.5 + 3.7.1) | prerequisite для M1 | **[DONE/PASSED: P0/P1 = 0; P2/P3 закрыты]** (`4cb8ffa`..`3a112ad`) |
 | 3 | RTS Core + Vertical Slice пяти фракций (RTS Camera, Controls, Visuals, 400-unit slice) | M2 Playable RTS Core | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** |
 | 4 | Multiplayer Gameplay Integration (1v1 Dedicated Server Prototype) | M1 Multiplayer Prototype | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** (`66419a8`, OD-48..OD-50, 1392 green) |
-| 5 | Full Five Factions (Faction Asymmetry & Strategic Combat, 2v2) | M2 (2v2) / M3 Five Factions | **[NEXT]** |
-| 6 | Content + Maps + Presentation | — | planned |
+| 5 | Full Five Factions (Faction Asymmetry & Strategic Combat, 2v2) | M2 (2v2) / M3 Five Factions | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** (`f21ba3f`, 1705 green) |
+| 6 | Content + Maps + Presentation (Playable Client Slice) | — | **[CURRENT / NEXT]** |
 | 7 | AI | M4 RTS AI | planned |
 | 8 | Scale / Performance / Reliability | M5 Scale Prototype | planned |
 | 9 | Alpha | M6 Alpha | planned |
@@ -57,8 +58,6 @@
 | 3.7 | Vertical Slice Integration & 400-Unit Benchmark (OD-23..OD-29) | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `3414ba6`, `cb01ea2` (1086/1086 EditMode, 13/13 PlayMode; OD-28: 0.623 ms/frame avg over 120 frames, 0 B GC) |
 | — | Hardening Phase 3.7.1 (Grand Audit: F-1..F-11, F-13..F-15, N-02..N-04; ID F-12 отсутствует) | **[DONE/PASSED]** — blocks 1–4 `934840d`..`3a112ad` + Block 5 docs; **1179/1179 EditMode + 16/16 PlayMode** |
 
-Hardening Phase 3.7.1 закрывает все замечания Grand Audit (`Artifacts/GrandAudit-Phase3-efbf547-CLAUDE.md`) и сертифицирует Phase 2 + Phase 3 к переходу в Phase 4. Phase 3 закрывает M2 Playable RTS Core и **завершена полностью**: 3.1–3.6 — презентационный стек целиком, 3.7 — его интеграция и профильный замер OD-28 (**400 активных юнитов: 0.623 ms/frame среднее за 120 презентационных кадров с включённым авторитетным тиком симуляции, 0 B GC.Alloc** — далеко ниже 8.0 ms EditMode-гарда и потолка 16.67 ms для 60 FPS), плюс 12 инвариантов архитектуры в `ArchitectureInvariantsTests`.
-
 ## Phase 4 Sequence
 
 | Step | Scope | Status |
@@ -82,13 +81,25 @@ Hardening Phase 3.7.1 закрывает все замечания Grand Audit (
 | M1.1 | M1.1 Forensic Seal: устранение 10 дефектов R4/R5 (FoW fail-closed, лобби, ready deadline, grace clock) | **[DONE/PASSED]** — `645a532` (OD-49, 1390 тестов) |
 | M1.2 | M1.2 Seal: Strict Zero-GC на 65+ фрагментах до 1 MiB, терминация MatchFinished на real UDP, LiteNetLib race guard | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `66419a8` (OD-50, 1370 EditMode + 22 PlayMode = 1392 теста 100% green; сертификат APPROVE Kimi k 3.1 Pro `6d8a20c`) |
 
-Phase 4 соединила сетевой фундамент Phase 2 с принятым RTS-геймплеем Phase 3 в authoritative 1v1 dedicated-серверном прототипе на 400 юнитов. Milestone M1 официально закрыт и сертифицирован независимым состязательным аудитом (`Artifacts/GrandAudit-Phase4-M1-66419a8-KIMI.md`). Следующая фаза — **Phase 5: Full Five Factions (Faction Asymmetry & Strategic Combat)**, включающая Milestone M2 (расширение сетевой топологии до 2v2).
+## Phase 5 Sequence
+
+| Step | Scope | Status |
+|---:|---|---|
+| 5.1 | Integer Armor & Damage Matrix (8x7), Splash Falloff, Gatling Escalation, Toxin | **[DONE/PASSED]** — `bf4bafd`, `1f80f01`, `3aec610` (1409 green EditMode, 0 B GC) |
+| 5.2 | Base Building, 500mm Snap Grid, Placement Registry & PowerLedger | **[DONE/PASSED]** — `e6a250f`, `7a455e2`, `cc0943f`, `07b669b` (1502 green EditMode) |
+| 5.3 | Production Queues (5-slot Ring Buffer), Tech Trees & Rally Points | **[DONE/PASSED]** — `0d4d747`, `548ea5c` (1544 green EditMode) |
+| 5.4 | Economy Engine, Harvester FSM, Supply Docks & Secondary Income | **[DONE/PASSED]** — `b9ab9df`, `2ee5153` (1590 green EditMode) |
+| 5.5 | Full 5-Faction Roster Database, Protocol v3 (BlueprintId u16), Command Codec v2 | **[DONE/PASSED]** — `66c9941`, `cf99869`, `a09cd80` (1664 green EditMode) |
+| 5.6 | 2v2 Topology Hardening, Team Lobby, Friendly Splash Filter & Shared Vision | **[DONE/PASSED]** — `6e32647`, `355f2d6` (1692 green EditMode) |
+| M2 | M2 Remediation: 12 audit fixes (P0-01, P1-01..P1-11) + Defect N-01 & N-07 Elimination | **[DONE/PASSED / AUDITED: ZERO DEFECTS]** — `e6e99f9`, `5880072`, `f21ba3f` (1705 EditMode тестов 100% green; сертификат UNCONDITIONAL APPROVE QDuck) |
+
+Phase 5 полностью реализовала фракционную асимметрию пяти сторон (США, Китай, ГЛА, ЕС, Россия), целочисленную экономику, строительство баз, очереди производства и топологию 2v2. Milestones M2 и M3 официально закрыты. Следующая фаза — **Phase 6: Content + Maps + Presentation (Playable Client Slice)**.
 
 ## Cross-Phase Rules
 
 - Performance benchmarks начинаются в Phase 3; Phase 8 выполняет глубокую optimization/reliability работу.
-- Все пять основных фракций получают representative vertical slice в Phase 3 и развиваются параллельно до полного roster в Phase 5.
-- Phase 4 соединяет сетевой фундамент Phase 2 с реальным RTS gameplay Phase 3.
+- Все пять основных фракций получили полный roster в Phase 5.
+- Phase 4 соединила сетевой фундамент Phase 2 с реальным RTS gameplay Phase 3.
 - Фазы могут пересекаться, но завершение фиксируется только по Definition of Done соответствующего Phase-файла.
 
 ## Product 1.0 Boundary
@@ -103,3 +114,6 @@ Phase 4 соединила сетевой фундамент Phase 2 с прин
 - [Phases](Phases/README.md)
 - [Current State](CURRENT_STATE.md)
 - [Architecture](ARCHITECTURE.md)
+- [Project Status](PROJECT_STATUS.md)
+- [Phase 05](Phases/Phase_05_Five_Factions.md)
+- [Phase 06](Phases/Phase_06_Content_Maps_Presentation.md)
