@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using GlobalFront.Client;
 using GlobalFront.Client.UI;
@@ -5,6 +6,7 @@ using GlobalFront.Core.Combat;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
 using GlobalFront.Core.Reconnect;
+using Object = UnityEngine.Object;
 using GlobalFront.Server.Sessions;
 using GlobalFront.Server.Transport;
 using NUnit.Framework;
@@ -263,6 +265,33 @@ namespace GlobalFront.Tests.EditMode.Network
             Assert.That(state.Slots[3].TeamId, Is.EqualTo(MatchTopology2v2.TeamBlue));
         }
 
+        [Test]
+        public void ConfigureSlots_WithNonStandardLobby_UpdatesSlotMappingAndAllowsLookup()
+        {
+            // N-03 (ТЗ 6.0-D): the [2, 3, 4, 5] lobby — HUD slots must resolve
+            // the ARBITRARY lobby ids (grace timers, ping indicators, slot
+            // statuses), not the canonical [1, 2, 3, 4] template.
+            var state = new NetworkMatchHudState();
+
+            state.ConfigureSlots(new[]
+            {
+                new PlayerId(2), new PlayerId(3), new PlayerId(4), new PlayerId(5)
+            });
+
+            Assert.That(state.Slots[0].PlayerId, Is.EqualTo(new PlayerId(2)));
+            Assert.That(state.Slots[1].PlayerId, Is.EqualTo(new PlayerId(3)));
+
+            Assert.That(
+                state.TryGetSlot(new PlayerId(5), out var slotIndex), Is.True,
+                "the 4th lobby player must be findable through TryGetSlot");
+            Assert.That(slotIndex, Is.EqualTo(3));
+            Assert.That(state.Slots[3].TeamId, Is.EqualTo(MatchTopology2v2.TeamBlue));
+            Assert.That(state.Slots[3].SlotStatus, Is.EqualTo(SlotStatus.Connected));
+
+            Assert.Throws<ArgumentException>(
+                () => state.ConfigureSlots(new[] { new PlayerId(2), new PlayerId(3), new PlayerId(4) }),
+                "a list that is not exactly 4 slots is refused");
+        }
         private static MatchConfig BuildFourPlayerTemplate(PlayerId p0, PlayerId p1, PlayerId p2, PlayerId p3)
         {
             var specs = new[]

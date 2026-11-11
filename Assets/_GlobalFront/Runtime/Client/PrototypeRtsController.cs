@@ -135,6 +135,14 @@ namespace GlobalFront.Client
 
         public string LastCommandMessage => _commandQueue.LastCommandMessage;
 
+        /// <summary>
+        /// N-03 (ТЗ 6.0-D): the client-side dynamic 2v2 mapping (set by the
+        /// lobby wiring once the team topology is confirmed). Default struct
+        /// = not configured — BattleStatusMessage falls back to the static
+        /// ID fold, exactly as before N-03.
+        /// </summary>
+        public TeamSlotMapping2v2 TeamMapping { get; set; }
+
         public string BattleStatusMessage
         {
             get
@@ -151,10 +159,17 @@ namespace GlobalFront.Client
                     // such outcome as DEFEAT (Phase 1.0 sprint 5).
                     if (_outcome.IsTeamVictory)
                     {
-                        return MatchTopology2v2.GetTeamForPlayer(_localPlayer) ==
-                               _outcome.WinningTeam
-                            ? "VICTORY"
-                            : "DEFEAT";
+                        // N-03 (ТЗ 6.0-D): the dynamic 2v2 mapping decides the
+                        // local player's side when configured (correct for
+                        // non-standard lobbies like [2, 3, 4, 5]); the static
+                        // fold stays the fallback for unconfigured clients.
+                        var isWinner = TeamMapping.IsConfigured &&
+                                       TeamMapping.TryGetTeamForPlayer(
+                                           _localPlayer, out var localTeam)
+                            ? localTeam == _outcome.WinningTeam
+                            : MatchTopology2v2.GetTeamForPlayer(_localPlayer) ==
+                              _outcome.WinningTeam;
+                        return isWinner ? "VICTORY" : "DEFEAT";
                     }
 
                     return _outcome.Winner == _localPlayer

@@ -137,6 +137,9 @@ namespace GlobalFront.Client.UI
         private readonly MinimapBlip[] _blips;
 
         private MinimapBounds _bounds;
+
+        /// <summary>N-03 (ТЗ 6.0-D): the dynamic 2v2 team table (default = use the static fold).</summary>
+        private TeamSlotMapping2v2 _teamMapping;
         private double _updateIntervalSeconds = DefaultUpdateIntervalSeconds;
         private int _blipCount;
         private Rect _normalizedCameraView;
@@ -193,6 +196,31 @@ namespace GlobalFront.Client.UI
         /// this once the lobby confirms the team topology).
         /// </summary>
         public bool IsTeamMatch { get; set; }
+
+        /// <summary>
+        /// N-03 (ТЗ 6.0-D): dynamic 2v2 slot-to-team table. When configured,
+        /// the radar uses it to classify allies vs enemies instead of the
+        /// static ID fold — correct for non-standard lobbies ([2, 3, 4, 5])
+        /// where the fold is wrong. Setting it implies
+        /// <see cref="IsTeamMatch"/>; leaving it default keeps the exact
+        /// pre-N-03 static behaviour.
+        /// </summary>
+        public TeamSlotMapping2v2 TeamMapping
+        {
+            get => _teamMapping;
+            set
+            {
+                _teamMapping = value;
+                IsTeamMatch = true;
+            }
+        }
+
+        /// <summary>N-03 (ТЗ 6.0-D): explicit form of the TeamMapping setter.</summary>
+        public void ConfigureTeams(TeamSlotMapping2v2 mapping)
+        {
+            _teamMapping = mapping;
+            IsTeamMatch = true;
+        }
 
         /// <summary>
         /// Seconds between rebuilds. Sanitised rather than validated: this arrives
@@ -349,11 +377,15 @@ namespace GlobalFront.Client.UI
                 }
 
           var friendly = state.Owner == localPlayer;
+          var isAlly = !friendly && IsTeamMatch &&
+              (_teamMapping.IsConfigured
+                  ? _teamMapping.AreAllies(localPlayer, state.Owner)
+                  : MatchTopology2v2.AreAllies(localPlayer, state.Owner));
           var kind = friendly && _selection.IsSelected(state.Entity)
               ? MinimapBlipKind.Selected
               : friendly
                   ? MinimapBlipKind.Friendly
-                  : IsTeamMatch && MatchTopology2v2.AreAllies(localPlayer, state.Owner)
+                  : isAlly
                       ? MinimapBlipKind.Ally
                       : MinimapBlipKind.Enemy;
 

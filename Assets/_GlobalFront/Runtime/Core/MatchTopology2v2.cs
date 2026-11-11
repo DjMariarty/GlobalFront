@@ -187,9 +187,55 @@ namespace GlobalFront.Core.Model
         }
 
         /// <summary>
-        /// Returns true when both players are mapped and belong to the same team.
+        /// N-03 (ТЗ 6.0-D): whether the mapping carries a table at all — a
+        /// default struct answers every query through the caller's fallback
+        /// instead of throwing.
         /// </summary>
-        public bool AreAllies(PlayerId left, PlayerId right) =>
-            GetTeamForPlayer(left) == GetTeamForPlayer(right);
+        public bool IsConfigured => _teamByPlayerValue != null;
+
+        /// <summary>
+        /// N-03 (ТЗ 6.0-D): whether <paramref name="player"/> carries a team
+        /// in this mapping — client-side safe (neutral objects, retired ids
+        /// and out-of-lobby players all read as unassigned, never throw).
+        /// </summary>
+        public bool IsAssigned(PlayerId player)
+        {
+            return player.IsValid &&
+                   _teamByPlayerValue != null &&
+                   player.Value < _teamByPlayerValue.Length &&
+                   _teamByPlayerValue[player.Value] != UnassignedTeam;
+        }
+
+        /// <summary>
+        /// N-03 (ТЗ 6.0-D): the non-throwing team read for client paths —
+        /// unassigned players (neutrals, retired ids, out-of-lobby ids)
+        /// return false instead of an exception. The fail-fast
+        /// <see cref="GetTeamForPlayer"/> stays for the server paths.
+        /// </summary>
+        public bool TryGetTeamForPlayer(PlayerId player, out TeamId team)
+        {
+            if (IsAssigned(player))
+            {
+                team = new TeamId(_teamByPlayerValue[player.Value]);
+                return true;
+            }
+
+            team = default;
+            return false;
+        }
+
+        /// <summary>
+        /// N-03 (ТЗ 6.0-D): the client-safe ally test — never throws. Two
+        /// unassigned players (or one unassigned and one assigned) are not
+        /// allies; only players that BOTH carry teams in this mapping and
+        /// share that team answer true. The server's hostility paths keep
+        /// the fail-fast <see cref="GetTeamForPlayer"/> contract.
+        /// </summary>
+        public bool AreAllies(PlayerId left, PlayerId right)
+        {
+            return TryGetTeamForPlayer(left, out var leftTeam) &&
+                   TryGetTeamForPlayer(right, out var rightTeam) &&
+                   leftTeam == rightTeam;
+        }
     }
 }

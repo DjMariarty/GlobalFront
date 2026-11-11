@@ -861,6 +861,84 @@ namespace GlobalFront.Tests.EditMode.Client.Presentation
         }
 
         [Test]
+        public void Radar_WithDynamicTeamSlotMapping_ClassifiesAlliesCorrectlyForNonStandardLobby()
+        {
+            // N-03 (ТЗ 6.0-D): the [2, 3, 4, 5] lobby. The local player is 2
+            // (the lobby's first seat), so under the static ID fold player 3
+            // would wrongly read as an enemy. With the dynamic mapping
+            // configured, 3 is the Ally, 4/5 are enemies — and a unit owned
+            // by an OUT-OF-LOBBY player (1) reads as an Enemy without any
+            // exception from the mapping queries.
+            _selection.LocalPlayerId = new PlayerId(2);
+            var allySlot = Spawn(1, Ax, RowZ, owner: 2);
+            var teammateSlot = Spawn(2, Bx, RowZ, owner: 3);
+            var enemyFourSlot = Spawn(3, Cx, RowZ, owner: 4);
+            var enemyFiveSlot = Spawn(4, 7000, RowZ, owner: 5);
+            var retiredOwnerSlot = Spawn(5, 9000, RowZ, owner: 1);
+
+            _radar.ConfigureTeams(TeamSlotMapping2v2.FromSlots(new[]
+            {
+                new PlayerId(2), new PlayerId(3), new PlayerId(4), new PlayerId(5)
+            }));
+
+            Assert.That(_radar.IsTeamMatch, Is.True,
+                "configuring the team mapping implies the team-match reading");
+
+            Assert.That(_radar.Rebuild(), Is.EqualTo(5));
+
+            Assert.That(
+                BlipFor(1).Kind, Is.EqualTo(MinimapBlipKind.Friendly),
+                "the local player's own unit is Friendly");
+            Assert.That(
+                BlipFor(2).Kind, Is.EqualTo(MinimapBlipKind.Ally),
+                "player 3 shares Team Red with the local player 2 under the dynamic mapping — " +
+                "the static fold would have shown them as an enemy");
+            Assert.That(
+                BlipFor(3).Kind, Is.EqualTo(MinimapBlipKind.Enemy),
+                "player 4 is Team Blue under the dynamic mapping");
+            Assert.That(
+                BlipFor(4).Kind, Is.EqualTo(MinimapBlipKind.Enemy),
+                "player 5 is Team Blue under the dynamic mapping");
+            Assert.That(
+                BlipFor(5).Kind, Is.EqualTo(MinimapBlipKind.Enemy),
+                "a unit of an out-of-lobby (unassigned) player reads as an enemy, not an exception");
+
+            // The selection still marks the local unit over the friendly kind.
+            _selection.AddSelected(new EntityId(1), allySlot);
+            Assert.That(_radar.Rebuild(), Is.EqualTo(5));
+            Assert.That(BlipFor(1).Kind, Is.EqualTo(MinimapBlipKind.Selected));
+        }
+
+        [Test]
+        public void Radar_Rebuild_WithTeamMapping_IsZeroGC()
+        {
+            // N-03: the radar rebuild with an active dynamic mapping must
+            // stay on the suite's allocation-free path — the mapping lookups
+            // are plain byte-table reads.
+            _selection.LocalPlayerId = new PlayerId(2);
+            Spawn(1, Ax, RowZ, owner: 2);
+            Spawn(2, Bx, RowZ, owner: 3);
+            Spawn(3, Cx, RowZ, owner: 4);
+            Spawn(4, 7000, RowZ, owner: 5);
+
+            _radar.ConfigureTeams(TeamSlotMapping2v2.FromSlots(new[]
+            {
+                new PlayerId(2), new PlayerId(3), new PlayerId(4), new PlayerId(5)
+            }));
+
+            Assert.That(_radar.Rebuild(), Is.EqualTo(4), "warmup rebuild");
+
+            // Rebuild returns the blip count — a statement-bodied lambda keeps
+            // the delegate an Action (a value-returning lambda binds to the
+            // generic Assert.That<T> overload and NUnit throws, the same trap
+            // the BlueprintCatalog suite documented).
+            Assert.That(
+                () => { _radar.Rebuild(); },
+                Is.Not.AllocatingGCMemory(),
+                "a rebuild over a dynamic team mapping must not allocate");
+        }
+
+        [Test]
         public void Radar_ExcludesDeadUnits()
         {
             Spawn(1, Ax, RowZ);

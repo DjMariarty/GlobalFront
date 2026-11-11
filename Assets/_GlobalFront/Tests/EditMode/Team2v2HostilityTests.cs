@@ -1,3 +1,4 @@
+using System;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Commands;
 using GlobalFront.Core.Model;
@@ -254,6 +255,63 @@ namespace GlobalFront.Tests.EditMode
                     blueOne),
                 Is.EqualTo(MatchCommandRejection.None),
                 "the hostility gate must not widen into refusing legitimate orders");
+        }
+
+        [Test]
+        public void TeamSlotMapping2v2_Unconfigured_IsSafeForQueries()
+        {
+            // N-03 (ТЗ 6.0-D): a default (client-side, not yet configured)
+            // mapping must answer every query without throwing — the radar
+            // and HUD fall back to their legacy static behaviour instead.
+            var mapping = default(TeamSlotMapping2v2);
+
+            Assert.That(mapping.IsConfigured, Is.False);
+            Assert.That(mapping.IsAssigned(new PlayerId(1)), Is.False);
+            Assert.That(mapping.IsAssigned(default), Is.False);
+
+            Assert.That(
+                mapping.TryGetTeamForPlayer(new PlayerId(1), out var team), Is.False);
+            Assert.That(team, Is.EqualTo(default(TeamId)));
+
+            Assert.DoesNotThrow(() => mapping.AreAllies(new PlayerId(1), new PlayerId(2)));
+            Assert.That(mapping.AreAllies(new PlayerId(1), new PlayerId(2)), Is.False,
+                "an unconfigured mapping declares nobody an ally");
+        }
+
+        [Test]
+        public void TeamSlotMapping2v2_FromSlots_TryGetAndAreAllies_Behaviour()
+        {
+            // N-03 (ТЗ 6.0-D): the [2, 3, 4, 5] lobby mapping — assigned
+            // players resolve teams, out-of-lobby players (1) read as
+            // unassigned, the client-safe AreAllies never throws, and the
+            // server-side fail-fast GetTeamForPlayer contract is unchanged.
+            var mapping = TeamSlotMapping2v2.FromSlots(new[]
+            {
+                new PlayerId(2), new PlayerId(3), new PlayerId(4), new PlayerId(5)
+            });
+
+            Assert.That(mapping.IsConfigured, Is.True);
+            Assert.That(mapping.IsAssigned(new PlayerId(2)), Is.True);
+            Assert.That(mapping.IsAssigned(new PlayerId(1)), Is.False,
+                "the retired PlayerId 1 is not part of this lobby");
+            Assert.That(mapping.IsAssigned(new PlayerId(6)), Is.False);
+
+            Assert.That(
+                mapping.TryGetTeamForPlayer(new PlayerId(5), out var fiveTeam), Is.True);
+            Assert.That(fiveTeam, Is.EqualTo(MatchTopology2v2.TeamBlue));
+            Assert.That(
+                mapping.TryGetTeamForPlayer(new PlayerId(1), out _), Is.False);
+
+            Assert.That(mapping.AreAllies(new PlayerId(2), new PlayerId(3)), Is.True,
+                "[2,3] share Team Red under the slot mapping");
+            Assert.That(mapping.AreAllies(new PlayerId(2), new PlayerId(4)), Is.False,
+                "Red vs Blue are not allies");
+            Assert.That(mapping.AreAllies(new PlayerId(1), new PlayerId(2)), Is.False,
+                "an unassigned player is never an ally — and the query must not throw");
+
+            Assert.Throws<ArgumentException>(
+                () => mapping.GetTeamForPlayer(new PlayerId(1)),
+                "the fail-fast server contract stays on GetTeamForPlayer");
         }
     }
 }

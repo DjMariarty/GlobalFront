@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using GlobalFront.Core.Model;
 
 namespace GlobalFront.Client.UI
@@ -132,6 +133,33 @@ namespace GlobalFront.Client.UI
 
             slotIndex = -1;
             return false;
+        }
+
+        /// <summary>
+        /// M2/N-03: Configures HUD slots from dynamic lobby player assignments.
+        /// Ensures TryGetSlot and grace timers find arbitrary player IDs (e.g. [2, 3, 4, 5]).
+        /// </summary>
+        public void ConfigureSlots(IReadOnlyList<PlayerId> slots)
+        {
+            if (slots == null || slots.Count != SlotCount)
+            {
+                throw new ArgumentException($"A 2v2 HUD needs exactly {SlotCount} slots.", nameof(slots));
+            }
+
+            for (var i = 0; i < SlotCount; i++)
+            {
+                var player = slots[i];
+                if (!player.IsValid)
+                {
+                    throw new ArgumentException($"Slot {i} carries an invalid PlayerId.", nameof(slots));
+                }
+
+                _slots[i] = new NetworkPlayerSlotState(
+                    player,
+                    MatchTopology2v2.GetTeamForSlot(i),
+                    SlotStatus.Connected,
+                    0);
+            }
         }
     }
 }
