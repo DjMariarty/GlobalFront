@@ -625,15 +625,76 @@ namespace GlobalFront.Server
             {
                 var spec = config.Units[index];
                 var entity = new EntityId(_nextEntityValue++);
+
+                // N-02: a blueprint-backed spec replaces the shared config
+                // stats with the catalog row's own stat line (the RTS
+                // starting HQ must come up at its real 4000-health line, not
+                // the legacy 100-health prototype default).
+                var stats = config.UnitStats;
+                BlueprintDefinition definition = default;
+                var definitionResolved = false;
+                if (spec.BlueprintId != 0 &&
+                    _blueprintCatalog.TryGet(spec.BlueprintId, out definition) &&
+                    definition.Stats.IsValid)
+                {
+                    stats = definition.Stats;
+                    definitionResolved = true;
+                }
+
                 SpawnUnitCore(
                     entity,
                     spec.Owner,
-                    config.UnitStats,
+                    stats,
                     spec.Position,
                     spec.SpeedMmPerTick,
                     spec.AutoAcquireEnemies,
-                    spec.UnitKind);
+                    spec.UnitKind,
+                    spec.BlueprintId);
                 entityIds[index] = entity;
+
+                // N-02: a completed catalog building starts registered — the
+                // footprint blocks construction on top of it and the power
+                // grid counts it from tick 0 (isComplete: true).
+                if (definitionResolved)
+                {
+                    if ((definition.Category == BlueprintCategory.Building ||
+                         spec.UnitKind == UnitKinds.BaseStructure) &&
+                        definition.FootprintWidthCells > 0 &&
+                        definition.FootprintHeightCells > 0)
+                    {
+                        var footprint = new BuildingFootprint(
+                            definition.FootprintWidthCells * BuildingFootprint.SnapStepMm,
+                            definition.FootprintHeightCells * BuildingFootprint.SnapStepMm);
+                        _buildingPlacement.TryRegister(
+                            entity.Value, spec.Position, footprint, out _);
+                    }
+
+                    var powerDelta = definition.PowerProduction - definition.PowerConsumption;
+                    if (powerDelta != 0)
+                    {
+                        _powerLedger.RegisterBuilding(
+                            spec.Owner, entity.Value, powerDelta, isComplete: true);
+                    }
+                }
+            }
+
+            // N-02: the RTS starting cash — credited once per unique owner,
+            // deduplicated in a stackalloc stamp (Zero-GC: no allocations on
+            // the initialization path).
+            if (config.StartingCredits > 0)
+            {
+                Span<bool> credited = stackalloc bool[SimulationConstants.MaxPlayers + 1];
+                for (var index = 0; index < config.UnitCount; index++)
+                {
+                    var owner = config.Units[index].Owner;
+                    if (owner.IsValid &&
+                        owner.Value <= SimulationConstants.MaxPlayers &&
+                        !credited[owner.Value])
+                    {
+                        credited[owner.Value] = true;
+                        _economy.AddCredits(owner, config.StartingCredits);
+                    }
+                }
             }
 
             return entityIds;

@@ -135,6 +135,116 @@ namespace GlobalFront.Tests.EditMode
             Assert.That(config.Units[1], Is.EqualTo(specs[1]));
         }
 
+        [Test]
+        public void UnitSpawnSpec_WithBlueprintId_PreservesPropertyAndEquality()
+        {
+            // N-02: blueprint-backed specs carry the catalog row through the
+            // template remap; equality and hashing include the blueprint.
+            var withBlueprint = new UnitSpawnSpec(
+                new PlayerId(1), new WorldPointMm(0, 0), 0, false,
+                UnitKinds.BaseStructure, blueprintId: 110);
+            var sameBlueprint = new UnitSpawnSpec(
+                new PlayerId(1), new WorldPointMm(0, 0), 0, false,
+                UnitKinds.BaseStructure, blueprintId: 110);
+            var otherBlueprint = new UnitSpawnSpec(
+                new PlayerId(1), new WorldPointMm(0, 0), 0, false,
+                UnitKinds.BaseStructure, blueprintId: 210);
+
+            Assert.That(withBlueprint.BlueprintId, Is.EqualTo(110));
+            Assert.That(withBlueprint, Is.EqualTo(sameBlueprint));
+            Assert.That(withBlueprint.GetHashCode(), Is.EqualTo(sameBlueprint.GetHashCode()));
+            Assert.That(withBlueprint, Is.Not.EqualTo(otherBlueprint));
+            Assert.That(withBlueprint, Is.Not.EqualTo(new UnitSpawnSpec(
+                new PlayerId(1), new WorldPointMm(0, 0), 350, false)));
+        }
+
+        [Test]
+        public void UnitSpawnSpec_ZeroSpeed_AllowedForBaseStructureOrBlueprint()
+        {
+            // N-02: a zero speed is legal only for the stationary spawn
+            // specs — the BaseStructure archetype and blueprint-backed rows
+            // (catalog buildings carry SpeedMmPerTick 0). Negative speeds
+            // still throw, and a mobile spec without a blueprint keeps the
+            // strict positive rule.
+            Assert.DoesNotThrow(() => new UnitSpawnSpec(
+                new PlayerId(1), new WorldPointMm(0, 0), 0, false,
+                UnitKinds.BaseStructure));
+            Assert.DoesNotThrow(() => new UnitSpawnSpec(
+                new PlayerId(1), new WorldPointMm(0, 0), 0, false,
+                UnitKinds.Tank, blueprintId: 110));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new UnitSpawnSpec(
+                new PlayerId(1), new WorldPointMm(0, 0), -1, false,
+                UnitKinds.BaseStructure, blueprintId: 110));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new UnitSpawnSpec(
+                new PlayerId(1), new WorldPointMm(0, 0), 0, false));
+        }
+
+        [Test]
+        public void MatchConfig_WithStartingCredits_PreservesProperty()
+        {
+            var config = new MatchConfig(
+                StandardStats, Array.Empty<UnitSpawnSpec>(), startingCredits: 10_000);
+
+            Assert.That(config.StartingCredits, Is.EqualTo(10_000));
+            Assert.That(
+                new MatchConfig(StandardStats, Array.Empty<UnitSpawnSpec>()).StartingCredits,
+                Is.EqualTo(0),
+                "the legacy two-arg constructor keeps the zero-credit start");
+            Assert.Throws<ArgumentOutOfRangeException>(() => new MatchConfig(
+                StandardStats, Array.Empty<UnitSpawnSpec>(), startingCredits: -1));
+        }
+
+        [Test]
+        public void InitializeMatch_WithStartingCredits_CreditsAllUniqueOwners()
+        {
+            var server = new MatchServer();
+            var specs = new[]
+            {
+                new UnitSpawnSpec(new PlayerId(1), new WorldPointMm(0, 0), 350, false),
+                new UnitSpawnSpec(new PlayerId(1), new WorldPointMm(1000, 0), 350, false),
+                new UnitSpawnSpec(new PlayerId(2), new WorldPointMm(5000, 0), 350, false),
+            };
+            var config = new MatchConfig(StandardStats, specs, startingCredits: 10_000);
+
+            server.InitializeMatch(config);
+
+            // Two units belong to player 1: the cash is credited ONCE per
+            // unique owner, not per spec.
+            Assert.That(server.Economy.GetCredits(new PlayerId(1)), Is.EqualTo(10_000));
+            Assert.That(server.Economy.GetCredits(new PlayerId(2)), Is.EqualTo(10_000));
+        }
+
+        [Test]
+        public void InitializeMatch_WithHqBlueprint_RegistersInPlacementAndPowerLedger()
+        {
+            // N-02: the USA HQ row 110 (8x8, +5 power) spawned through the
+            // config arrives as a completed building — the footprint blocks
+            // the base point, the power grid counts +5 from tick 0, and the
+            // unit carries the catalog's real 4000-health stat line.
+            var server = new MatchServer();
+            var basePoint = new WorldPointMm(-35_000, 20_000);
+            var specs = new[]
+            {
+                new UnitSpawnSpec(
+                    new PlayerId(1), basePoint, 0, false,
+                    UnitKinds.BaseStructure, blueprintId: 110),
+            };
+            var config = new MatchConfig(StandardStats, specs);
+
+            var entityIds = server.InitializeMatch(config);
+
+            Assert.That(server.Placement.IsPointOccupied(basePoint), Is.True,
+                "the provisioned HQ blocks its base point in the placement registry");
+            Assert.That(
+                server.PowerLedger.GetPowerState(new PlayerId(1)).Produced, Is.EqualTo(5),
+                "the provisioned HQ feeds +5 into the power grid as completed");
+            Assert.That(
+                server.TryGetUnit(entityIds[0], out var hq) && hq.CurrentHealth == 4000,
+                Is.True, "the HQ carries the catalog's 4000-health stat line");
+            Assert.That(server.Economy.GetCredits(new PlayerId(1)), Is.EqualTo(0),
+                "no credits without StartingCredits in the config");
+        }
+
         #endregion
 
         #region MatchServer.InitializeMatch

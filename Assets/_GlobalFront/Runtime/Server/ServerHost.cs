@@ -145,6 +145,20 @@ namespace GlobalFront.Server
         {
         }
 
+        /// <summary>
+        /// N-02 (ТЗ 6.0-C): headless host whose server knows the players'
+        /// factions — the dedicated host passes the lobby's faction table so
+        /// faction-gated rules (Horde Bonus, GLA power exemption) and the
+        /// RTS starting provisioning resolve per player.
+        /// </summary>
+        public ServerHost(int tickRate, ICombatRelation combatRelation, byte[] playerFactionsByPlayerId)
+            : this(
+                new MatchServer(combatRelation, null, playerFactionsByPlayerId),
+                new TickDriver(tickRate),
+                DefaultDisconnectGraceTicks)
+        {
+        }
+
         protected ServerHost(MatchServer server, TickDriver tickDriver, int disconnectGraceTicks)
         {
             _server = server ?? throw new ArgumentNullException(nameof(server));

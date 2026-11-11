@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using GlobalFront.Core.Catalog;
 using GlobalFront.Core.Combat;
 using GlobalFront.Core.Model;
 using GlobalFront.Core.Movement;
@@ -66,6 +67,13 @@ namespace GlobalFront.DedicatedServer
         private static readonly CombatStats DefaultUnitStats =
             new CombatStats(maximumHealth: 100, damage: 25, rangeMm: 7000, cooldownTicks: 10);
 
+        /// <summary>
+        /// N-02: the catalog the RTS provisioning reads builder speeds and
+        /// legacy kinds from — match-start path only, created once.
+        /// </summary>
+        private static readonly IBlueprintCatalog ProvisioningCatalog =
+            DefaultBlueprintCatalog.Create();
+
         private readonly List<PlayerId> _joinedPlayers = new List<PlayerId>(SimulationConstants.MaxPlayers);
 
         private ServerHost _host;
@@ -89,6 +97,34 @@ namespace GlobalFront.DedicatedServer
         /// (opcode 15) on the host's TickCompleted cadence.
         /// </summary>
         private PlayerStateSyncEmitter _stateSyncEmitter;
+
+        /// <summary>
+        /// N-02 (ТЗ 6.0-C): the match layout's roster mode. The legacy
+        /// <see cref="MatchRosterMode.PrototypeArmies"/> keeps the Phase 1–4
+        /// six-unit prototype armies (the dozens of existing tests and the
+        /// PlayMode slices); <see cref="MatchRosterMode.RtsStartingBase"/>
+        /// provisions each player a real faction HQ, a builder and starting
+        /// cash for the Phase 6 vertical slice. Set before
+        /// <see cref="Initialize"/>, like <see cref="TopologyMode"/>.
+        /// </summary>
+        public MatchRosterMode RosterMode { get; set; } = MatchRosterMode.PrototypeArmies;
+
+        /// <summary>
+        /// N-02: the lobby's faction per player slot (indexed by slot, the
+        /// same order <paramref name="owners"/> arrives in at match start).
+        /// Null keeps the faction-less server (faction-gated rules disabled).
+        /// Set before <see cref="Initialize"/>.
+        /// </summary>
+        public byte[] PlayerFactions { get; set; }
+
+        /// <summary>
+        /// N-02: builder spawn offset from the HQ base point, towards the
+        /// map centre — the builder starts beside its HQ, not inside it.
+        /// </summary>
+        public const int BuilderOffsetMm = 5_000;
+
+        /// <summary>N-02: the RTS starting cash (ТЗ 6.0-C).</summary>
+        public const int DefaultStartingCredits = 10_000;
 
         /// <summary>
         /// The match layout this host fills (Step 5.6.1): a two-player skirmish
@@ -238,7 +274,7 @@ namespace GlobalFront.DedicatedServer
             }
 
             _teamRelation = teamRelation;
-            _host = new ServerHost(tickRate, teamRelation);
+            _host = new ServerHost(tickRate, teamRelation, PlayerFactions);
             _transportHost = new ServerTransportHost(_carrier, _host.Sessions, _host.Server);
 
             // The forming match admits exactly the players the topology needs:
@@ -426,9 +462,12 @@ namespace GlobalFront.DedicatedServer
 
             var owners = _joinedPlayers.ToArray();
             Array.Sort(owners, (left, right) => left.Value.CompareTo(right.Value));
-            var config = TopologyMode == MatchTopologyMode.Team2v2
-                ? BuildTeamMatchConfig(owners)
-                : BuildDefaultMatchConfig(owners);
+            var config = RosterMode == MatchRosterMode.RtsStartingBase
+                ? BuildRtsStartingRoster(
+                    owners, PlayerFactions, TopologyMode, DefaultStartingCredits)
+                : TopologyMode == MatchTopologyMode.Team2v2
+                    ? BuildTeamMatchConfig(owners)
+                    : BuildDefaultMatchConfig(owners);
 
             TeamSlotMapping2v2 teamMapping = default;
             if (TopologyMode == MatchTopologyMode.Team2v2)
@@ -572,6 +611,119 @@ namespace GlobalFront.DedicatedServer
             return new MatchConfig(DefaultUnitStats, units);
         }
 
+        /// <summary>
+        /// N-02 (ТЗ 6.0-C): the RTS starting roster — per player one real
+        /// faction HQ (catalog row, 8x8 footprint, on the base point,
+        /// speed 0) and one faction builder beside it (offset towards the
+        /// map centre, catalog mobility), plus the starting cash on the
+        /// match config. Faction per slot comes from
+        /// <paramref name="factions"/> when supplied and valid; a
+        /// faction-less lobby provisions USA rows. The blueprint ids and
+        /// legacy kinds are data-driven — no per-faction special cases.
+        /// </summary>
+        public static MatchConfig BuildRtsStartingRoster(
+            IReadOnlyList<PlayerId> owners,
+            IReadOnlyList<byte> factions = null,
+            MatchTopologyMode topology = MatchTopologyMode.Skirmish1v1,
+            int startingCredits = DefaultStartingCredits)
+        {
+            if (owners == null)
+            {
+                throw new ArgumentNullException(nameof(owners));
+            }
+
+            if (owners.Count == 0)
+            {
+                throw new ArgumentException("at least one player is required", nameof(owners));
+            }
+
+            if (topology == MatchTopologyMode.Team2v2 && owners.Count != MatchTopology2v2.SlotCount)
+            {
+                throw new ArgumentException(
+                    "a 2v2 roster needs exactly 4 players", nameof(owners));
+            }
+
+            var units = new UnitSpawnSpec[owners.Count * 2];
+            var count = 0;
+            for (var slot = 0; slot < owners.Count; slot++)
+            {
+                var owner = owners[slot];
+                if (!owner.IsValid)
+                {
+                    throw new ArgumentException("owner must be valid", nameof(owners));
+                }
+
+                WorldPointMm basePoint;
+                if (topology == MatchTopologyMode.Team2v2)
+                {
+                    basePoint = TeamBasePositions[slot];
+                }
+                else
+                {
+                    var side = slot % 2 == 0 ? -1 : 1;
+                    basePoint = new WorldPointMm(
+                        side * ArmySeparationMm * (1 + (slot / 2)), 0);
+                }
+
+                var faction = factions != null &&
+                              slot < factions.Count &&
+                              FactionId.IsValid(factions[slot])
+                    ? factions[slot]
+                    : FactionId.USA;
+
+                var hqBlueprint =
+                    FactionRosterCompletenessValidator.GetHqBlueprintId(faction);
+                var builderBlueprint =
+                    FactionRosterCompletenessValidator.GetBuilderBlueprintId(faction);
+
+                var builderSpeed = 350;
+                var builderKind = UnitKinds.Tank;
+                if (ProvisioningCatalog.TryGet(
+                        new BlueprintId(builderBlueprint), out var builderDef))
+                {
+                    builderSpeed = builderDef.SpeedMmPerTick;
+                    builderKind = builderDef.LegacyKind;
+                }
+
+                // HQ: a completed catalog building on the base point.
+                units[count++] = new UnitSpawnSpec(
+                    owner,
+                    basePoint,
+                    speedMmPerTick: 0,
+                    autoAcquireEnemies: false,
+                    UnitKinds.BaseStructure,
+                    hqBlueprint);
+
+                // Builder: beside the HQ, offset towards the map centre.
+                units[count++] = new UnitSpawnSpec(
+                    owner,
+                    new WorldPointMm(
+                        basePoint.X + (basePoint.X <= 0 ? BuilderOffsetMm : -BuilderOffsetMm),
+                        basePoint.Z),
+                    speedMmPerTick: builderSpeed,
+                    autoAcquireEnemies: false,
+                    builderKind,
+                    builderBlueprint);
+            }
+
+            return new MatchConfig(DefaultUnitStats, units, startingCredits);
+        }
+
         private void OnDestroy() => Shutdown();
+    }
+
+    /// <summary>
+    /// N-02 (ТЗ 6.0-C): which roster a dedicated match starts with. The
+    /// prototype armies keep every Phase 1–4 test and slice; the RTS mode
+    /// provisions the playable starting base (HQ + builder + cash).
+    /// Values are append-only: renumbering would re-shape recorded configs.
+    /// </summary>
+    public enum MatchRosterMode : byte
+    {
+        /// <summary>Legacy six-unit prototype army per player (Phase 1–4).</summary>
+        PrototypeArmies = 0,
+
+        /// <summary>Faction HQ + faction builder + starting cash per player.</summary>
+        RtsStartingBase = 1
     }
 }

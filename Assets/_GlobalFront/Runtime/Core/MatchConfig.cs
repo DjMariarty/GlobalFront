@@ -16,7 +16,8 @@ namespace GlobalFront.Core.Model
             WorldPointMm position,
             int speedMmPerTick,
             bool autoAcquireEnemies,
-            byte unitKind = UnitKinds.Unknown)
+            byte unitKind = UnitKinds.Unknown,
+            ushort blueprintId = 0)
         {
             if (!owner.IsValid)
             {
@@ -28,7 +29,14 @@ namespace GlobalFront.Core.Model
                 throw new ArgumentOutOfRangeException(nameof(position));
             }
 
-            if (speedMmPerTick <= 0)
+            // N-02: a zero speed is legal only for stationary spawn specs —
+            // the BaseStructure archetype and any blueprint-backed row
+            // (catalog buildings carry SpeedMmPerTick = 0). Every mobile
+            // spec without a blueprint keeps the strict positive rule.
+            if (speedMmPerTick < 0 ||
+                (speedMmPerTick == 0 &&
+                 unitKind != UnitKinds.BaseStructure &&
+                 blueprintId == 0))
             {
                 throw new ArgumentOutOfRangeException(nameof(speedMmPerTick));
             }
@@ -38,6 +46,7 @@ namespace GlobalFront.Core.Model
             SpeedMmPerTick = speedMmPerTick;
             AutoAcquireEnemies = autoAcquireEnemies;
             UnitKind = unitKind;
+            BlueprintId = blueprintId;
         }
 
         public PlayerId Owner { get; }
@@ -56,18 +65,28 @@ namespace GlobalFront.Core.Model
         /// </summary>
         public byte UnitKind { get; }
 
+        /// <summary>
+        /// N-02: the catalog row the spec spawns from (0 = no blueprint —
+        /// the unit uses the config's shared stats, exactly as the
+        /// pre-provisioning rosters did). Part of the specification
+        /// identity: a template must reproduce the same blueprint-backed
+        /// units after the lobby owner remap.
+        /// </summary>
+        public ushort BlueprintId { get; }
+
         public bool Equals(UnitSpawnSpec other) =>
             Owner == other.Owner &&
             Position == other.Position &&
             SpeedMmPerTick == other.SpeedMmPerTick &&
             AutoAcquireEnemies == other.AutoAcquireEnemies &&
-            UnitKind == other.UnitKind;
+            UnitKind == other.UnitKind &&
+            BlueprintId == other.BlueprintId;
 
         public override bool Equals(object obj) =>
             obj is UnitSpawnSpec other && Equals(other);
 
         public override int GetHashCode() =>
-            HashCode.Combine(Owner, Position, SpeedMmPerTick, AutoAcquireEnemies, UnitKind);
+            HashCode.Combine(Owner, Position, SpeedMmPerTick, AutoAcquireEnemies, UnitKind, BlueprintId);
     }
 
     /// <summary>
@@ -79,14 +98,25 @@ namespace GlobalFront.Core.Model
     public sealed class MatchConfig
     {
         public MatchConfig(CombatStats unitStats, UnitSpawnSpec[] units)
+            : this(unitStats, units, 0)
+        {
+        }
+
+        public MatchConfig(CombatStats unitStats, UnitSpawnSpec[] units, int startingCredits)
         {
             if (!unitStats.IsValid)
             {
                 throw new ArgumentException("Unit stats must be valid.", nameof(unitStats));
             }
 
+            if (startingCredits < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startingCredits));
+            }
+
             UnitStats = unitStats;
             Units = units ?? throw new ArgumentNullException(nameof(units));
+            StartingCredits = startingCredits;
         }
 
         /// <summary>
@@ -103,5 +133,12 @@ namespace GlobalFront.Core.Model
         public UnitSpawnSpec[] Units { get; }
 
         public int UnitCount => Units.Length;
+
+        /// <summary>
+        /// N-02: credits credited once per unique unit owner during match
+        /// initialization (the RTS starting cash). 0 keeps the legacy
+        /// zero-credit start.
+        /// </summary>
+        public int StartingCredits { get; }
     }
 }

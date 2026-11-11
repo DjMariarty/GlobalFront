@@ -409,10 +409,15 @@ namespace GlobalFront.Server.Sessions
                     spec.Position,
                     spec.SpeedMmPerTick,
                     spec.AutoAcquireEnemies,
-                    spec.UnitKind);
+                    spec.UnitKind,
+                    spec.BlueprintId);
             }
 
-            entityIds = server.InitializeMatch(new MatchConfig(template.UnitStats, mappedSpecs));
+            // N-02: the template's starting credits survive the lobby owner
+            // remap — the RTS provisioning (HQ + builder + cash) must reach
+            // the authoritative server exactly as the runner built it.
+            entityIds = server.InitializeMatch(
+                new MatchConfig(template.UnitStats, mappedSpecs, template.StartingCredits));
 
             matchRecord.Server = server;
             matchRecord.Phase = MatchPhase.Running;

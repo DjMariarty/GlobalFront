@@ -315,5 +315,35 @@ namespace GlobalFront.Core.Catalog
 
             return false;
         }
+
+        /// <summary>
+        /// N-02 (ТЗ 6.0-C): the faction's canonical HQ row for the starting
+        /// provisioning. An unknown or neutral faction falls back to the USA
+        /// row so a faction-less dedicated lobby still provisions a base.
+        /// </summary>
+        public static ushort GetHqBlueprintId(byte faction)
+        {
+            if (faction < FactionId.USA || faction >= FactionId.Count)
+            {
+                return HqIds[0];
+            }
+
+            return HqIds[faction - FactionId.USA];
+        }
+
+        /// <summary>
+        /// N-02 (ТЗ 6.0-C): the faction's canonical builder row (Dozer /
+        /// Worker / ИМР / CEV) for the starting provisioning. An unknown or
+        /// neutral faction falls back to the USA row.
+        /// </summary>
+        public static ushort GetBuilderBlueprintId(byte faction)
+        {
+            if (faction < FactionId.USA || faction >= FactionId.Count)
+            {
+                return BuilderIds[0];
+            }
+
+            return BuilderIds[faction - FactionId.USA];
+        }
     }
 }
